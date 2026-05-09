@@ -213,6 +213,33 @@ ssh remote 'chmod +x ~/.local/bin/tender && tender help'
 
 Musl + static linking avoids libc-version drift across edge hosts.
 
+**macOS → x86_64 Windows cross-compile** (for testing on a Windows VM):
+
+```bash
+rustup target add x86_64-pc-windows-gnu
+cd ~/Documents/projects/tender
+cargo zigbuild --release --target x86_64-pc-windows-gnu --bin tender
+
+scp target/x86_64-pc-windows-gnu/release/tender.exe win11-vm:.local/bin/tender.exe
+ssh win11-vm 'tender --help'
+```
+
+Runs natively on Windows ARM64 via x64 emulation; no perf concern for an I/O-bound supervisor.
+
+**Native Windows dev loop** (for running `cargo test` on the VM):
+
+`rust-mingw` ships `dlltool.exe` but not the rest of binutils, so `windows-sys` builds fail with `dlltool: CreateProcess [error]` (it's spawning a missing `as.exe`). Install MSYS2 binutils once:
+
+```powershell
+winget install -e --id MSYS2.MSYS2 --silent --accept-source-agreements --accept-package-agreements
+& "C:\msys64\usr\bin\bash.exe" -lc "pacman -S --noconfirm mingw-w64-x86_64-binutils"
+# Then for each cargo invocation:
+$env:PATH = "$env:USERPROFILE\.cargo\bin;C:\msys64\mingw64\bin;$env:PATH"
+cargo test --lib --tests
+```
+
+Long Windows builds + test runs benefit from being launched under `tender start --replace`: the build survives SSH disconnect, `tender log -f` streams output, `tender wait` blocks for the result.
+
 ### 7. One session means one in-flight `exec`
 
 If a driver is already streaming `tender exec` calls into session `ddb`, a second concurrent `exec` against that same session fails with:
