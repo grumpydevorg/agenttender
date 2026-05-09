@@ -1,12 +1,20 @@
 ---
 id: powershell-exec-framing
 depends_on: []
-links: []
+links:
+  - powershell-exec-side-channel.md
 ---
 
 # PowerShell Exec Framing
 
 Fix the PowerShell `exec` target so it can execute arbitrary PowerShell expressions and return clean stdout/stderr without prompt transcript noise.
+
+## Status
+
+The plan splits cleanly into two halves:
+
+- **Framing half — DONE** in commit `3f6ff2b` (`fix(exec): PowerShell frame supports arbitrary expressions`). Argv is now joined and inlined as raw PowerShell code rather than wrapped with `& 'cmd' 'arg'`. Variable assignment, pipelines, and multi-statement payloads work; state persists across exec calls.
+- **Transcript-noise half — DEFERRED** to `powershell-exec-side-channel.md`. The captured `stdout` field still contains prompt + echoed framing line because PowerShell's pipe-stdin host emits both. Suppressing them via session-setup proved fragile; the side-channel result-file approach (mirroring `PythonRepl`) is the robust path.
 
 ## Why
 
