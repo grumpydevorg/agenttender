@@ -495,33 +495,39 @@ fn parent_job_allows_breakaway() -> bool {
     };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
-    unsafe {
-        // BOOL is defined as i32 in windows-sys.
-        let mut in_job: i32 = 0;
-        // SAFETY: GetCurrentProcess is a pseudo-handle, always valid.
-        // Second arg null = "the job containing the calling process".
-        if IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut in_job) == 0 {
-            return false;
-        }
-        if in_job == 0 {
-            return true; // not in any job — breakaway flag is a no-op, harmless
-        }
+    // BOOL is defined as i32 in windows-sys.
+    let mut in_job: i32 = 0;
+    // SAFETY: GetCurrentProcess is a pseudo-handle (always valid); second
+    // arg null = "the job containing the calling process"; out param points
+    // to a valid stack i32.
+    let ok = unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut in_job) };
+    if ok == 0 {
+        return false;
+    }
+    if in_job == 0 {
+        return true; // not in any job — breakaway flag is a no-op, harmless
+    }
 
-        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-        let mut returned: u32 = 0;
-        // SAFETY: null hJob means "the job associated with the calling process".
-        let ok = QueryInformationJobObject(
+    // SAFETY: zeroed JOBOBJECT_EXTENDED_LIMIT_INFORMATION is the documented
+    // initialization pattern before passing as an out-buffer.
+    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    let mut returned: u32 = 0;
+    // SAFETY: null hJob = "the job associated with the calling process";
+    // the info pointer + advertised size match the JobObjectExtendedLimitInformation
+    // class; the returned-bytes out param is a valid stack u32.
+    let ok = unsafe {
+        QueryInformationJobObject(
             std::ptr::null_mut(),
             JobObjectExtendedLimitInformation,
             &mut info as *mut _ as *mut _,
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             &mut returned,
-        );
-        if ok == 0 {
-            return false;
-        }
-        (info.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_BREAKAWAY_OK) != 0
+        )
+    };
+    if ok == 0 {
+        return false;
     }
+    (info.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_BREAKAWAY_OK) != 0
 }
 
 /// Spawn the sidecar with explicit handle whitelisting.

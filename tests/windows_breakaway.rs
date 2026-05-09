@@ -18,10 +18,11 @@
 //!   4. TerminateJobObject — kills anything still in the job
 //!   5. Assert sidecar PID still alive
 
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::ptr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::CloseHandle;
+use windows_sys::Win32::Foundation::STILL_ACTIVE;
 use windows_sys::Win32::System::JobObjects::{
     CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
@@ -31,11 +32,15 @@ use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
-const STILL_ACTIVE: u32 = 259;
-
-fn create_named_job_with_limits(name: &str, limit_flags: u32) -> *mut std::ffi::c_void {
+/// Create a named Job Object with the given limit flags. Returns an
+/// `OwnedHandle` so the kernel handle is closed via `Drop` even if the
+/// caller panics before explicit cleanup.
+fn create_named_job_with_limits(name: &str, limit_flags: u32) -> OwnedHandle {
     let name_w: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-    // SAFETY: name pointer is valid for the duration of the call.
+
+    // SAFETY: name pointer is valid (and NUL-terminated) for the duration
+    // of the call; first arg null = default security; non-null return is
+    // a valid kernel handle that we own.
     let job = unsafe { CreateJobObjectW(ptr::null(), name_w.as_ptr()) };
     assert!(
         !job.is_null(),
@@ -43,8 +48,13 @@ fn create_named_job_with_limits(name: &str, limit_flags: u32) -> *mut std::ffi::
         std::io::Error::last_os_error()
     );
 
+    // SAFETY: zeroed JOBOBJECT_EXTENDED_LIMIT_INFORMATION is the documented
+    // way to initialize the struct before populating fields we care about.
     let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
     info.BasicLimitInformation.LimitFlags = limit_flags;
+
+    // SAFETY: `job` is a valid handle from the CreateJobObjectW above; the
+    // info pointer + size match the JobObjectExtendedLimitInformation class.
     let ret = unsafe {
         SetInformationJobObject(
             job,
@@ -59,11 +69,16 @@ fn create_named_job_with_limits(name: &str, limit_flags: u32) -> *mut std::ffi::
         std::io::Error::last_os_error()
     );
 
-    job
+    // SAFETY: `job` is a valid kernel HANDLE owned by this scope; transferring
+    // ownership to OwnedHandle so Drop calls CloseHandle exactly once.
+    unsafe { OwnedHandle::from_raw_handle(job as _) }
 }
 
+/// Returns true iff the process with `pid` is currently alive.
 fn process_alive(pid: u32) -> bool {
-    // SAFETY: OpenProcess is safe; null check guards the rest.
+    // SAFETY: OpenProcess/GetExitCodeProcess/CloseHandle are safe to call
+    // with these args; `h` is checked for null before further use; the
+    // handle is closed exactly once on the (single) success path.
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if h.is_null() {
@@ -71,9 +86,24 @@ fn process_alive(pid: u32) -> bool {
         }
         let mut code: u32 = 0;
         let ok = GetExitCodeProcess(h, &mut code);
-        CloseHandle(h);
-        ok != 0 && code == STILL_ACTIVE
+        windows_sys::Win32::Foundation::CloseHandle(h);
+        ok != 0 && code == STILL_ACTIVE as u32
     }
+}
+
+/// Wait up to `timeout` for `pid` to die. Returns `true` if it died within
+/// the window, `false` if it remained alive throughout. Polling is cheaper
+/// than a hard sleep and surfaces a regression as soon as the kill happens
+/// rather than waiting the full timeout.
+fn process_dies_within(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !process_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    false
 }
 
 /// Resolve a binary path: prefer runtime env var (so the test can be moved to
@@ -81,6 +111,14 @@ fn process_alive(pid: u32) -> bool {
 /// CARGO_BIN_EXE for local cargo-test runs.
 fn resolve_bin(env_key: &str, compile_time: &str) -> String {
     std::env::var(env_key).unwrap_or_else(|_| compile_time.to_string())
+}
+
+/// Force-kill a tender session, ignoring errors. Used in test teardown.
+fn force_kill_session(tender_bin: &str, home: &std::path::Path, session: &str) {
+    let _ = std::process::Command::new(tender_bin)
+        .env("HOME", home)
+        .args(["kill", session, "--force"])
+        .status();
 }
 
 #[test]
@@ -120,27 +158,23 @@ fn sidecar_survives_parent_job_kill() {
 
     // The kill: terminate the parent job. Without CREATE_BREAKAWAY_FROM_JOB,
     // the sidecar is in this job and dies here.
-    let ret = unsafe { TerminateJobObject(job, 1) };
+    // SAFETY: `job` is a valid OwnedHandle; exit code 1 is arbitrary.
+    let ret = unsafe { TerminateJobObject(job.as_raw_handle() as _, 1) };
     assert!(
         ret != 0,
         "TerminateJobObject failed: {}",
         std::io::Error::last_os_error()
     );
 
-    // Allow the kernel a moment to propagate the termination.
-    std::thread::sleep(Duration::from_millis(500));
+    // Poll for kernel termination propagation; surfaces a regression early.
+    let died = process_dies_within(sidecar_pid, Duration::from_secs(2));
 
-    let survived = process_alive(sidecar_pid);
-
-    // Always attempt cleanup of the test session before asserting.
-    let _ = std::process::Command::new(tender_bin)
-        .env("HOME", home.path())
-        .args(["kill", &session, "--force"])
-        .status();
-    unsafe { CloseHandle(job) };
+    // Cleanup before asserting (so a failure still tears the session down).
+    force_kill_session(&tender_bin, home.path(), &session);
+    drop(job); // close job handle explicitly for clarity (Drop would do this anyway)
 
     assert!(
-        survived,
+        !died,
         "sidecar pid {sidecar_pid} was killed by parent job termination — \
          CREATE_BREAKAWAY_FROM_JOB likely missing from sidecar spawn flags"
     );
@@ -177,12 +211,10 @@ fn sidecar_spawn_succeeds_when_parent_job_forbids_breakaway() {
     let succeeded = status.success();
 
     // Cleanup before asserting.
-    let _ = std::process::Command::new(&tender_bin)
-        .env("HOME", home.path())
-        .args(["kill", &session, "--force"])
-        .status();
-    unsafe { TerminateJobObject(job, 1) };
-    unsafe { CloseHandle(job) };
+    force_kill_session(&tender_bin, home.path(), &session);
+    // SAFETY: `job` is a valid OwnedHandle; exit code 1 is arbitrary.
+    unsafe { TerminateJobObject(job.as_raw_handle() as _, 1) };
+    drop(job); // close job handle (Drop would do this anyway).
 
     assert!(
         succeeded,
