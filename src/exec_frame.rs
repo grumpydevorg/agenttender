@@ -39,9 +39,15 @@ pub fn unix_frame(argv: &[String], token: &str) -> String {
 
 /// Build a framed command string for PowerShell.
 ///
-/// Each argv element is passed as a single-quoted PowerShell string literal and
-/// invoked through the call operator so spaces and metacharacters survive
-/// round-tripping through the shell.
+/// argv is joined with spaces and executed as raw PowerShell code (NOT as
+/// `& 'argv0' 'argv1' ...`). This makes arbitrary expressions work —
+/// variable assignment, pipelines, multi-statement snippets — at the cost
+/// of putting argv quoting on the caller. Same trade-off as DuckDB exec,
+/// where the SQL payload is treated as opaque text rather than tokenized.
+///
+/// For simple-cmdlet usage like `tender exec ps -- echo hello`, argv joins
+/// to `echo hello` which PowerShell evaluates as a positional cmdlet call —
+/// equivalent to the old `& 'echo' 'hello'` for the common case.
 ///
 /// Token must be hex-only (as produced by `generate_token`).
 pub fn powershell_frame(argv: &[String], token: &str) -> String {
@@ -49,18 +55,10 @@ pub fn powershell_frame(argv: &[String], token: &str) -> String {
         token.bytes().all(|b| b.is_ascii_hexdigit()),
         "token must be hex-only, got: {token}"
     );
-    let cmd = argv
-        .iter()
-        .map(|arg| powershell_quote(arg))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let payload = argv.join(" ");
     format!(
-        "$LASTEXITCODE = $null; & {cmd}; $__tender_s = if ($null -ne $LASTEXITCODE) {{ $LASTEXITCODE }} elseif ($?) {{ 0 }} else {{ 1 }}; Write-Output ('__TENDER_EXEC__ {token} ' + $__tender_s + ' ' + (Get-Location).Path)\n"
+        "$LASTEXITCODE = $null; {payload}; $__tender_s = if ($null -ne $LASTEXITCODE) {{ $LASTEXITCODE }} elseif ($?) {{ 0 }} else {{ 1 }}; Write-Output ('__TENDER_EXEC__ {token} ' + $__tender_s + ' ' + (Get-Location).Path)\n"
     )
-}
-
-fn powershell_quote(arg: &str) -> String {
-    format!("'{}'", arg.replace('\'', "''"))
 }
 
 /// Build a framed SQL exec string for injection into a DuckDB session.
@@ -168,7 +166,7 @@ mod tests {
     #[test]
     fn powershell_frame_simple_command() {
         let frame = powershell_frame(&["echo".into(), "hello".into()], "abc123");
-        assert!(frame.starts_with("$LASTEXITCODE = $null; & 'echo' 'hello'"));
+        assert!(frame.starts_with("$LASTEXITCODE = $null; echo hello;"));
         assert!(frame.contains("__TENDER_EXEC__ abc123"));
         assert!(frame.contains("$LASTEXITCODE"));
         assert!(frame.contains("(Get-Location).Path"));
@@ -176,18 +174,23 @@ mod tests {
     }
 
     #[test]
-    fn powershell_frame_quotes_special_chars() {
-        let frame = powershell_frame(
-            &[
-                "Write-Output".into(),
-                "a b".into(),
-                "$HOME".into(),
-                "it's `quoted`;".into(),
-            ],
-            "abc123",
-        );
-        assert!(frame.contains("& 'Write-Output' 'a b' '$HOME' 'it''s `quoted`;'"));
+    fn powershell_frame_runs_arbitrary_expression() {
+        // The new framing treats argv as raw PowerShell code. A
+        // single-statement expression must round-trip verbatim — no `&`
+        // prefix, no automatic single-quote wrapping (which is what made
+        // the previous frame fail on real PS expressions).
+        let frame = powershell_frame(&["$x = 1; $x + 1".into()], "abc123");
+        assert!(frame.starts_with("$LASTEXITCODE = $null; $x = 1; $x + 1;"));
+        assert!(frame.contains("__TENDER_EXEC__ abc123"));
         assert!(frame.ends_with('\n'));
+    }
+
+    #[test]
+    fn powershell_frame_runs_pipeline() {
+        let frame =
+            powershell_frame(&["1..3 | ForEach-Object { $_ * 10 }".into()], "abc123");
+        assert!(frame.contains("1..3 | ForEach-Object { $_ * 10 }"));
+        assert!(!frame.contains("'1..3"), "argv must not be wrapped in single quotes");
     }
 
     #[test]
