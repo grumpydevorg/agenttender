@@ -6,16 +6,17 @@ depends_on:
   - pty-session-mode
   - pty-automation
   - fleet-migration
-links: []
+links:
+  - ../backlog/hermes-block-runtime-integration.md
 ---
 
-# Claude Code Skill for Tender
+# Agent Block-Runtime Skill for Tender
 
-Write a Claude Code skill that teaches agents how to use Tender for supervised process execution.
+Write a skill that teaches hook-capable agents (Claude Code, Hermes, Codex, Cursor) how to use Tender as their supervised process execution substrate and event stream publisher.
 
 ## Goal
 
-Ship a first-party Claude Code skill that makes Tender the default agent workflow for:
+Ship a first-party skill that makes Tender the default runtime for any agent with lifecycle hooks:
 
 - long-running commands
 - background jobs
@@ -23,8 +24,11 @@ Ship a first-party Claude Code skill that makes Tender the default agent workflo
 - stdin push and persistent shell workflows
 - hook annotation with `wrap`
 - supervised script execution with `run`
+- structured event emission into Tender's block-runtime stream
 
-This is a documentation and workflow-packaging plan, not a product-code plan.
+**This is a documentation and workflow-packaging plan, not a product-code plan.**
+
+**Canonical reference:** See `../backlog/hermes-block-runtime-integration.md` for the shell-bridge pattern that connects any agent's `hooks:` config to `tender event emit`. The skill below uses Claude Code as the primary example but the same bridge pattern works for Hermes (post_tool_call, pre_llm_call, on_session_start/on_session_end), Cursor (via its extension hooks), or any future agent that writes hook JSON to a subprocess.
 
 ## First Slice Goal
 
