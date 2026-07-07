@@ -346,7 +346,7 @@ projection, and watch re-backed by the event log with its output shape
 frozen. Next planned slice is slice 3 (exec/wrap integration: `exec.*`
 kinds, `TENDER_BLOCK_ID`/`TENDER_PARENT_EVENT_ID`, `callback.finished`,
 `pty.control_changed`) — planned in
-[`01_event-exec-wrap-integration.md`](../active/01_event-exec-wrap-integration.md). Blocks/sugar beyond that, log
+[`00_event-exec-wrap-integration.md`](../active/00_event-exec-wrap-integration.md). Blocks/sugar beyond that, log
 lifecycle (slice 4), and reach follow (slice 5) remain unscheduled. The
 `--replace` events carry-forward is deliberately deferred and gated on a
 demonstrated consumer need (the judges split on it; shipped replace
