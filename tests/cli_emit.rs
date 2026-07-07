@@ -152,6 +152,99 @@ fn emit_parent_flag_sets_parent_id() {
     assert_eq!(event["parent_id"].as_str().unwrap(), parent);
 }
 
+// --- Slice 3: ambient causality — one chaining rule (plan scope 4) ---
+// block_id ← TENDER_BLOCK_ID; parent_id ← --parent > TENDER_PARENT_EVENT_ID
+// > TENDER_BLOCK_ID. Malformed env warns + is ignored.
+
+#[test]
+fn emit_defaults_block_and_parent_from_block_env() {
+    let root = TempDir::new().unwrap();
+    finished_session(&root, "s1");
+
+    let block = uuid::Uuid::now_v7().to_string();
+    tender(&root)
+        .env("TENDER_BLOCK_ID", &block)
+        .args(["emit", "--kind", "ci.step", "--session", "s1"])
+        .assert()
+        .success();
+
+    let events = read_events(&root, "s1");
+    let event = events.iter().find(|e| e["kind"] == "ci.step").unwrap();
+    assert_eq!(event["block_id"].as_str().unwrap(), block);
+    assert_eq!(
+        event["parent_id"].as_str().unwrap(),
+        block,
+        "parent falls back to the block when no closer parent exists"
+    );
+}
+
+#[test]
+fn emit_parent_event_env_beats_block_for_parent() {
+    let root = TempDir::new().unwrap();
+    finished_session(&root, "s1");
+
+    let block = uuid::Uuid::now_v7().to_string();
+    let parent_event = uuid::Uuid::now_v7().to_string();
+    tender(&root)
+        .env("TENDER_BLOCK_ID", &block)
+        .env("TENDER_PARENT_EVENT_ID", &parent_event)
+        .args(["emit", "--kind", "ci.step", "--session", "s1"])
+        .assert()
+        .success();
+
+    let events = read_events(&root, "s1");
+    let event = events.iter().find(|e| e["kind"] == "ci.step").unwrap();
+    assert_eq!(event["block_id"].as_str().unwrap(), block);
+    assert_eq!(event["parent_id"].as_str().unwrap(), parent_event);
+}
+
+#[test]
+fn emit_parent_flag_beats_env_chain() {
+    let root = TempDir::new().unwrap();
+    finished_session(&root, "s1");
+
+    let explicit = uuid::Uuid::now_v7().to_string();
+    tender(&root)
+        .env("TENDER_BLOCK_ID", &uuid::Uuid::now_v7().to_string())
+        .env("TENDER_PARENT_EVENT_ID", &uuid::Uuid::now_v7().to_string())
+        .args([
+            "emit",
+            "--kind",
+            "ci.step",
+            "--session",
+            "s1",
+            "--parent",
+            &explicit,
+        ])
+        .assert()
+        .success();
+
+    let events = read_events(&root, "s1");
+    let event = events.iter().find(|e| e["kind"] == "ci.step").unwrap();
+    assert_eq!(event["parent_id"].as_str().unwrap(), explicit);
+}
+
+#[test]
+fn emit_malformed_env_chain_warns_and_is_ignored() {
+    let root = TempDir::new().unwrap();
+    finished_session(&root, "s1");
+
+    tender(&root)
+        .env("TENDER_BLOCK_ID", "not-a-uuid")
+        .args(["emit", "--kind", "ci.step", "--session", "s1"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("TENDER_BLOCK_ID"));
+
+    let events = read_events(&root, "s1");
+    let event = events.iter().find(|e| e["kind"] == "ci.step").unwrap();
+    assert!(
+        event.get("block_id").is_none(),
+        "ambient garbage never lands in the envelope"
+    );
+    assert!(event.get("parent_id").is_none());
+}
+
 // --- Exit codes (spec §6): 0 ok, 2 usage, 3 no context, 5 not found, 6 invalid kind/source ---
 
 #[test]
