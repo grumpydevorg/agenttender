@@ -5,7 +5,7 @@ depends_on:
   - skill-claude-code
 links:
   - ../specs/tender-as-block-runtime.md
-  - ../active/01_event-emit-primitive.md
+  - ../completed/2026-07-07-event-emit-primitive.md
   - ../backlog/skill-claude-code.md
 ---
 
@@ -92,7 +92,7 @@ Layer 0: Agent          (Hermes owns)
 
 ## Required: Tender Side
 
-1. `tender event emit` ships (active: `01_event-emit-primitive.md`)
+1. `tender emit` shipped 2026-07-07 (completed: `2026-07-07-event-emit-primitive.md`)
 2. A running Tender daemon on the local host or `--host` path
 
 ## Required: Hermes Side

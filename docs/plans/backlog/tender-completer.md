@@ -119,7 +119,7 @@ pub struct CompletionContext {
 
 Sources (in priority order, deduped on rendering):
 1. **Signatures**: known flags/subcommands/positions for the current token.
-2. **History**: prior invocations matching prefix (from Tender's event stream — see [event-emit-primitive](../active/01_event-emit-primitive.md)).
+2. **History**: prior invocations matching prefix (from Tender's event stream — see [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md)).
 3. **Files / paths**: filesystem completion for positional file args.
 4. **AI fallback**: when classifier says `AI`, or when no shell suggestions matched.
 

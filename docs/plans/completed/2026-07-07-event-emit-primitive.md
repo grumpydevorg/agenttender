@@ -8,6 +8,12 @@ links:
 
 # Event Protocol Slice 1 — emit, lifecycle events, replay
 
+**Shipped 2026-07-07** via PR #4 (main@6992769). All acceptance criteria
+below are test-covered (`tests/acceptance_event_protocol.rs` and the
+`cli_events_*`/`cli_emit`/`events_log`/`model_event` suites). One grammar
+decision made during implementation: kind grammar shipped as the `Source`
+grammar **plus `_`** — see spec §1. Slices 2–5 remain unscheduled.
+
 Implements slice 1 of [specs/event-protocol.md](../specs/event-protocol.md)
 (the schema owner — all envelope/storage/ordering decisions live there, not
 here). Daemonless: every event is one O_APPEND JSONL line in the session's

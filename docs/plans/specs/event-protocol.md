@@ -5,7 +5,7 @@ links:
   - ./tender-agent-process-sitter.md
   - ./tender-as-block-runtime.md
   - ./persistence-architecture.md
-  - ../active/01_event-emit-primitive.md
+  - ../completed/2026-07-07-event-emit-primitive.md
   - ./ecosystem-landscape.md
 ---
 
@@ -51,7 +51,7 @@ from user input. Hard line cap **32 KiB**; `data` cap **16 KiB** inline.
 | `v` | int `1` | yes | Per-record envelope version. Additive fields never bump it. Consumers MUST ignore unknown fields and tolerate unknown `kind`s. |
 | `id` | UUIDv7 | yes | Event identity + dedupe key. |
 | `ts` | RFC 3339 µs `Z` | yes | Occurrence time, stamped by the writer at write time — never poll-detection time. |
-| `kind` | dotted string ≤128B | yes | Routing + payload-schema id. Grammar = shipped `Source` grammar (ids.rs). Prefixes `run. log. exec. session. pty. callback. segment. cursor. tender.` are reserved to kinds whose payload schema tender itself owns. Rejection is enforced at **argument validation of user-supplied kinds** — `emit --kind` and `wrap --event` exit 6 on a reserved prefix; tender's internal call sites (sidecar lifecycle, exec's own `exec.*` events, rotation's `segment.opened`) are the only writers of reserved kinds, and the append layer itself performs no kind filtering. `hook.` is deliberately **unreserved**: the conventional namespace for external lifecycle-hook events (Claude Code, CI), published via `wrap --event hook.*` or direct `emit`. Payload-breaking change ⇒ new kind (`exec.result.v2`), not a `v` bump. |
+| `kind` | dotted string ≤128B | yes | Routing + payload-schema id. Grammar = the shipped `Source` grammar (ids.rs) **plus `_`** — this spec's own worked examples use `hook.post_tool_use`, and slice 1 shipped that grammar (`Kind` in model/event.rs). Prefixes `run. log. exec. session. pty. callback. segment. cursor. tender.` are reserved to kinds whose payload schema tender itself owns. Rejection is enforced at **argument validation of user-supplied kinds** — `emit --kind` and `wrap --event` exit 6 on a reserved prefix; tender's internal call sites (sidecar lifecycle, exec's own `exec.*` events, rotation's `segment.opened`) are the only writers of reserved kinds, and the append layer itself performs no kind filtering. `hook.` is deliberately **unreserved**: the conventional namespace for external lifecycle-hook events (Claude Code, CI), published via `wrap --event hook.*` or direct `emit`. Payload-breaking change ⇒ new kind (`exec.result.v2`), not a `v` bump. |
 | `namespace` / `session` | strings | yes | Shipped validation; kept as two fields. |
 | `run_id` | UUIDv7 | yes | The supervised run (emitter's `TENDER_RUN_ID` or the sidecar's own). May name a prior generation after `--replace` — correct, not an error. |
 | `gen` | u64 | no | Generation, when known. |
@@ -290,7 +290,9 @@ carried-forward log with the old `run_id` — attributable history.
 ## 8. Remote & Windows
 
 `events` joins `REMOTE_COMMANDS` (read-only NDJSON over `ssh -T`, the
-shipped watch/log shape). Cursors are host-scoped; multi-host consumers
+shipped watch/log shape) in slice 5 — until then `events`, like `emit`, is
+local-only and `--host` rejects it (the CLI's local-only help text follows
+in the same slice). Cursors are host-scoped; multi-host consumers
 merge client-side by `ts`, honestly best-effort. `emit`/`wrap`/`exec`
 remain local-to-the-session's-host (children run that host's binary).
 Windows: the documented append contract (§3.2), `CREATE_NEW` races, no
@@ -329,9 +331,11 @@ Fallen-behind follower → cursor-gone 44, defined recovery.
 
 ## 11. Implementation
 
-Sliced in [`01_event-emit-primitive.md`](../active/01_event-emit-primitive.md)
-(slice 1 = envelope + append + sidecar WAL lifecycle events + emit + replay;
-follow/cursors, blocks/sugar, log lifecycle, and reach follow). The
+Sliced in
+[`2026-07-07-event-emit-primitive.md`](../completed/2026-07-07-event-emit-primitive.md)
+(slice 1 = envelope + append + sidecar WAL lifecycle events + emit + replay —
+**shipped 2026-07-07, PR #4**; follow/cursors, blocks/sugar, log lifecycle,
+and reach follow remain). The
 `--replace` events carry-forward is deliberately deferred and gated on a
 demonstrated consumer need (the judges split on it; shipped replace
 semantics stand until the block terminal demands cross-generation history —

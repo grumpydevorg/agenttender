@@ -25,7 +25,7 @@ Persist supervised process I/O (stdout, stderr, large event payloads, captured a
 
 Today Tender's session logs are byte streams on disk per session — flat, append-only, no cross-session deduplication, no integrity check, no way to ask "did this command produce the same output as last time?"
 
-Once events are first-class (see [event-emit-primitive](../active/01_event-emit-primitive.md)), the gap widens:
+Once events are first-class (see [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md)), the gap widens:
 
 - a single agent session can produce thousands of tool-call events, many with overlapping outputs
 - replays of identical commands produce identical bytes, but stored N times

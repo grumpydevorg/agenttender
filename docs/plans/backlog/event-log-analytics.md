@@ -23,7 +23,7 @@ Expose Tender's event stream as a queryable analytical store via DuckDB. Write J
 
 ## Why
 
-Once events are first-class (see [event-emit-primitive](../active/01_event-emit-primitive.md)), the question becomes: how does anyone *analyze* them? Real questions worth answering with one SQL query:
+Once events are first-class (see [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md)), the question becomes: how does anyone *analyze* them? Real questions worth answering with one SQL query:
 
 - Top 10 longest-running blocks today
 - Tool-call breakdown for one Claude Code session (most-used tools, total time per tool)
@@ -269,7 +269,7 @@ Each tool plays its strength; no transactional DB in the design.
 
 ## How this composes with adjacent plans
 
-- [event-emit-primitive](../active/01_event-emit-primitive.md) — produces the JSONL the analytics layer consumes. Schema agreed there is what we query here.
+- [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md) — produces the JSONL the analytics layer consumes. Schema agreed there is what we query here.
 - [content-addressable-storage](content-addressable-storage.md) — blob refs in events are queryable too; analytics can join against blob metadata.
 - [boundary-metadata](boundary-metadata.md) — `boundary_kind` / `boundary_label` columns on events make "what ran in containers vs hosts" a trivial GROUP BY.
 - [provenance-on-lifecycle-transitions](../completed/2026-04-16-provenance-on-lifecycle-transitions.md) — `transition_provenance.kind` (direct vs inferred) becomes another column for analytics: "what % of lifecycle conclusions are inferred vs observed?"
