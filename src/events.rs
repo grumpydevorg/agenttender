@@ -9,16 +9,28 @@
 //!   append.lock          # advisory lock file (POSIX only)
 //! ```
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use thiserror::Error;
 
+use crate::log::LogLine;
 use crate::model::dep_fail::DepFailReason;
 use crate::model::event::{DataRef, ENVELOPE_VERSION, Event, EventTimestamp, Kind, Uuid7};
 use crate::model::ids::{Namespace, RunId, SessionName, Source};
 use crate::model::state::{ExitReason, RunStatus};
+
+/// Poll interval for every follow surface — `tender events --follow`,
+/// `tender watch`, log follow. One constant, no configuration surface
+/// (spec §5.1; the disk is the buffer).
+pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Inline `data` cap; larger payloads spill to a blob (spec §1, §3.4).
 pub const MAX_INLINE_DATA_BYTES: usize = 16 * 1024;
@@ -433,6 +445,150 @@ pub fn read_session_events(session_dir: &Path) -> io::Result<ReadOutcome> {
 
     outcome.events.sort_by_key(merge_key);
     Ok(outcome)
+}
+
+/// Cursor token version (spec §5.2). Unknown versions are treated as
+/// cursor-gone by the CLI, never silently accepted.
+pub const CURSOR_VERSION: u32 = 1;
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum CursorError {
+    #[error("cursor is not valid URL-safe base64")]
+    Base64(#[from] base64::DecodeError),
+    #[error("cursor payload is not valid JSON")]
+    Json(#[from] serde_json::Error),
+    #[error("unknown cursor version {0} (this tender speaks v{CURSOR_VERSION})")]
+    UnknownVersion(u32),
+}
+
+/// Wire shape of a cursor token: `{"v":1,"s":[["<relpath>", offset], …]}`
+/// where relpaths are `<ns>/<session>/events/<seg>.jsonl` under the sessions
+/// root and offsets are byte positions after the last fully-consumed line.
+#[derive(Serialize, Deserialize)]
+struct CursorToken {
+    v: u32,
+    s: Vec<(String, u64)>,
+}
+
+/// Encode per-segment read offsets as an opaque URL-safe base64 token
+/// (spec §5.2). Deterministic: streams serialize in path order.
+#[must_use]
+pub fn encode_cursor(streams: &BTreeMap<String, u64>) -> String {
+    let token = CursorToken {
+        v: CURSOR_VERSION,
+        s: streams.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+    };
+    let json = serde_json::to_string(&token).expect("cursor token serialization cannot fail");
+    URL_SAFE_NO_PAD.encode(json)
+}
+
+/// Decode a cursor token back to per-segment offsets.
+///
+/// # Errors
+/// Returns `CursorError` for malformed base64/JSON or an unknown version —
+/// all mapped to cursor-gone (exit 44) at the CLI layer.
+pub fn decode_cursor(token: &str) -> Result<BTreeMap<String, u64>, CursorError> {
+    let bytes = URL_SAFE_NO_PAD.decode(token)?;
+    let parsed: CursorToken = serde_json::from_slice(&bytes)?;
+    if parsed.v != CURSOR_VERSION {
+        return Err(CursorError::UnknownVersion(parsed.v));
+    }
+    Ok(parsed.s.into_iter().collect())
+}
+
+/// One parsed event with the byte range of its line within its segment.
+/// `end` is the offset just past the line's `\n` — the resume position
+/// after consuming this record.
+#[derive(Debug)]
+pub struct SegmentRecord {
+    pub event: Event,
+    pub start: u64,
+    pub end: u64,
+}
+
+/// Result of one offset-aware segment read.
+#[derive(Debug)]
+pub struct SegmentReadOutcome {
+    pub records: Vec<SegmentRecord>,
+    /// Complete lines that failed to parse (torn writes, foreign fragments).
+    pub skipped: usize,
+    /// Offset after the last fully-consumed (`\n`-terminated) line. An
+    /// unterminated tail is a write in progress — never consumed, never
+    /// counted as a skip; the next poll retries from here.
+    pub consumed_to: u64,
+}
+
+/// Read complete lines of one segment starting at byte offset `from`
+/// (spec §5.1 follow tailing). Only `\n`-terminated lines are consumed,
+/// so a torn tail line under follow waits for its writer instead of being
+/// mis-counted as corrupt.
+///
+/// # Errors
+/// Returns IO errors from opening or reading the segment.
+pub fn read_segment_records(path: &Path, from: u64) -> io::Result<SegmentReadOutcome> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(from))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+
+    let mut outcome = SegmentReadOutcome {
+        records: Vec::new(),
+        skipped: 0,
+        consumed_to: from,
+    };
+    let mut line_start = 0usize;
+    while let Some(nl) = buf[line_start..].iter().position(|b| *b == b'\n') {
+        let line_end = line_start + nl;
+        let raw = &buf[line_start..line_end];
+        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+        if !raw.is_empty() {
+            let parsed = std::str::from_utf8(raw)
+                .ok()
+                .and_then(|line| serde_json::from_str::<Event>(line).ok());
+            match parsed {
+                Some(event) => outcome.records.push(SegmentRecord {
+                    event,
+                    start: from + line_start as u64,
+                    end: from + line_end as u64 + 1,
+                }),
+                None => outcome.skipped += 1,
+            }
+        }
+        outcome.consumed_to = from + line_end as u64 + 1;
+        line_start = line_end + 1;
+    }
+    Ok(outcome)
+}
+
+/// Project one `output.log` O/E line as a derived event (spec §5.1
+/// `--include-logs`): read-time only, no stored identity (`id`/`writer`/
+/// `seq`), `derived:true`, f64 seconds converted to the envelope ts format.
+/// Annotation (`A`) and unknown tags project to nothing.
+#[must_use]
+pub fn project_log_line(
+    line: &LogLine,
+    namespace: &str,
+    session: &str,
+    run_id: &str,
+) -> Option<serde_json::Value> {
+    let kind = match line.tag.as_str() {
+        "O" => "log.stdout",
+        "E" => "log.stderr",
+        _ => return None,
+    };
+    Some(serde_json::json!({
+        "kind": kind,
+        "ts": EventTimestamp::from_epoch_secs_f64(line.ts).to_string(),
+        "derived": true,
+        "namespace": namespace,
+        "session": session,
+        "run_id": run_id,
+        "source": "tender.sidecar",
+        "data": {"content": line.format_raw()},
+    }))
 }
 
 /// Append a fully-addressed event to `<tender-root>/lost+found/events.jsonl`

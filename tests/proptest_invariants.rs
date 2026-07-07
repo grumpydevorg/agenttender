@@ -87,7 +87,7 @@ proptest! {
         // Serialize as JSON, deserialize back
         let ts = serde_json::json!(secs.to_string());
         let parsed: EpochTimestamp = serde_json::from_value(ts).unwrap();
-        let serialized = serde_json::to_value(&parsed).unwrap();
+        let serialized = serde_json::to_value(parsed).unwrap();
         // EpochTimestamp serializes as string
         prop_assert_eq!(serialized.as_str().unwrap(), &secs.to_string());
     }
@@ -102,6 +102,25 @@ proptest! {
             serde_json::from_value(serde_json::json!(secs)).unwrap();
         // Both should produce the same value
         prop_assert_eq!(from_str, from_int);
+    }
+}
+
+// --- Cursor token roundtrip (spec §5.2) ---
+
+proptest! {
+    #[test]
+    fn cursor_token_roundtrip(
+        streams in proptest::collection::btree_map(
+            "[a-z0-9-]{1,12}/[a-z0-9-]{1,12}/events/[a-f0-9-]{1,36}\\.jsonl",
+            proptest::num::u64::ANY,
+            0..8,
+        ),
+    ) {
+        let token = tender::events::encode_cursor(&streams);
+        // Opaque but URL-safe: survives query strings and shell args.
+        prop_assert!(token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        let decoded = tender::events::decode_cursor(&token).unwrap();
+        prop_assert_eq!(decoded, streams);
     }
 }
 

@@ -1,8 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use tender::events::{POLL_INTERVAL, merge_key, read_segment_records};
 use tender::log::LogLine;
+use tender::model::event::Event;
 use tender::model::ids::Namespace;
 use tender::model::state::{ExitReason, RunStatus};
 use tender::session::{self, SessionRoot};
@@ -14,6 +17,13 @@ struct SessionWatcher {
     run_id: String,
     last_status: String,
     last_log_offset: u64,
+    /// When the session has an `events/` dir, the run-event stream is
+    /// derived from the event log (spec §5.3) — true timestamps,
+    /// un-collapsed transitions, real sources. Sessions without one keep
+    /// the legacy meta-diff synthesis. Output shape is frozen either way.
+    event_mode: bool,
+    /// Event-mode: segment file name → offset after last consumed line.
+    seg_offsets: BTreeMap<String, u64>,
 }
 
 /// Return epoch seconds with microsecond precision as an f64.
@@ -87,6 +97,66 @@ fn status_key(status: &RunStatus) -> String {
     serde_json::to_string(status).unwrap_or_default()
 }
 
+/// Read new `run.*` events from a session's segments, advancing per-segment
+/// offsets. New (lexicographically later) segments are picked up from their
+/// start. Returned in deterministic merge order (spec §4).
+fn read_new_run_events(session_dir: &Path, seg_offsets: &mut BTreeMap<String, u64>) -> Vec<Event> {
+    let events_dir = session_dir.join("events");
+    let Ok(read_dir) = std::fs::read_dir(&events_dir) else {
+        return Vec::new(); // wiped mid-replace — the next generation recreates it
+    };
+    let mut segments: Vec<PathBuf> = read_dir
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .collect();
+    segments.sort();
+
+    let mut events = Vec::new();
+    for segment in segments {
+        let Some(file_name) = segment.file_name().and_then(|f| f.to_str()) else {
+            continue;
+        };
+        let from = seg_offsets.get(file_name).copied().unwrap_or(0);
+        let Ok(outcome) = read_segment_records(&segment, from) else {
+            continue;
+        };
+        seg_offsets.insert(file_name.to_owned(), outcome.consumed_to);
+        events.extend(
+            outcome
+                .records
+                .into_iter()
+                .map(|r| r.event)
+                .filter(|e| e.kind.as_str().starts_with("run.")),
+        );
+    }
+    events.sort_by_key(merge_key);
+    events
+}
+
+/// Project one stored lifecycle event onto watch's frozen output shape:
+/// f64 ts (the event's occurrence time), kind "run"/name split, the
+/// event's real source, and the legacy data shape — the event log's
+/// `provenance` field is stripped at projection (spec §5.3).
+fn emit_projected_run_event(out: &mut impl Write, watcher: &SessionWatcher, event: &Event) -> bool {
+    let ts = event.ts.epoch_micros() as f64 / 1e6;
+    let mut data = event.data.clone().unwrap_or_else(|| serde_json::json!({}));
+    if let Some(object) = data.as_object_mut() {
+        object.remove("provenance");
+    }
+    emit_event(
+        out,
+        ts,
+        &watcher.namespace,
+        &watcher.session,
+        &event.run_id.to_string(),
+        event.source.as_str(),
+        "run",
+        event.kind.as_str(),
+        data,
+    )
+}
+
 /// Emit one NDJSON event line to stdout. Returns false if stdout is broken (pipe closed).
 #[allow(clippy::too_many_arguments)]
 fn emit_event(
@@ -151,6 +221,12 @@ pub fn cmd_watch(
         HashSet::new()
     };
 
+    // Sessions found on the first scan existed at invocation: they get
+    // watch's frozen current-state snapshot. Sessions discovered on later
+    // scans are news — with an event log, their whole history replays
+    // un-collapsed (spec §5.3).
+    let mut first_scan = true;
+
     loop {
         // Discover sessions.
         let sessions = session::list(&root, namespace).unwrap_or_default();
@@ -170,6 +246,7 @@ pub fn cmd_watch(
 
             let run_id_str = meta.run_id().to_string();
             let current_status_key = status_key(meta.status());
+            let has_event_log = session_dir.path().join("events").is_dir();
 
             if let Some(watcher) = watchers.get_mut(&key) {
                 // Detect run_id change (session replaced) — reset log offset
@@ -179,8 +256,27 @@ pub fn cmd_watch(
                     watcher.last_status = String::new(); // force status re-emit
                 }
 
-                // Check for status change.
-                if emit_events && watcher.last_status != current_status_key {
+                // An events dir appearing mid-watch (a legacy session
+                // replaced under a slice-2 binary): switch to the event
+                // log — it carries the new generation from its start.
+                if !watcher.event_mode && has_event_log {
+                    watcher.event_mode = true;
+                    watcher.seg_offsets = BTreeMap::new();
+                }
+
+                if watcher.event_mode {
+                    if emit_events {
+                        let events =
+                            read_new_run_events(session_dir.path(), &mut watcher.seg_offsets);
+                        watcher.last_status = current_status_key;
+                        for event in &events {
+                            if !emit_projected_run_event(&mut stdout, watcher, event) {
+                                return Ok(());
+                            }
+                        }
+                    }
+                } else if emit_events && watcher.last_status != current_status_key {
+                    // Legacy meta-diff synthesis, unchanged.
                     watcher.last_status = current_status_key;
                     let ts = now_epoch_secs();
                     if !emit_event(
@@ -201,16 +297,59 @@ pub fn cmd_watch(
                 // New session discovered.
                 let skip_initial = initial_sessions.contains(&key);
 
-                let watcher = SessionWatcher {
+                let mut watcher = SessionWatcher {
                     namespace: ns.as_str().to_owned(),
                     session: name.as_str().to_owned(),
                     run_id: run_id_str,
                     last_status: current_status_key,
                     last_log_offset: 0,
+                    event_mode: has_event_log,
+                    seg_offsets: BTreeMap::new(),
                 };
 
-                if !skip_initial && emit_events {
-                    // Emit initial snapshot of current state.
+                if watcher.event_mode {
+                    // Consume the log up to now either way — offsets must
+                    // sit past history so later polls stream only news.
+                    let history = read_new_run_events(session_dir.path(), &mut watcher.seg_offsets);
+                    if skip_initial || !emit_events {
+                        // --from-now (or logs-only): history skipped.
+                    } else if first_scan {
+                        // Pre-existing session: the frozen snapshot
+                        // contract — current state once, from the last
+                        // transition (its true timestamp and source).
+                        if let Some(event) = history.last() {
+                            if !emit_projected_run_event(&mut stdout, &watcher, event) {
+                                return Ok(());
+                            }
+                        } else {
+                            // Events dir with no lifecycle events yet:
+                            // legacy snapshot from meta.
+                            let ts = now_epoch_secs();
+                            if !emit_event(
+                                &mut stdout,
+                                ts,
+                                &watcher.namespace,
+                                &watcher.session,
+                                &watcher.run_id,
+                                "tender.sidecar",
+                                "run",
+                                run_event_name(meta.status()),
+                                run_event_data(meta.status()),
+                            ) {
+                                return Ok(());
+                            }
+                        }
+                    } else {
+                        // Discovered mid-watch: its whole history is news —
+                        // every transition, un-collapsed.
+                        for event in &history {
+                            if !emit_projected_run_event(&mut stdout, &watcher, event) {
+                                return Ok(());
+                            }
+                        }
+                    }
+                } else if !skip_initial && emit_events {
+                    // Legacy: emit initial snapshot of current state.
                     let ts = now_epoch_secs();
                     if !emit_event(
                         &mut stdout,
@@ -282,32 +421,31 @@ pub fn cmd_watch(
                                                         return Ok(());
                                                     }
                                                 }
-                                                "A" if emit_annotations => {
-                                                    if !parsed.content.is_null() {
-                                                        let ann = parsed.content.clone();
-                                                        let source = ann["source"]
-                                                            .as_str()
-                                                            .unwrap_or("unknown")
-                                                            .to_owned();
-                                                        let event_name = ann["event"]
-                                                            .as_str()
-                                                            .unwrap_or("unknown")
-                                                            .to_owned();
-                                                        let name =
-                                                            format!("annotation.{event_name}");
-                                                        if !emit_event(
-                                                            &mut stdout,
-                                                            ts_secs,
-                                                            &watcher.namespace,
-                                                            &watcher.session,
-                                                            &watcher.run_id,
-                                                            &source,
-                                                            "annotation",
-                                                            &name,
-                                                            ann,
-                                                        ) {
-                                                            return Ok(());
-                                                        }
+                                                "A" if emit_annotations
+                                                    && !parsed.content.is_null() =>
+                                                {
+                                                    let ann = parsed.content.clone();
+                                                    let source = ann["source"]
+                                                        .as_str()
+                                                        .unwrap_or("unknown")
+                                                        .to_owned();
+                                                    let event_name = ann["event"]
+                                                        .as_str()
+                                                        .unwrap_or("unknown")
+                                                        .to_owned();
+                                                    let name = format!("annotation.{event_name}");
+                                                    if !emit_event(
+                                                        &mut stdout,
+                                                        ts_secs,
+                                                        &watcher.namespace,
+                                                        &watcher.session,
+                                                        &watcher.run_id,
+                                                        &source,
+                                                        "annotation",
+                                                        &name,
+                                                        ann,
+                                                    ) {
+                                                        return Ok(());
                                                     }
                                                 }
                                                 _ => {} // skip if not emitting this type
@@ -330,6 +468,7 @@ pub fn cmd_watch(
             .collect();
         watchers.retain(|key, _| current_keys.contains(key));
 
-        std::thread::sleep(Duration::from_millis(100));
+        first_scan = false;
+        std::thread::sleep(POLL_INTERVAL);
     }
 }
