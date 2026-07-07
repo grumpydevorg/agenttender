@@ -10,7 +10,7 @@ use anyhow::Context;
 
 use crate::events::{self, EventDraft, EventWriter};
 use crate::model::dep_fail::DepFailReason;
-use crate::model::event::Uuid7;
+use crate::model::event::{Kind, Uuid7};
 use crate::model::ids::{EpochTimestamp, Generation, Namespace, RunId, SessionName, Source};
 use crate::model::meta::Meta;
 use crate::model::pty::PtyMeta;
@@ -389,6 +389,30 @@ impl LifecycleEvents {
             meta.add_warning(format!("event log append failed: {e}"));
             self.salvage_to_lost_found(draft);
         }
+    }
+
+    /// Append a non-lifecycle sidecar fact (`callback.finished`, spec §1)
+    /// through the same writer, so `seq` stays contiguous after the
+    /// terminal transition. Best-effort by design (plan slice 3): no
+    /// salvage, no meta warning — these are not terminal transitions.
+    fn append_fact(&mut self, kind: &str, data: serde_json::Value) {
+        let Ok(kind) = Kind::new(kind) else {
+            return;
+        };
+        let draft = EventDraft {
+            id: None,
+            kind,
+            namespace: self.namespace.clone(),
+            session: self.session.clone(),
+            run_id: self.run_id,
+            generation: Some(self.generation.as_u64()),
+            source: Source::trusted("tender.sidecar").expect("tender.sidecar is grammatical"),
+            block_id: None,
+            parent_id: None,
+            data: Some(data),
+            preview: None,
+        };
+        let _ = self.writer.append(draft, false);
     }
 
     /// Last-resort preservation when the session's event log is unwritable:
@@ -864,6 +888,9 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
                     })
                 }
             };
+            // The durable per-callback fact (plan scope 5): emitted as each
+            // callback finishes, same record shape as the batch file.
+            lifecycle.append_fact("callback.finished", record.clone());
             callback_results.push(record);
         }
 

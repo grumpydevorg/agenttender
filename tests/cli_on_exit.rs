@@ -247,3 +247,67 @@ fn on_exit_multiple_callbacks_both_run() {
         "second marker file should exist: {marker_b:?}"
     );
 }
+
+// --- Slice 3: callback.finished events (plan scope 5) ---
+
+/// Each on-exit callback lands one callback.finished event through the
+/// sidecar's lifecycle writer: same writer id as the run events, seq
+/// contiguous after the terminal transition, status vocabulary verbatim.
+#[test]
+fn on_exit_callbacks_emit_finished_events() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+
+    let marker = root.path().join("cb_event_marker");
+    let out = tender(&root)
+        .args([
+            "start",
+            "on-exit-events",
+            "--on-exit",
+            &touch_cmd(&marker),
+            "--on-exit",
+            "/nonexistent/binary",
+            "--",
+            "echo",
+            "done",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    wait_for_callbacks(&root, "on-exit-events");
+
+    let events = harness::read_events(&root, "on-exit-events");
+    let exited = events
+        .iter()
+        .find(|e| e["kind"] == "run.exited")
+        .expect("terminal lifecycle event");
+    let finished: Vec<_> = events
+        .iter()
+        .filter(|e| e["kind"] == "callback.finished")
+        .collect();
+    assert_eq!(finished.len(), 2, "one event per configured callback");
+
+    assert_eq!(finished[0]["data"]["index"], 0);
+    assert_eq!(finished[0]["data"]["status"], "ok");
+    assert_eq!(finished[1]["data"]["index"], 1);
+    assert_eq!(finished[1]["data"]["status"], "spawn_failed");
+    assert!(finished[1]["data"]["error"].is_string());
+
+    for (offset, event) in finished.iter().enumerate() {
+        assert_eq!(event["source"], "tender.sidecar");
+        assert_eq!(
+            event["writer"], exited["writer"],
+            "lifecycle writer identity reused"
+        );
+        assert_eq!(
+            event["seq"].as_u64().unwrap(),
+            exited["seq"].as_u64().unwrap() + 1 + offset as u64,
+            "seq contiguous after the terminal transition"
+        );
+    }
+
+    // The batch record file is unchanged in shape.
+    let record = read_callback_record(&root, "on-exit-events").expect("batch record");
+    assert_eq!(record["callbacks"].as_array().unwrap().len(), 2);
+}
