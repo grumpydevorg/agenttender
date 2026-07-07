@@ -225,3 +225,49 @@ fn crash_before_terminal_event_leaves_neither() {
         serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
     assert_eq!(meta["status"], "Running");
 }
+
+/// An unwritable event log must not eat the terminal record: the append
+/// failure is salvaged to ~/.tender/lost+found/events.jsonl and recorded as
+/// a meta warning, while supervision still writes terminal meta.
+#[test]
+fn unwritable_event_log_salvages_terminal_event_to_lost_found() {
+    let root = TempDir::new().unwrap();
+    tender(&root)
+        .args(["start", "s1", "--", "sleep", "2"])
+        .assert()
+        .success();
+    wait_running(&root, "s1");
+
+    // Sabotage: replace the events dir with a regular file so every further
+    // append fails while meta.json stays writable.
+    let session_dir = root.path().join(".tender/sessions/default/s1");
+    std::fs::remove_dir_all(session_dir.join("events")).unwrap();
+    std::fs::write(session_dir.join("events"), "not a dir").unwrap();
+
+    let meta = wait_terminal(&root, "s1");
+    assert_eq!(meta["status"], "Exited");
+    assert_eq!(meta["reason"], "ExitedOk");
+    let warnings = meta["warnings"].as_array().expect("append failure warned");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap_or("").contains("event log append failed")),
+        "warnings: {warnings:?}"
+    );
+
+    // The terminal record survived in lost+found, fully addressed.
+    let lf = root.path().join(".tender/lost+found/events.jsonl");
+    let content = std::fs::read_to_string(&lf).expect("lost+found log exists");
+    let salvaged: Vec<serde_json::Value> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let exited = salvaged
+        .iter()
+        .find(|e| e["kind"] == "run.exited")
+        .expect("terminal event salvaged");
+    assert_eq!(exited["session"], "s1");
+    assert_eq!(exited["run_id"], meta["run_id"]);
+    assert_eq!(exited["data"]["reason"], "ExitedOk");
+    assert_eq!(exited["source"], "tender.sidecar");
+}

@@ -260,6 +260,32 @@ fn two_concurrent_writers_thousand_events_each_no_torn_lines() {
 // --- Read path (spec §5.1 replay mechanics) ---
 
 #[test]
+fn read_resyncs_past_non_utf8_fragments() {
+    // JSONL is self-synchronizing at the byte level (spec §3.2 defense in
+    // depth): a corrupt non-UTF8 fragment is a counted skip, never a fatal
+    // read error for the whole replay.
+    let tmp = TempDir::new().unwrap();
+    let session_dir = tmp.path().join("s1");
+    std::fs::create_dir_all(&session_dir).unwrap();
+
+    let mut writer = EventWriter::new(&session_dir);
+    for i in 0..2 {
+        writer
+            .append(draft("build.step", serde_json::json!({"i": i})), false)
+            .unwrap();
+    }
+
+    let segs = segment_files(&session_dir);
+    let mut content = std::fs::read(&segs[0]).unwrap();
+    content.extend_from_slice(&[0xff, 0xfe, 0x00, b'\n']); // foreign binary fragment
+    std::fs::write(&segs[0], &content).unwrap();
+
+    let outcome = read_session_events(&session_dir).expect("non-UTF8 line is not fatal");
+    assert_eq!(outcome.events.len(), 2, "valid events survive");
+    assert_eq!(outcome.skipped, 1, "binary fragment counted as a skip");
+}
+
+#[test]
 fn read_merges_segments_and_counts_parse_skips() {
     let tmp = TempDir::new().unwrap();
     let session_dir = tmp.path().join("s1");

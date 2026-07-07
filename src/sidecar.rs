@@ -334,9 +334,14 @@ fn wait_for_dependencies(
 /// Writer identity is the run id; `seq` is contiguous across the run.
 ///
 /// WAL order (spec §3.6): call `emit` after the meta transition but BEFORE
-/// `write_meta_atomic`, with `durable: true` for terminal transitions —
-/// terminal meta then implies a durably logged terminal event.
+/// `write_meta_atomic`, with `durable: true` for terminal transitions. This
+/// is an ORDERING guarantee against the crash window — a sidecar that dies
+/// between the two writes leaves the event, never the meta. It is not an
+/// IO-failure guarantee: if the append itself fails, supervision continues
+/// (meta stays the current-state authority), the failure is recorded as a
+/// meta warning, and the record is salvaged to lost+found.
 struct LifecycleEvents {
+    session_dir: PathBuf,
     writer: EventWriter,
     namespace: Namespace,
     session: SessionName,
@@ -353,6 +358,7 @@ impl LifecycleEvents {
         generation: Generation,
     ) -> Self {
         Self {
+            session_dir: session_dir.to_path_buf(),
             writer: EventWriter::with_writer(session_dir, Uuid7::from(run_id)),
             namespace: namespace.clone(),
             session: session.clone(),
@@ -362,8 +368,9 @@ impl LifecycleEvents {
     }
 
     /// Append the lifecycle event for meta's CURRENT status. Never fails the
-    /// run: an append failure becomes a meta warning — supervision must not
-    /// die because the history log is unwritable.
+    /// run: an append failure becomes a meta warning and the record is
+    /// salvaged to lost+found — supervision must not die, and the history
+    /// record must not silently vanish, because the event log is unwritable.
     fn emit(&mut self, meta: &mut Meta, durable: bool) {
         let draft = EventDraft {
             kind: events::lifecycle_kind(meta.status()),
@@ -376,9 +383,26 @@ impl LifecycleEvents {
             parent_id: None,
             data: Some(events::lifecycle_data(meta.status(), "direct")),
         };
-        if let Err(e) = self.writer.append(draft, durable) {
+        if let Err(e) = self.writer.append(draft.clone(), durable) {
             meta.add_warning(format!("event log append failed: {e}"));
+            self.salvage_to_lost_found(draft);
         }
+    }
+
+    /// Last-resort preservation when the session's event log is unwritable:
+    /// the fully-addressed record lands in `~/.tender/lost+found/events.jsonl`
+    /// (spec §7 machinery) instead of vanishing. Best-effort by design.
+    fn salvage_to_lost_found(&self, draft: EventDraft) {
+        let Some(tender_root) = self
+            .session_dir
+            .ancestors()
+            .find(|p| p.ends_with("sessions"))
+            .and_then(Path::parent)
+        else {
+            return;
+        };
+        let event = events::stamp_orphan_event(draft);
+        let _ = events::append_lost_found(tender_root, &event);
     }
 }
 

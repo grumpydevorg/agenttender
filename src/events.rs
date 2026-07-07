@@ -412,14 +412,21 @@ pub fn read_session_events(session_dir: &Path) -> io::Result<ReadOutcome> {
     segments.sort();
 
     for segment in segments {
-        let content = std::fs::read_to_string(&segment)?;
-        for line in content.lines() {
-            if line.is_empty() {
+        // Byte-level resync: JSONL is self-synchronizing (spec §3.2 defense
+        // in depth). A non-UTF8 fragment is a counted skip like any other
+        // unparseable line — never a fatal error for the whole replay.
+        let content = std::fs::read(&segment)?;
+        for raw_line in content.split(|b| *b == b'\n') {
+            let raw_line = raw_line.strip_suffix(b"\r").unwrap_or(raw_line);
+            if raw_line.is_empty() {
                 continue;
             }
-            match serde_json::from_str::<Event>(line) {
-                Ok(event) => outcome.events.push(event),
-                Err(_) => outcome.skipped += 1,
+            let parsed = std::str::from_utf8(raw_line)
+                .ok()
+                .and_then(|line| serde_json::from_str::<Event>(line).ok());
+            match parsed {
+                Some(event) => outcome.events.push(event),
+                None => outcome.skipped += 1,
             }
         }
     }

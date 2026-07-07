@@ -69,6 +69,30 @@ fn wait_pid_dead(pid: i32) {
     }
 }
 
+/// Poll `tender status` until it reports a terminal state, or panic after
+/// 10 s. Needed after crash injection: the aborting sidecar releases the
+/// session lock only when the process finishes dying (macOS crash reporting
+/// can delay that well past the fsync'd event append), and reconciliation
+/// deliberately no-ops while the lock is held.
+fn poll_status_until_terminal(root: &TempDir, session: &str) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let output = tender(root).args(["status", session]).output().unwrap();
+        assert!(output.status.success());
+        let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        if status["status"]
+            .as_str()
+            .is_some_and(|s| s != "Starting" && s != "Running")
+        {
+            return status;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("timed out waiting for {session} to reconcile to a terminal state");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// Poll until the session's event log contains `kind`, or panic after 10 s.
 fn wait_for_event_kind(root: &TempDir, session: &str, kind: &str) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -143,9 +167,7 @@ fn crash_between_event_and_meta_heals_meta_from_event_log() {
         .success();
     wait_for_event_kind(&root, "s1", "run.exited");
 
-    let output = tender(&root).args(["status", "s1"]).output().unwrap();
-    assert!(output.status.success());
-    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let status = poll_status_until_terminal(&root, "s1");
 
     // Healed to the sidecar's recorded outcome, not inferred as lost.
     // (meta.json spells the exit code "code"; the event data spells it
@@ -180,9 +202,11 @@ fn wait_exit_code_reflects_healed_state() {
         .success();
     wait_for_event_kind(&root, "s1", "run.exited");
 
-    // ExitedError → 42 (wait's non-zero-child-exit code), not 3 (sidecar lost).
+    // ExitedError → 42 (wait's non-zero-child-exit code), not 3 (sidecar
+    // lost). wait polls internally, so it tolerates the lock-release lag;
+    // the generous timeout covers slow crash teardown under load.
     tender(&root)
-        .args(["wait", "--timeout", "5", "s1"])
+        .args(["wait", "--timeout", "10", "s1"])
         .assert()
         .code(42);
 }
