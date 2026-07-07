@@ -138,16 +138,9 @@ fn read_new_run_events(session_dir: &Path, seg_offsets: &mut BTreeMap<String, u6
 /// f64 ts (the event's occurrence time), kind "run"/name split, the
 /// event's real source, and the legacy data shape — the event log's
 /// `provenance` field is stripped at projection (spec §5.3).
-fn emit_projected_run_event(
-    out: &mut impl Write,
-    watcher: &SessionWatcher,
-    event: &Event,
-) -> bool {
+fn emit_projected_run_event(out: &mut impl Write, watcher: &SessionWatcher, event: &Event) -> bool {
     let ts = event.ts.epoch_micros() as f64 / 1e6;
-    let mut data = event
-        .data
-        .clone()
-        .unwrap_or_else(|| serde_json::json!({}));
+    let mut data = event.data.clone().unwrap_or_else(|| serde_json::json!({}));
     if let Some(object) = data.as_object_mut() {
         object.remove("provenance");
     }
@@ -317,8 +310,7 @@ pub fn cmd_watch(
                 if watcher.event_mode {
                     // Consume the log up to now either way — offsets must
                     // sit past history so later polls stream only news.
-                    let history =
-                        read_new_run_events(session_dir.path(), &mut watcher.seg_offsets);
+                    let history = read_new_run_events(session_dir.path(), &mut watcher.seg_offsets);
                     if skip_initial || !emit_events {
                         // --from-now (or logs-only): history skipped.
                     } else if first_scan {
@@ -429,32 +421,31 @@ pub fn cmd_watch(
                                                         return Ok(());
                                                     }
                                                 }
-                                                "A" if emit_annotations => {
-                                                    if !parsed.content.is_null() {
-                                                        let ann = parsed.content.clone();
-                                                        let source = ann["source"]
-                                                            .as_str()
-                                                            .unwrap_or("unknown")
-                                                            .to_owned();
-                                                        let event_name = ann["event"]
-                                                            .as_str()
-                                                            .unwrap_or("unknown")
-                                                            .to_owned();
-                                                        let name =
-                                                            format!("annotation.{event_name}");
-                                                        if !emit_event(
-                                                            &mut stdout,
-                                                            ts_secs,
-                                                            &watcher.namespace,
-                                                            &watcher.session,
-                                                            &watcher.run_id,
-                                                            &source,
-                                                            "annotation",
-                                                            &name,
-                                                            ann,
-                                                        ) {
-                                                            return Ok(());
-                                                        }
+                                                "A" if emit_annotations
+                                                    && !parsed.content.is_null() =>
+                                                {
+                                                    let ann = parsed.content.clone();
+                                                    let source = ann["source"]
+                                                        .as_str()
+                                                        .unwrap_or("unknown")
+                                                        .to_owned();
+                                                    let event_name = ann["event"]
+                                                        .as_str()
+                                                        .unwrap_or("unknown")
+                                                        .to_owned();
+                                                    let name = format!("annotation.{event_name}");
+                                                    if !emit_event(
+                                                        &mut stdout,
+                                                        ts_secs,
+                                                        &watcher.namespace,
+                                                        &watcher.session,
+                                                        &watcher.run_id,
+                                                        &source,
+                                                        "annotation",
+                                                        &name,
+                                                        ann,
+                                                    ) {
+                                                        return Ok(());
                                                     }
                                                 }
                                                 _ => {} // skip if not emitting this type
