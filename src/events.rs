@@ -452,6 +452,7 @@ pub fn read_session_events(session_dir: &Path) -> io::Result<ReadOutcome> {
 pub const CURSOR_VERSION: u32 = 1;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum CursorError {
     #[error("cursor is not valid URL-safe base64")]
     Base64(#[from] base64::DecodeError),

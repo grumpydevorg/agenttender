@@ -105,6 +105,25 @@ proptest! {
     }
 }
 
+// --- Cursor token roundtrip (spec §5.2) ---
+
+proptest! {
+    #[test]
+    fn cursor_token_roundtrip(
+        streams in proptest::collection::btree_map(
+            "[a-z0-9-]{1,12}/[a-z0-9-]{1,12}/events/[a-f0-9-]{1,36}\\.jsonl",
+            proptest::num::u64::ANY,
+            0..8,
+        ),
+    ) {
+        let token = tender::events::encode_cursor(&streams);
+        // Opaque but URL-safe: survives query strings and shell args.
+        prop_assert!(token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        let decoded = tender::events::decode_cursor(&token).unwrap();
+        prop_assert_eq!(decoded, streams);
+    }
+}
+
 // --- SessionName validation ---
 
 proptest! {
