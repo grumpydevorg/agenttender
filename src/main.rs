@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use tender::model::event::EventTimestamp;
 use tender::model::ids::{Namespace, Source};
 
 mod commands;
@@ -272,6 +273,28 @@ enum Commands {
         /// Source prefix filter (e.g. "claude."); repeatable
         #[arg(long = "source")]
         sources: Vec<String>,
+        /// After replay, poll for new events (100ms; Ctrl-C to stop)
+        #[arg(long)]
+        follow: bool,
+        /// Skip history of sessions that exist now (later-discovered
+        /// sessions still replay from their start)
+        #[arg(long = "from-now", group = "warm_start")]
+        from_now: bool,
+        /// Resume exactly from a cursor token (from a --cursors bookmark)
+        #[arg(long = "from-cursor", group = "warm_start")]
+        from_cursor: Option<String>,
+        /// Replay only events with ts >= this RFC 3339 UTC timestamp
+        #[arg(long, group = "warm_start", value_parser = EventTimestamp::parse_flexible)]
+        since: Option<EventTimestamp>,
+        /// Replay only the last N events by merge order
+        #[arg(long, group = "warm_start")]
+        last: Option<usize>,
+        /// Interleave resumable cursor.bookmark records on stdout
+        #[arg(long)]
+        cursors: bool,
+        /// Merge output.log lines in as derived log.stdout/log.stderr records
+        #[arg(long = "include-logs")]
+        include_logs: bool,
         /// Exit 65 when unparseable lines were skipped
         #[arg(long)]
         strict: bool,
@@ -709,12 +732,26 @@ fn main() {
             sessions,
             kinds,
             sources,
+            follow,
+            from_now,
+            from_cursor,
+            since,
+            last,
+            cursors,
+            include_logs,
             strict,
         } => commands::cmd_events(commands::EventsOptions {
             namespace,
             sessions,
             kinds,
             sources,
+            follow,
+            from_now,
+            from_cursor,
+            since,
+            last,
+            cursors,
+            include_logs,
             strict,
         }),
         Commands::Emit {

@@ -137,6 +137,47 @@ impl EventTimestamp {
     pub fn epoch_secs(&self) -> u64 {
         self.secs
     }
+
+    #[must_use]
+    pub fn epoch_micros(&self) -> u64 {
+        self.secs * 1_000_000 + u64::from(self.micros)
+    }
+
+    /// Convert `output.log`'s f64 epoch-seconds to the envelope timestamp
+    /// (spec §5.1 log projection). Rounded to the nearest microsecond so
+    /// f64 representation noise below 1 µs never shifts the value.
+    #[must_use]
+    pub fn from_epoch_secs_f64(secs: f64) -> Self {
+        let total_micros = (secs * 1e6).round().max(0.0) as u64;
+        Self {
+            secs: total_micros / 1_000_000,
+            micros: (total_micros % 1_000_000) as u32,
+        }
+    }
+
+    /// Parse a user-supplied RFC 3339 UTC timestamp (`--since`): `Z` suffix
+    /// required, 0–9 fractional digits accepted and normalized to the strict
+    /// 6-digit envelope form (extra digits truncate).
+    ///
+    /// # Errors
+    /// Returns `TimestampParseError` for non-UTC offsets or malformed input.
+    pub fn parse_flexible(s: &str) -> Result<Self, TimestampParseError> {
+        let err = || TimestampParseError(s.to_owned());
+        let rest = s.strip_suffix('Z').ok_or_else(err)?;
+        let (secs_part, fraction) = match rest.split_once('.') {
+            Some((sp, f)) => (sp, f),
+            None => (rest, ""),
+        };
+        if fraction.len() > 9 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(err());
+        }
+        let mut micros = *b"000000";
+        for (slot, b) in micros.iter_mut().zip(fraction.bytes()) {
+            *slot = b;
+        }
+        let micros = std::str::from_utf8(&micros).expect("digits are ASCII");
+        format!("{secs_part}.{micros}Z").parse()
+    }
 }
 
 /// Days since 1970-01-01 → (year, month, day). Hinnant's civil_from_days.
