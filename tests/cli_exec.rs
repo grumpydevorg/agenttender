@@ -1408,7 +1408,7 @@ fn exec_payload_sees_block_id_env() {
         .assert();
 }
 
-// --- Slice 2 (00_remote-exec-host-parity.md): exec --frame-from-stdin ---
+// --- Slice 2 (2026-07-08-remote-exec-host-parity.md): exec --frame-from-stdin ---
 
 /// A valid v1 frame on stdin runs exactly like the argv form: same
 /// envelope, same exit code, session named by the frame.

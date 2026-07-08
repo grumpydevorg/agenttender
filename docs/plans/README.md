@@ -8,9 +8,8 @@ Convention: see [CONVENTIONS.md](CONVENTIONS.md)
 
 Filename prefix sets priority. `ls active/` is the ordered queue.
 
-| ID | File | Depends On |
-|----|------|------------|
-| remote-exec-host-parity | `00_remote-exec-host-parity.md` | — |
+_Empty — no active plan. Promote a backlog item (give it a numbered
+prefix) to queue the next unit of work._
 
 ## backlog/ — Future Work
 
@@ -31,7 +30,7 @@ Filename prefix sets priority. `ls active/` is the ordered queue.
 
 ## completed/
 
-39 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
+40 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
 
 ## specs/
 

@@ -499,7 +499,7 @@ fn host_flag_forwards_exec_target() {
     );
 }
 
-// -- Slice 1 (00_remote-exec-host-parity.md): local-only verbs exit 2
+// -- Slice 1 (2026-07-08-remote-exec-host-parity.md): local-only verbs exit 2
 //    with a pre-filled ssh fallback, before any connection --
 
 /// A poison ssh shim: running it is the failure the slice exists to
@@ -671,7 +671,7 @@ fn host_events_keeps_generic_rejection() {
     );
 }
 
-// -- Slice 2 (00_remote-exec-host-parity.md): remote exec via frame-from-stdin --
+// -- Slice 2 (2026-07-08-remote-exec-host-parity.md): remote exec via frame-from-stdin --
 
 /// A fake ssh that drops everything up to and including the "tender"
 /// argv token, then executes the real tender binary with the remainder —
