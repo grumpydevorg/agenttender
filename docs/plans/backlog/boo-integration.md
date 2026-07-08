@@ -6,7 +6,7 @@ links:
   - ../specs/tender-as-block-runtime.md
   - ./pty-automation.md
   - ./egui-block-terminal.md
-  - ../active/01_remote-exec-host-parity.md
+  - ../active/00_remote-exec-host-parity.md
 ---
 
 # boo Integration — compose with, learn from, route around
@@ -97,7 +97,7 @@ file (same trick as the shipped PowerShell side-channel).
 ### 4. tender as boo's remote transport
 
 boo has no remote story. Once remote exec parity ships
-(`01_remote-exec-host-parity`), `tender --host <h> exec -- boo peek … --json`
+(`00_remote-exec-host-parity`), `tender --host <h> exec -- boo peek … --json`
 gives quoting-safe structured remote screen reads. Tender's remote lane
 becomes a distribution advantage over boo rather than a parallel effort.
 

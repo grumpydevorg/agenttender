@@ -258,7 +258,7 @@ fn duckdb_reads_events_as_typed_rows() {
     assert!(rows[0]["run_id"].is_string());
 }
 
-// --- Slice 3 acceptance (docs/plans/active/00_event-exec-wrap-integration.md) ---
+// --- Slice 3 acceptance (docs/plans/completed/2026-07-08-event-exec-wrap-integration.md) ---
 
 /// An exec payload running `tender emit` lands in the exec block (frame
 /// env propagation), and after the block the session shell is unpolluted —

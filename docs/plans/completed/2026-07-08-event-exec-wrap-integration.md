@@ -3,12 +3,51 @@ id: event-exec-wrap-integration
 depends_on: []
 links:
   - ../specs/event-protocol.md
-  - ../completed/2026-07-07-event-emit-primitive.md
-  - ../completed/2026-07-07-event-follow-cursors.md
+  - 2026-07-07-event-emit-primitive.md
+  - 2026-07-07-event-follow-cursors.md
   - ../backlog/boo-integration.md
 ---
 
 # Event Protocol Slice 3 — exec/wrap integration, ambient causality
+
+**Shipped 2026-07-08** via PR #10 (main@7c91532). All acceptance criteria
+below are test-covered (`cli_exec`, `cli_wrap`, `cli_emit`, `cli_on_exit`,
+`cli_pty`, `events_log`, and the slice-3 causal-tree/spill/env-unset
+scenarios in `acceptance_event_protocol` — 563 tests green, 535 baseline
++ 28 new; best-effort proven via read-only `events/` dirs). Shipped as
+planned for `emit`, `exec`, and the sidecar facts (`callback.finished`,
+`pty.control_changed`), with **one intentional compatibility carve-out**
+on wrap's `--event` validation — see the shipped-deviation section below.
+
+## Shipped deviation — wrap `--event` compatibility carve-out
+
+The plan pinned `--event` validation via `Kind::new_user` AND "cli_wrap
+passes unmodified" (acceptance criteria) — but the kind grammar requires
+a dotted name and wrap's pre-existing surface uses dotless names
+(`test-event`, `pre-tool-use`), so strict validation could not satisfy
+both pins. Shipped behavior:
+
+- **Dotted protocol-valid kinds dual-write**: stored event (spec example
+  (b) data shape) + A-line linked by `event_id`/`block_id`, child env
+  chain set.
+- **Reserved kinds still exit 6 before any side effect** — child never
+  spawned, nothing written anywhere. Precisely reserved *kinds*: names
+  that parse as kinds under a reserved prefix. A grammar-invalid name is
+  not a kind and takes the legacy path below (it can never produce a
+  stored event, so the reserved namespace is not at risk).
+- **Legacy dotless names keep the exact pre-slice-3 behavior**:
+  annotation-only — no stored event, no child env chain — plus a stderr
+  notice, which fires on every legacy invocation (deliberate migration
+  nudge; the notice text is not a pinned surface).
+
+Consumer caveat (inherent to pre-minting + best-effort, accepted): wrap
+exports `TENDER_PARENT_EVENT_ID` — the id of the event it *will* write —
+before spawning the child, so if wrap's append later fails (e.g.
+unwritable `events/`), child-emitted events carry a `parent_id` that
+resolves to no stored event and `parent_id → id` joins drop those edges.
+The A-line still records `block_id` (without `event_id`) in that case.
+
+---
 
 Implements slice 3 of [specs/event-protocol.md](../specs/event-protocol.md)
 (the schema owner — envelope/storage/ordering decisions live there, not

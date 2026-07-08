@@ -10,8 +10,7 @@ Filename prefix sets priority. `ls active/` is the ordered queue.
 
 | ID | File | Depends On |
 |----|------|------------|
-| event-exec-wrap-integration | `00_event-exec-wrap-integration.md` | — |
-| remote-exec-host-parity | `01_remote-exec-host-parity.md` | — |
+| remote-exec-host-parity | `00_remote-exec-host-parity.md` | — |
 
 ## backlog/ — Future Work
 
@@ -32,7 +31,7 @@ Filename prefix sets priority. `ls active/` is the ordered queue.
 
 ## completed/
 
-38 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
+39 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
 
 ## specs/
 
