@@ -8,6 +8,37 @@ links:
 
 # `--host` Parity for `exec` — Frame-from-Stdin Transport
 
+**Shipped 2026-07-08, both slices.** Slice 1 (loud exit-2 rejection for
+local-only verbs with a pre-filled `ssh` fallback) via PR #12
+(main@`7ce01c7`); slice 2 (real remote `exec` over the frame transport)
+via PR #13 (main@`fb398b3`). Test-covered in `cli_remote`, `cli_exec`,
+and `exec_request`; the transport mechanics are shim-verified and the
+end-to-end path is **real-host verified** — `tender --host nerevar exec
+… -- echo ok` against a Debian 12 box over a genuine SSH hop returned a
+clean envelope (`exit_code: 0`), a quoting-torture payload (single/double
+quotes, `$VAR`, backslash) survived byte-exact, and a non-zero inner
+exit propagated. Acceptance-relevant notes on what shipped vs. the plan
+text below:
+
+- **The exec request frame omits `exec_target`.** The plan sketch
+  (slice 2, item 1) listed it, but the executing side reads the target
+  from the session's own `meta` exactly as local `exec` does — carrying
+  it in the frame would be redundant-or-conflicting. `ExecRequestFrame`
+  is `{v, session, namespace?, cmd, timeout?}`, and validates session
+  name + non-empty cmd at decode (exit 2, before side effects).
+- **The using-tender skill litmus (§1/§4/§5/§8) landed with one
+  carve-out.** §1 rewritten, §5 deleted, §8 halved — but **§4
+  (annotation-overflow stderr noise) was reduced, not deleted**: that
+  warning still ships, so removing it belongs to
+  `exec-annotation-ergonomics`, not here.
+- **Windows remote `exec` is untested on real hardware.** The frame
+  transport is platform-neutral and POSIX-verified; a `win11-vm` smoke
+  would close it.
+- The `--host` clap help string was corrected in this reconciliation
+  (it still listed `exec` as local-only).
+
+---
+
 Close the worst AX trap in the CLI: `--host` is a global flag, but `exec`
 (and `run`/`wrap`/`prune`) silently don't support it. Fix it in two slices —
 reject the doomed call loudly first, then make remote `exec` actually work by

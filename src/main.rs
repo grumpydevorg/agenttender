@@ -42,8 +42,9 @@ impl From<CliExecTarget> for tender::model::spec::ExecTarget {
 struct Cli {
     /// Route command through SSH to a remote host (e.g. user@box).
     ///
-    /// Supported remote commands: start, status, list, log, push, kill,
-    /// wait, watch, attach. Local-only: run, exec, wrap, prune.
+    /// Supported remotely: start, status, list, log, push, kill, wait,
+    /// watch, attach, and exec (the payload rides the frame transport,
+    /// not a shell). Local-only: run, wrap, prune.
     #[arg(long, global = true)]
     host: Option<String>,
 
@@ -720,7 +721,7 @@ fn main() {
     // If --host is set, dispatch to SSH transport.
     if let Some(ref host) = cli.host {
         // exec goes remote via the frame transport
-        // (00_remote-exec-host-parity.md slice 2): the whole request is
+        // (2026-07-08-remote-exec-host-parity.md slice 2): the whole request is
         // one JSON frame on the SSH stdin channel; the remote argv is
         // constant, so the payload never traverses a shell.
         if let Commands::Exec {
@@ -756,7 +757,7 @@ fn main() {
         if !tender::ssh::is_remote_supported(cmd_name) {
             // The local-only verbs are a usage error (exit 2) with a
             // pre-filled, copy-pasteable fallback — rejected before any
-            // connection or side effect (00_remote-exec-host-parity.md
+            // connection or side effect (2026-07-08-remote-exec-host-parity.md
             // slice 1).
             if let Some(args) = cli.command.local_fallback_args() {
                 let mut full = vec!["tender".to_string()];
