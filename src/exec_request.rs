@@ -36,6 +36,7 @@ pub struct ExecRequestFrame {
 /// Frame decode failures — all are usage errors (exit 2 at the CLI):
 /// the frame is rejected before any side effect.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FrameError {
     #[error("invalid exec frame: {0}")]
     Parse(#[from] serde_json::Error),
