@@ -109,6 +109,13 @@ Env propagation: the five shipped `TENDER_*` vars unchanged; **new**
 `TENDER_BLOCK_ID` set by `exec`/`wrap` per invocation, and
 `TENDER_PARENT_EVENT_ID` set by `wrap` (the id of the event it will write)
 so hook-spawned `tender emit` calls chain to the hook event automatically.
+Shipped surface (slice 3, 2026-07-08): exec exports `TENDER_BLOCK_ID`
+into the payload for **PosixShell targets only** — PowerShell/PythonRepl
+frames are deferred until a consumer demands it, DuckDB structurally
+can't; wrap sets both vars **only on the dual-write path** (valid dotted
+`--event` — the legacy annotation-only path sets no env chain, §6).
+Malformed ambient values warn on stderr and are ignored — a polluted
+environment never hard-fails a producer.
 
 ## 3. Storage & write path
 
@@ -271,16 +278,36 @@ Exit codes (granular, agents branch on integers): `0` ok, `2` usage,
 kind/source (reserved prefix). `--best-effort`: all failures ⇒ exit 0
 (hooks must never fail their host tool). `--source` defaults to
 `user.emit`; a hook wanting attribution passes it explicitly
-(`--source claude.hook`). `--parent` defaults from
-`TENDER_BLOCK_ID`/`TENDER_PARENT_EVENT_ID` only once slice 3 sets those
-vars — in slice 1, causality is `run_id` plus explicit `--parent` only.
+(`--source claude.hook`). The ambient chain is live since slice 3
+(shipped 2026-07-08): `block_id` ← `TENDER_BLOCK_ID`; `parent_id` ←
+explicit `--parent` > `TENDER_PARENT_EVENT_ID` > `TENDER_BLOCK_ID`. An
+explicit `--parent` that fails to parse stays exit 2; malformed *env*
+values warn and are ignored.
 
-`wrap` and `exec` are sugar over the same append: wrap emits the event
-(kind = the user-supplied `--event`, validated like `emit --kind` — 
-reserved prefixes exit 6) and keeps its A-line (now carrying `event_id`);
-exec emits `exec.started`/`exec.result` from its internal call site — 
-permitted precisely because that kind value is tender-stamped, not
-user-supplied.
+`wrap` and `exec` are sugar over the same append (shipped 2026-07-08,
+slice 3). exec emits `exec.started`/`exec.result` from its internal call
+site — permitted precisely because that kind value is tender-stamped,
+not user-supplied; its A-line carries additive `event_id`/`block_id`.
+wrap's user-supplied `--event` shipped with **one intentional
+compatibility carve-out** (slice 3's only deviation — everything else
+shipped as planned for emit, exec, and the sidecar facts):
+
+- A **dotted protocol-valid kind dual-writes**: stored event + A-line
+  linked by `event_id`/`block_id`, child env chain set (§2).
+- A **reserved kind exits 6 before any side effect** — the child never
+  spawns, nothing is written.
+- A **legacy dotless name** (not a valid kind) keeps the exact
+  pre-slice-3 behavior: annotation-only — no stored event, no child env
+  chain — plus a stderr notice that fires on every such invocation.
+
+"Reserved *kinds*" is the precise term (not "all invalid kinds"): a
+grammar-invalid name is not a kind and takes the legacy path — it can
+never produce a stored event, so the reserved namespace is not at risk.
+Consumer caveat: wrap pre-mints its event id into the child's
+`TENDER_PARENT_EVENT_ID` before spawn, so if wrap's best-effort append
+later fails, child-emitted events reference a parent that was never
+written and `parent_id → id` joins drop those edges (the A-line still
+records `block_id`, without `event_id`).
 
 ## 7. Orphan emitters — lost+found
 
@@ -343,10 +370,14 @@ Sliced in
 `--follow`/`--from-now`/`--since`/`--last`, cursor tokens with exact resume
 and cursor-gone exit 44, `--cursors` bookmarks, `--include-logs`
 projection, and watch re-backed by the event log with its output shape
-frozen. Next planned slice is slice 3 (exec/wrap integration: `exec.*`
-kinds, `TENDER_BLOCK_ID`/`TENDER_PARENT_EVENT_ID`, `callback.finished`,
-`pty.control_changed`) — planned in
-[`00_event-exec-wrap-integration.md`](../active/00_event-exec-wrap-integration.md). Blocks/sugar beyond that, log
+frozen. Slice 3 (exec/wrap integration: `exec.*` kinds,
+`TENDER_BLOCK_ID`/`TENDER_PARENT_EVENT_ID` ambient causality,
+`callback.finished`, `pty.control_changed` — **shipped 2026-07-08,
+PR #10, main@7c91532**) landed via
+[`2026-07-08-event-exec-wrap-integration.md`](../completed/2026-07-08-event-exec-wrap-integration.md):
+shipped as planned for emit, exec, and the sidecar facts, with the wrap
+`--event` compatibility carve-out (§6) as the one intentional
+adjustment. Blocks/sugar beyond that, log
 lifecycle (slice 4), and reach follow (slice 5) remain unscheduled. The
 `--replace` events carry-forward is deliberately deferred and gated on a
 demonstrated consumer need (the judges split on it; shipped replace
