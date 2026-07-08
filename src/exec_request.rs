@@ -11,6 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::model::ids::SessionName;
+
 /// The frame version this binary reads and writes.
 pub const EXEC_FRAME_VERSION: u32 = 1;
 
@@ -31,13 +33,19 @@ pub struct ExecRequestFrame {
     pub timeout: Option<u64>,
 }
 
-/// Frame decode failures — both are usage errors (exit 2 at the CLI).
+/// Frame decode failures — all are usage errors (exit 2 at the CLI):
+/// the frame is rejected before any side effect.
 #[derive(Debug, thiserror::Error)]
 pub enum FrameError {
     #[error("invalid exec frame: {0}")]
     Parse(#[from] serde_json::Error),
     #[error("unsupported exec frame version {0} (this tender supports {EXEC_FRAME_VERSION})")]
     Version(u32),
+    /// A structurally-decoded frame that fails a semantic invariant
+    /// (bad session name, empty cmd) — the frame path is a public
+    /// scripting surface, so these are caught here, not at runtime.
+    #[error("invalid exec frame: {0}")]
+    Invalid(String),
 }
 
 impl ExecRequestFrame {
@@ -50,6 +58,13 @@ impl ExecRequestFrame {
         let frame: Self = serde_json::from_slice(bytes)?;
         if frame.v != EXEC_FRAME_VERSION {
             return Err(FrameError::Version(frame.v));
+        }
+        // Semantic invariants, so an invalid session or empty cmd is a
+        // frame error (exit 2, no side effect) rather than a runtime
+        // failure after session lookup and lock.
+        SessionName::new(&frame.session).map_err(|e| FrameError::Invalid(e.to_string()))?;
+        if frame.cmd.is_empty() {
+            return Err(FrameError::Invalid("no command specified".to_owned()));
         }
         Ok(frame)
     }
@@ -107,5 +122,23 @@ mod tests {
             ExecRequestFrame::from_json(json),
             Err(FrameError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn invalid_session_name_is_invalid_frame() {
+        let json = br#"{"v":1,"session":"bad/name","cmd":["true"]}"#;
+        match ExecRequestFrame::from_json(json) {
+            Err(FrameError::Invalid(msg)) => assert!(msg.contains("session name")),
+            other => panic!("expected invalid frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_cmd_is_invalid_frame() {
+        let json = br#"{"v":1,"session":"s","cmd":[]}"#;
+        match ExecRequestFrame::from_json(json) {
+            Err(FrameError::Invalid(msg)) => assert!(msg.contains("command")),
+            other => panic!("expected invalid frame, got {other:?}"),
+        }
     }
 }

@@ -1587,3 +1587,45 @@ fn exec_frame_conflicts_with_positional_args() {
         "clap reports the conflict: {stderr}"
     );
 }
+
+/// A frame naming a structurally invalid session is an invalid frame:
+/// exit 2 before any session lookup or lock (review finding on PR #13).
+#[test]
+fn exec_frame_invalid_session_exits_2() {
+    let _lock = lock();
+    let root = tempfile::TempDir::new().unwrap();
+
+    let output = harness::tender(&root)
+        .args(["exec", "--frame-from-stdin"])
+        .write_stdin(r#"{"v":1,"session":"bad/name","cmd":["true"]}"#)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid exec frame"),
+        "invalid session is a frame error: {stderr}"
+    );
+}
+
+/// An empty cmd is an invalid frame: exit 2 before the exec lock, not a
+/// runtime "no command specified" after session lookup.
+#[test]
+fn exec_frame_empty_cmd_exits_2() {
+    let _lock = lock();
+    let root = tempfile::TempDir::new().unwrap();
+
+    let output = harness::tender(&root)
+        .args(["exec", "--frame-from-stdin"])
+        .write_stdin(r#"{"v":1,"session":"shell","cmd":[]}"#)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid exec frame"),
+        "empty cmd is a frame error: {stderr}"
+    );
+}
