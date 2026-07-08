@@ -1172,7 +1172,8 @@ fn run_attach_listener(
         // Set attach sink -- capture thread starts teeing output
         *attach_sink.lock().unwrap() = Some(Box::new(write_half));
 
-        // Durable control fact before the meta flip (WAL order, spec §3.6).
+        // WAL-ordered control fact before the meta flip (spec §3.6); the
+        // append itself is best-effort, not fsynced.
         // Minimal by design: who owns the PTY's input, nothing else —
         // screen-state semantics are adapter territory (plan boundary note).
         facts.append_fact(

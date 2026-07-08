@@ -1150,40 +1150,82 @@ fn exec_emits_started_and_result_events() {
     // The JSON stdout envelope is frozen: exactly the shipped fields
     // (serde_json yields keys alphabetically).
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let keys: Vec<&str> = envelope.as_object().unwrap().keys().map(String::as_str).collect();
+    let keys: Vec<&str> = envelope
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     assert_eq!(
         keys,
-        ["cwd_after", "exit_code", "session", "stderr", "stdout", "timed_out", "truncated"],
+        [
+            "cwd_after",
+            "exit_code",
+            "session",
+            "stderr",
+            "stdout",
+            "timed_out",
+            "truncated"
+        ],
         "exec JSON envelope field set is frozen"
     );
 
     let events = harness::read_events(&root, "shell");
-    let started = events.iter().find(|e| e["kind"] == "exec.started").expect("exec.started");
-    let result = events.iter().find(|e| e["kind"] == "exec.result").expect("exec.result");
+    let started = events
+        .iter()
+        .find(|e| e["kind"] == "exec.started")
+        .expect("exec.started");
+    let result = events
+        .iter()
+        .find(|e| e["kind"] == "exec.result")
+        .expect("exec.result");
 
     assert_eq!(started["source"], "tender.exec");
     assert_eq!(result["source"], "tender.exec");
-    assert_eq!(started["data"]["command"], serde_json::json!(["echo", "event brigade"]));
+    assert_eq!(
+        started["data"]["command"],
+        serde_json::json!(["echo", "event brigade"])
+    );
     assert_eq!(started["data"]["exec_target"], "PosixShell");
-    assert!(started["data"].get("timeout_ms").is_none(), "no timeout flag → no field");
+    assert!(
+        started["data"].get("timeout_ms").is_none(),
+        "no timeout flag → no field"
+    );
     assert_eq!(result["data"]["exit_code"], 0);
-    assert!(result["data"]["stdout"].as_str().unwrap().contains("event brigade"));
+    assert!(
+        result["data"]["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("event brigade")
+    );
     assert_eq!(result["data"]["timed_out"], false);
     assert_eq!(result["data"]["truncated"], false);
     assert!(!result["data"]["cwd_after"].as_str().unwrap().is_empty());
 
     let block = started["block_id"].as_str().expect("started has block_id");
-    assert_eq!(result["block_id"].as_str().unwrap(), block, "one block, both events");
-    assert_eq!(started["writer"], result["writer"], "one writer for the pair");
+    assert_eq!(
+        result["block_id"].as_str().unwrap(),
+        block,
+        "one block, both events"
+    );
+    assert_eq!(
+        started["writer"], result["writer"],
+        "one writer for the pair"
+    );
     assert_eq!(
         started["seq"].as_u64().unwrap() + 1,
         result["seq"].as_u64().unwrap(),
         "contiguous seq"
     );
     assert_eq!(started["gen"], 1);
-    assert!(started.get("parent_id").is_none(), "no ambient chain → no parent");
+    assert!(
+        started.get("parent_id").is_none(),
+        "no ambient chain → no parent"
+    );
 
-    let _ = harness::tender(&root).args(["kill", "shell", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "shell", "--force"])
+        .assert();
 }
 
 /// A tender exec running inside an outer block chains upward: parent_id
@@ -1212,10 +1254,16 @@ fn exec_events_inherit_parent_from_env_chain() {
     let result = events.iter().find(|e| e["kind"] == "exec.result").unwrap();
     for event in [started, result] {
         assert_eq!(event["parent_id"].as_str().unwrap(), outer);
-        assert_ne!(event["block_id"].as_str().unwrap(), outer, "fresh block per exec");
+        assert_ne!(
+            event["block_id"].as_str().unwrap(),
+            outer,
+            "fresh block per exec"
+        );
     }
 
-    let _ = harness::tender(&root).args(["kill", "shell", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "shell", "--force"])
+        .assert();
 }
 
 /// The exec A-line carries additive event_id (= exec.result id) and
@@ -1240,7 +1288,9 @@ fn exec_aline_links_event_id_and_block_id() {
     let events = harness::read_events(&root, "shell");
     let result = events.iter().find(|e| e["kind"] == "exec.result").unwrap();
 
-    let log_path = root.path().join(".tender/sessions/default/shell/output.log");
+    let log_path = root
+        .path()
+        .join(".tender/sessions/default/shell/output.log");
     let content = std::fs::read_to_string(&log_path).unwrap();
     let ann_line: serde_json::Value = content
         .lines()
@@ -1248,10 +1298,15 @@ fn exec_aline_links_event_id_and_block_id() {
         .find(|line| line["tag"] == "A" && line["content"]["source"] == "agent.exec")
         .expect("annotation line exists");
     let ann = &ann_line["content"];
-    assert_eq!(ann["event_id"], result["id"], "A-line links the exec.result event");
+    assert_eq!(
+        ann["event_id"], result["id"],
+        "A-line links the exec.result event"
+    );
     assert_eq!(ann["block_id"], result["block_id"]);
 
-    let _ = harness::tender(&root).args(["kill", "shell", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "shell", "--force"])
+        .assert();
 }
 
 /// A timed-out exec still records its exec.result (timed_out true) and the
@@ -1281,7 +1336,9 @@ fn exec_timeout_still_emits_result_event() {
     assert_eq!(result["data"]["timed_out"], true);
     assert_eq!(result["data"]["exit_code"], -1);
 
-    let _ = harness::tender(&root).args(["kill", "shell", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "shell", "--force"])
+        .assert();
 }
 
 /// Event emission is best-effort: an unwritable events dir warns but never
@@ -1315,7 +1372,9 @@ fn exec_event_append_is_best_effort() {
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(envelope["stdout"].as_str().unwrap().contains("still fine"));
 
-    let _ = harness::tender(&root).args(["kill", "shell", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "shell", "--force"])
+        .assert();
 }
 
 /// The PosixShell frame exports TENDER_BLOCK_ID for the payload's duration:
@@ -1344,5 +1403,7 @@ fn exec_payload_sees_block_id_env() {
     let result = events.iter().find(|e| e["kind"] == "exec.result").unwrap();
     assert_eq!(seen, result["block_id"].as_str().unwrap());
 
-    let _ = harness::tender(&root).args(["kill", "shell", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "shell", "--force"])
+        .assert();
 }

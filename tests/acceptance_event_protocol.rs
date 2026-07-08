@@ -314,7 +314,9 @@ fn exec_payload_emit_chains_and_env_unsets() {
         .write_stdin("echo probe_${TENDER_BLOCK_ID:-unset}\n")
         .assert()
         .success();
-    let log_path = root.path().join(".tender/sessions/default/shell/output.log");
+    let log_path = root
+        .path()
+        .join(".tender/sessions/default/shell/output.log");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let content = std::fs::read_to_string(&log_path).unwrap_or_default();

@@ -38,9 +38,7 @@ pub fn unix_frame(argv: &[String], token: &str, block_id: &str) -> String {
         "token must be hex-only, got: {token}"
     );
     debug_assert!(
-        block_id
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit() || b == b'-'),
+        block_id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'),
         "block_id must be a uuid, got: {block_id}"
     );
     let cmd = shell_words::join(argv);
