@@ -8,15 +8,15 @@ Convention: see [CONVENTIONS.md](CONVENTIONS.md)
 
 Filename prefix sets priority. `ls active/` is the ordered queue.
 
-_Empty — no active plan. Promote a backlog item (give it a numbered
-prefix) to queue the next unit of work._
+| ID | File | Depends On |
+|----|------|------------|
+| exec-annotation-ergonomics | `00_exec-annotation-ergonomics.md` | — |
 
 ## backlog/ — Future Work
 
 | ID | File | Depends On |
 |----|------|------------|
 | fleet-migration | `fleet-migration.md` | remote-ssh-transport |
-| exec-annotation-ergonomics | `exec-annotation-ergonomics.md` | — |
 | pty-automation | `pty-automation.md` | pty-session-mode |
 | powershell-exec-framing | `powershell-exec-framing.md` | — |
 | hermes-block-runtime-integration | `hermes-block-runtime-integration.md` | event-emit-primitive |
