@@ -44,7 +44,7 @@ struct Cli {
     ///
     /// Supported remotely: start, status, list, log, push, kill, wait,
     /// watch, attach, and exec (the payload rides the frame transport,
-    /// not a shell). Local-only: run, wrap, prune.
+    /// not a shell). Local-only: run, wrap, prune, query.
     #[arg(long, global = true)]
     host: Option<String>,
 
@@ -307,6 +307,27 @@ enum Commands {
         /// Exit 65 when unparseable lines were skipped
         #[arg(long)]
         strict: bool,
+    },
+    /// Query the event log with DuckDB SQL (analytical surface)
+    ///
+    /// Registers an `events` view over the on-disk JSONL and runs your SQL via
+    /// the external `duckdb` CLI. Distinct from `events` (streaming/replay):
+    /// `query` is the offline analytical surface. Local-only in v1.
+    Query {
+        /// Inline SQL to run against the `events` view
+        sql: Option<String>,
+        /// Read SQL from a file instead of the inline argument
+        #[arg(long, conflicts_with = "sql")]
+        file: Option<PathBuf>,
+        /// Namespaces to scope the view (comma-separated); default = all
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Drop into a DuckDB shell with the `events` view pre-registered
+        #[arg(long, conflicts_with_all = ["sql", "file"])]
+        shell: bool,
+        /// Print the DuckDB version tender will use, then exit
+        #[arg(long = "version", conflicts_with_all = ["sql", "file", "shell", "namespace"])]
+        version: bool,
     },
     /// Append an event to a session's event log
     Emit {
@@ -664,6 +685,33 @@ impl Commands {
                 }
                 Some(args)
             }
+            Commands::Query {
+                sql,
+                file,
+                namespace,
+                shell,
+                version,
+            } => {
+                let mut args = vec!["query".to_string()];
+                if let Some(f) = file {
+                    args.extend(["--file".to_string(), f.display().to_string()]);
+                }
+                if let Some(ns) = namespace {
+                    args.extend(["--namespace".to_string(), ns.clone()]);
+                }
+                if *shell {
+                    args.push("--shell".to_string());
+                }
+                if *version {
+                    args.push("--version".to_string());
+                }
+                // The positional SQL goes last so a hyphen-led statement is
+                // unambiguous when the fallback is pasted.
+                if let Some(s) = sql {
+                    args.push(s.clone());
+                }
+                Some(args)
+            }
             _ => None,
         }
     }
@@ -683,6 +731,7 @@ impl Commands {
             Commands::Run { .. } => "run",
             Commands::Exec { .. } => "exec",
             Commands::Events { .. } => "events",
+            Commands::Query { .. } => "query",
             Commands::Emit { .. } => "emit",
             Commands::Wrap { .. } => "wrap",
             Commands::Prune { .. } => "prune",
@@ -935,6 +984,19 @@ fn main() {
             cursors,
             include_logs,
             strict,
+        }),
+        Commands::Query {
+            sql,
+            file,
+            namespace,
+            shell,
+            version,
+        } => commands::cmd_query(commands::QueryOptions {
+            sql,
+            file,
+            namespace,
+            shell,
+            version,
         }),
         Commands::Emit {
             kind,
