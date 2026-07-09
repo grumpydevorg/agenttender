@@ -12,7 +12,7 @@ regular files), and this doc's headline principle: event-protocol v1 keeps
 — the event log is not the sole source of truth. Do not implement from this
 doc.  
 **Date:** 2026-05-23  
-**Composes with:** [tender-as-block-runtime.md](tender-as-block-runtime.md), [content-addressable-storage](../backlog/content-addressable-storage.md), [event-log-analytics](../active/00_event-log-analytics-v1.md)
+**Composes with:** [tender-as-block-runtime.md](tender-as-block-runtime.md), [content-addressable-storage](../backlog/content-addressable-storage.md), [event-log-analytics](../completed/2026-07-09-event-log-analytics-v1.md)
 
 How Tender stores and queries every kind of state it accumulates. Three primitives, two file formats, **no transactional database**.
 
@@ -75,7 +75,7 @@ Considered SQLite for live state. Rejected for Tender's scale and shape:
 
 Tender is one daemon per host. Block counts are small (~10k/year for heavy users). Restart cost from log replay is ~50–100 ms for 100k events. SQLite earns nothing here.
 
-DuckDB handles analytical queries (multi-namespace, time-range, joins, aggregation) without writes — see [event-log-analytics](../active/00_event-log-analytics-v1.md). No need for a transactional DB for analytics either.
+DuckDB handles analytical queries (multi-namespace, time-range, joins, aggregation) without writes — see [event-log-analytics](../completed/2026-07-09-event-log-analytics-v1.md). No need for a transactional DB for analytics either.
 
 ## Event log schema
 
@@ -215,10 +215,10 @@ Tender's first delivery is single-machine; later backends are opt-in. Same inter
 | Plan | Relationship |
 |---|---|
 | [content-addressable-storage](../backlog/content-addressable-storage.md) | Implements ③ blob store + provenance hashing |
-| [event-log-analytics](../active/00_event-log-analytics-v1.md) | DuckDB read-side over ① event log; no writes through DuckDB |
+| [event-log-analytics](../completed/2026-07-09-event-log-analytics-v1.md) | DuckDB read-side over ① event log; no writes through DuckDB |
 | [boundary-metadata](../active/01_boundary-metadata.md) | Adds `boundary_kind` / `boundary_label` as event fields; reflected in in-memory index |
 | [provenance-on-lifecycle-transitions](../completed/2026-04-16-provenance-on-lifecycle-transitions.md) | Adds `transition_provenance` as event field |
-| event-emit-primitive (active) | Defines the JSONL schema and `tender event emit` writer |
+| [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md) | Defines the JSONL schema and `tender emit` / `tender events` surfaces |
 
 No existing plan is invalidated. The persistence model knits them together.
 
@@ -228,8 +228,8 @@ These would be sliced as concrete backlog items if/when work begins:
 
 1. **JSONL writer + in-memory index** — the foundation. Replaces the implicit "live state lives in process memory" with an explicit log-backed model.
 2. **Snapshot/restore** — checkpoint mechanism for fast restart.
-3. **`tender event emit`** — already an active plan (covers the writer surface for hooks).
+3. **`tender emit` / `tender events`** — shipped in [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md).
 4. **CAS blob store** — separate plan, separate work.
-5. **Parquet rollover + DuckDB query** — separate plan, fully composable on top.
+5. **Parquet rollover** — deferred v2/v3 direction now that `tender query` shipped as the JSONL read-side.
 
 Existing per-session `meta.json` continues to work throughout; this work is additive.

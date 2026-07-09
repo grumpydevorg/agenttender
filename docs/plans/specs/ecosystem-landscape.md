@@ -103,9 +103,10 @@ daemon assumption (see [event-protocol.md](./event-protocol.md)) and
 disagreed on schema/paths. **The gate is now lifted:** the Lane A event
 schema shipped (event-protocol.md, the daemonless envelope) and the daemon
 question is decided. Accordingly (2026-07-09) `event-log-analytics` was
-rewritten to the shipped v1 envelope and **promoted to the active queue**
-(`active/00_event-log-analytics-v1.md`) — the least-speculative Lane C item,
-DuckDB over JSONL. `content-addressable-storage` stays deferred: its blob
+rewritten to the shipped v1 envelope, promoted, then shipped as
+[`tender query`](../completed/2026-07-09-event-log-analytics-v1.md) — the
+least-speculative Lane C item, DuckDB over JSONL.
+`content-addressable-storage` stays deferred: its blob
 primitive was already absorbed into event-protocol (`events/blobs/<sha256>`),
 and the remaining provenance/bundle ambition is consumer-gated.
 

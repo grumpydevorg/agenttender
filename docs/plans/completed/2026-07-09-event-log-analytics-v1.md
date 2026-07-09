@@ -9,12 +9,27 @@ links:
 
 # Event-Log Analytics v1 — DuckDB over the JSONL event log
 
+> **Shipped 2026-07-09 via PR #24 at main@`dc956a2`.**
+> Implemented as `tender query`: inline SQL, `--file`, `--namespace`,
+> `--shell`, and `--version`, backed by the external `duckdb` CLI on `PATH`
+> with no new crate dependency. Covered by 11 `cli_query` tests plus the
+> `cli_remote` local-only guard for `--host query`; recipes landed in
+> [analytics-recipes.md](../../analytics-recipes.md). Plan archival follows the
+> implementation PR by design.
+
 Turn the shipped structured event stream into a queryable analytical store by
 pointing DuckDB at the on-disk JSONL. **Zero bespoke analytics code in tender —
 lean entirely on DuckDB** (already a supported `duckdb` exec target, i.e. a
 known external tool found on PATH — not a Tender crate dependency). This is the
 least-speculative consumer of the event protocol and the first proof it is
 useful beyond logging.
+
+> **Shipped deviation:** the plan sketched `read_json_auto(...)` over a glob.
+> The implementation uses Rust-side segment discovery plus a projected DuckDB
+> view over `read_json(..., records=false, ignore_errors=true)`. That keeps
+> `data`/`data_ref` as JSON so `data->>'exit_code'` remains queryable, casts
+> envelope columns explicitly, gives empty scopes an empty typed view, and skips
+> malformed/torn lines instead of aborting a query.
 
 > **Rescoped 2026-07-09 to the shipped protocol.** The prior draft's schema
 > (`type`, `payload`, `payload_blob`, `parent_block_id`, `monotonic_seq`, ULID
@@ -158,7 +173,7 @@ GROUP BY tool ORDER BY calls DESC;
 ```
 
 (Grouping by *host*/*boundary* becomes trivial once
-[boundary-metadata](./01_boundary-metadata.md) adds those columns to the
+[boundary-metadata](../active/01_boundary-metadata.md) adds those columns to the
 lifecycle events.)
 
 ## Scope (v1)
@@ -202,6 +217,6 @@ range).
 ## How this composes
 
 - [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md) — produces the JSONL this queries.
-- [boundary-metadata](./01_boundary-metadata.md) — adds boundary columns, making "hosts vs containers" a GROUP BY.
+- [boundary-metadata](../active/01_boundary-metadata.md) — adds boundary columns, making "hosts vs containers" a GROUP BY.
 - [content-addressable-storage](../backlog/content-addressable-storage.md) — `data_ref` blob metadata is queryable/joinable if that lands.
 - [egui-block-terminal](../backlog/egui-block-terminal.md) — a GUI's ad-hoc charts run the same DuckDB queries.
