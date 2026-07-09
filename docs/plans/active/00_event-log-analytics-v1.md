@@ -11,9 +11,10 @@ links:
 
 Turn the shipped structured event stream into a queryable analytical store by
 pointing DuckDB at the on-disk JSONL. **Zero bespoke analytics code in tender —
-lean entirely on DuckDB** (already vendored via the shipped `duckdb` exec
-target). This is the least-speculative consumer of the event protocol and the
-first proof it is useful beyond logging.
+lean entirely on DuckDB** (already a supported `duckdb` exec target, i.e. a
+known external tool found on PATH — not a Tender crate dependency). This is the
+least-speculative consumer of the event protocol and the first proof it is
+useful beyond logging.
 
 > **Rescoped 2026-07-09 to the shipped protocol.** The prior draft's schema
 > (`type`, `payload`, `payload_blob`, `parent_block_id`, `monotonic_seq`, ULID
@@ -66,8 +67,8 @@ tender query --shell                        # drop into a DuckDB shell with the 
 
 Under the hood: locate the event segments for the requested namespace(s),
 register a `events` view unioning them, run the user's SQL, print the result.
-~200 lines of Rust (subcommand + shelling to the `duckdb` CLI, which tender
-already depends on for the duckdb exec target).
+~200 lines of Rust (subcommand + shelling to the `duckdb` CLI on PATH — the
+same external binary the `duckdb` exec target already drives; no new crate dep).
 
 ## Layout (shipped, v1)
 
