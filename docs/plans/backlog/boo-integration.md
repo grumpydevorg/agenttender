@@ -108,8 +108,11 @@ Rendered-screen reads stay boo's, never tender core (see path 5). Tender keeps
 the process alive and accountable; boo makes the terminal legible and
 controllable.
 
-**First slice (ready):** validate end-to-end with a real Claude Code session
-and document the pattern here and in the skill (path 1).
+**First slice — documented, not yet validated:** the composition pattern and
+the ownership boundary are now documented (here + the `using-tender` skill).
+Live validation — running a real Claude Code TUI under `tender start`
+end-to-end against a **pinned** Boo build — remains open; Boo is not
+installed/pinned locally.
 
 ### 3. A `boo` exec target in tender
 
@@ -166,7 +169,9 @@ screen reads by composition, which is the whole point of the stack.
 
 ## Acceptance criteria (first slice = paths 1 + 2)
 
-- using-tender skill has a tender-vs-boo routing section.
-- The `BOO_FOREGROUND=1` composition pattern is validated against a real TUI
-  session and documented with its limitations.
-- No tender code changes required.
+- [x] **Done** — using-tender skill has a tender-vs-boo routing section.
+- [x] **Done** — no tender code changes required.
+- [ ] **Open** — the `BOO_FOREGROUND=1` composition pattern is *documented* with
+  its limitations, but **live validation against a pinned Boo build** (a real
+  TUI session under `tender start`) is not done: Boo is not installed/pinned
+  locally. This is what keeps the first slice incomplete.

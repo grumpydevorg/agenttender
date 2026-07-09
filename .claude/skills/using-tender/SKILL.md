@@ -297,7 +297,7 @@ boo wait claude --text "Done"
 boo peek claude --json
 ```
 
-Limitation: Tender records Boo's **lifecycle**, not the child TUI's rendered screen (PTY bytes flow daemon→Boo clients). That is by design — Boo is the screen authority.
+Limitation: Tender records Boo's **lifecycle**, not the child TUI's rendered screen (PTY bytes flow daemon→Boo clients). That is by design — Boo is the screen authority. Pin your Boo version — it is 0.x and churns its CLI; the `send`/`peek`/`wait` syntax above reflects Boo's documented automation surface (v0.6.4), and this composition is documented but not yet live-validated in this repo.
 
 ## Known limitations worth filing against Tender
 
