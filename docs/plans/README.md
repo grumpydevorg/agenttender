@@ -12,7 +12,6 @@ pty-session-mode) have shipped, so nothing is dependency-blocked.
 
 | ID | File | Depends On |
 |----|------|------------|
-| event-log-analytics | `00_event-log-analytics-v1.md` | — (all shipped) |
 | boundary-metadata | `01_boundary-metadata.md` | — |
 
 ## backlog/ — Future Work
@@ -31,7 +30,7 @@ the live distinction is keep-ready vs deferred-until-a-consumer.
 
 ## completed/
 
-42 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
+43 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
 
 ## specs/
 
