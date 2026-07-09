@@ -37,7 +37,7 @@ tender --host data-box exec ddb -- "SELECT count(*) FROM read_parquet('s3://buck
 
 Only `run`, `wrap`, and `prune` stay local-only by design; `--host` on those exits 2 with a pre-filled `ssh` fallback you can paste.
 
-The same model also works for REPL and database lanes — Python, IPython, DuckDB, and a known-limited PowerShell target — not just shells:
+The same model also works for REPL and database lanes — Python, IPython, DuckDB, and PowerShell targets — not just shells:
 
 ```bash
 tender start --stdin py -- python3 -i                 # auto-inferred: python-repl
