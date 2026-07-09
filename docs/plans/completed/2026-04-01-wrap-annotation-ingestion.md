@@ -2,12 +2,12 @@
 id: wrap-annotation-ingestion
 depends_on: []
 links:
-  - ../backlog/exec.md
+  - 2026-04-01-exec.md
 ---
 
 # Wrap — Transparent Annotation Ingestion
 
-> **Status: Complete.** Core `wrap` command is implemented and tested (11 integration tests). The `exec` concept (sentinel-framed command execution over persistent shells) has been split into its own plan at `backlog/exec.md`.
+> **Status: Complete.** Core `wrap` command is implemented and tested (11 integration tests). The `exec` concept (sentinel-framed command execution over persistent shells) has been split into its own plan (since completed at `completed/2026-04-01-exec.md`).
 
 Tap agent hook events without modifying agents or hook scripts.
 
@@ -63,4 +63,4 @@ Annotations are written as tagged lines in `output.log` with this envelope:
 
 ## exec (split out)
 
-The `exec` concept (sentinel-framed command execution over persistent shells) was originally part of this plan but has been split into its own plan at `backlog/exec.md`. It needs significant design work (sentinel framing protocol, binary output handling, timeout semantics) that is independent of the completed `wrap` command.
+The `exec` concept (sentinel-framed command execution over persistent shells) was originally part of this plan but has been split into its own plan (since completed at `completed/2026-04-01-exec.md`). It needs significant design work (sentinel framing protocol, binary output handling, timeout semantics) that is independent of the completed `wrap` command.

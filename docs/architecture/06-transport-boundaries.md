@@ -64,12 +64,12 @@ Current remote-command scope:
 
 This split follows Theme 5: Separate Control Plane From Work Plane; see [../design-principles.md](../design-principles.md).
 
-- supported over `--host`: `start`, `status`, `list`, `log`, `push`, `kill`, `wait`, `watch`, `attach`
-- local-only: `run`, `exec`, `wrap`, `prune`
+- supported over `--host`: `start`, `status`, `list`, `log`, `push`, `kill`, `wait`, `watch`, `attach`, `exec`
+- local-only: `run`, `wrap`, `prune`
 
-Why `exec` is local-only: it needs coordinated access to the session's FIFO, `exec.lock`, `output.log` scan, and side-channel result files (`exec-results/<token>.json` for Python REPL). That's shared-filesystem IPC, not a one-shot RPC. `ssh -T` cannot represent it without building a second lifecycle protocol, which the design explicitly rejects.
+How `exec` goes remote: the whole exec request is serialized as one JSON frame and streamed to a remote `tender exec --frame-from-stdin` over the ssh stdin channel. The shared-filesystem IPC that exec needs — the session's FIFO, `exec.lock`, `output.log` scan, and side-channel result files (`exec-results/<token>.json` for Python REPL) — all runs locally on the *remote* host exactly as it would for a local exec; only the request frame and the JSON result envelope cross the ssh boundary. That is a one-shot request/response, so no second lifecycle protocol is needed. (The earlier design treated `exec` as local-only for the IPC reasons above; the frame transport resolved it — see the remote-exec-host-parity plan.)
 
-The workaround is first-class: `ssh host 'tender exec <session> -- <cmd>'`. The remote `tender` does the local IPC on the remote host exactly as it would locally. Same holds for `run`, `wrap`, `prune`.
+`run`, `wrap`, and `prune` stay local-only by design: `--host` on those exits 2 with a pre-filled `ssh host 'tender <cmd>'` fallback. `wrap` additionally needs the supervised-process environment, so it only makes sense inside a tender-supervised process on the target host.
 
 ## Execution-environment boundaries
 
