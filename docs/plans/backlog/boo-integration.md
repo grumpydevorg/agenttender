@@ -60,7 +60,7 @@ that split.
 
 Agents with both tools installed get steered to boo for interactive work by
 its automation help; the using-tender skill has no boundary guidance. Add a
-section to `.agents/skills/using-tender/SKILL.md`: tender for
+section to `.claude/skills/using-tender/SKILL.md` (the maintained copy): tender for
 run-to-completion, structured results, durable logs, deps/hooks, remote,
 Windows; boo for driving/reading live TUIs; the composition pattern below
 for both at once.
@@ -81,8 +81,40 @@ lifecycle events); agents drive the TUI through boo's socket. Known
 limitation: tender's `output.log` records boo's lifecycle, not PTY bytes
 (those flow daemon→socket-clients only).
 
-First slice: validate this end-to-end with a real Claude Code session and
-document the pattern here and in the skill.
+Ownership split — the clean boundary that makes the stack work:
+
+| Tender owns (durable supervisor, underneath) | Boo owns (screen authority, on top) |
+|---|---|
+| process lifecycle, restart / `--replace` / kill / `wait` | rendered terminal state (VT / grid) |
+| exit status, durable `meta.json` + `output.log` | `send` — keystroke injection |
+| structured events (`run.*`, `exec.*`, `hook.*`, `callback.finished`) | `peek` — read the rendered screen |
+| `--host` remote transport, deps, `on_exit` | `wait --text` / `wait --idle` — screen quiescence |
+
+Observe the session's lifecycle durably through tender (the supervised session
+is `agents/claude-tui`); drive/read the TUI through boo (the boo session is
+`claude`):
+
+```sh
+tender status claude-tui --namespace agents
+tender wait   claude-tui --namespace agents
+tender events --session agents/claude-tui --follow
+
+boo send claude --text "run tests"
+boo wait claude --text "Done"
+boo peek claude --json
+```
+
+Rendered-screen reads stay boo's, never tender core (see path 5). Tender keeps
+the process alive and accountable; boo makes the terminal legible and
+controllable.
+
+> Documented composition pattern; live validation against a pinned Boo build remains open.
+
+**First slice — documented, not yet validated:** the composition pattern and
+the ownership boundary are documented (here + the `using-tender` skill). The
+`BOO_FOREGROUND=1` recipe and `boo` syntax come from the source-verified review
+(v0.6.4), not a live run — Boo is not installed/pinned locally. The first real
+Boo slice stays **incomplete** until a pinned Boo build is validated end-to-end.
 
 ### 3. A `boo` exec target in tender
 
@@ -139,7 +171,9 @@ screen reads by composition, which is the whole point of the stack.
 
 ## Acceptance criteria (first slice = paths 1 + 2)
 
-- using-tender skill has a tender-vs-boo routing section.
-- The `BOO_FOREGROUND=1` composition pattern is validated against a real TUI
-  session and documented with its limitations.
-- No tender code changes required.
+- [x] **Done** — using-tender skill has a tender-vs-boo routing section.
+- [x] **Done** — no tender code changes required.
+- [ ] **Open** — the `BOO_FOREGROUND=1` composition pattern is *documented* with
+  its limitations, but **live validation against a pinned Boo build** (a real
+  TUI session under `tender start`) is not done: Boo is not installed/pinned
+  locally. This is what keeps the first slice incomplete.

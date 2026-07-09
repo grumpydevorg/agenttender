@@ -274,6 +274,31 @@ jq -cn --rawfile sql query.sql \
 
 Frame schema (v1): `{"v":1,"session":"<name>","namespace":"<ns>"?,"cmd":["argv",…],"timeout":<secs>?}`. A malformed or wrong-version frame exits 2 before any side effect. `tender --host h exec --frame-from-stdin` forwards your local stdin frame to the remote verbatim.
 
+## Tender vs Boo — which tool for what
+
+`tender` and `boo` (coder/boo) compose as a **stack, not competitors**: Tender is the durable supervisor underneath, Boo is the terminal/screen authority on top.
+
+- **Reach for `tender`** when you need run-to-completion supervision, structured exec results, durable logs, an event stream, dependencies/hooks, remote (`--host`), or Windows. Tender owns the **process**.
+- **Reach for `boo`** when you need to drive or read a **live TUI** — inject keystrokes (`boo send`), read the rendered screen (`boo peek`), or wait on screen content (`boo wait --text`/`--idle`). Boo owns the **screen**. Tender does not do rendered-screen reads and deliberately never will (that stays in Boo/adapters).
+- **Both at once** — supervise a Boo session with Tender so the process is durable and accountable while Boo drives the terminal:
+
+```bash
+# BOO_FOREGROUND=1 skips boo's daemon fork so tender can supervise it directly.
+tender start claude-tui --namespace agents -- env BOO_FOREGROUND=1 boo new claude -- claude
+
+# Observe lifecycle durably through tender…
+tender status claude-tui --namespace agents
+tender wait   claude-tui --namespace agents
+tender events --session agents/claude-tui --follow
+
+# …and drive/read the TUI through boo.
+boo send claude --text "run tests"
+boo wait claude --text "Done"
+boo peek claude --json
+```
+
+Limitation: Tender records Boo's **lifecycle**, not the child TUI's rendered screen (PTY bytes flow daemon→Boo clients). That is by design — Boo is the screen authority. Pin your Boo version — it is 0.x and churns its CLI; the `send`/`peek`/`wait` syntax above reflects Boo's documented automation surface (v0.6.4), and this composition is documented but not yet live-validated in this repo.
+
 ## Known limitations worth filing against Tender
 
 - PowerShell exec scope rule (gotcha §6) is correct behavior but surprises every new user. A `--persist-scope` flag or session-level toggle would help.
