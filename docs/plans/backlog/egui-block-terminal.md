@@ -1,8 +1,6 @@
 ---
 id: egui-block-terminal
-depends_on:
-  - event-emit-primitive
-  - content-addressable-storage
+depends_on: []
 links:
   - ../specs/tender-as-block-runtime.md
 ---
@@ -281,5 +279,5 @@ Encourages the same component-library discipline as the spectrogram widget.
 
 ## Depends On
 
-- `event-emit-primitive` — without structured events, blocks have no sub-structure
-- `content-addressable-storage` — needed for stable block output references + size-adaptive re-render
+- `event-emit-primitive` — **shipped** (2026-07-07); the structured events that give blocks their sub-structure exist, and `tender events --follow`/`--include-logs` (shipped 2026-07-07) is the consumption surface. Tender-side deps are satisfied.
+- `content-addressable-storage` — **not required.** The first slice never uses it (see the banner above); size-adaptive re-render off stable blob refs is a later enhancement, not a gate. Residual risk is external (libghostty's unstable C API), not a tender blocker.

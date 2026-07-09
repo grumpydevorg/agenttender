@@ -50,7 +50,7 @@ Storage shape:
     └── tmp/                   in-flight blobs being captured
 ```
 
-Block records (with their sha256 references) live as events in the JSONL event log and are materialized into an in-memory index on daemon startup. No SQLite database. See [event-log-analytics](event-log-analytics.md) for the analytics path over the same JSONL.
+Block records (with their sha256 references) live as events in the JSONL event log and are materialized into an in-memory index on daemon startup. No SQLite database. See [event-log-analytics](../active/00_event-log-analytics-v1.md) for the analytics path over the same JSONL.
 
 Block records carry hashes:
 

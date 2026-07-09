@@ -6,29 +6,32 @@ Convention: see [CONVENTIONS.md](CONVENTIONS.md)
 
 ## active/ — Current Work
 
-Filename prefix sets priority. `ls active/` is the ordered queue.
-
-_Empty — no active work queued. Pull the next item from `backlog/`._
-
-## backlog/ — Future Work
+Filename prefix sets priority. `ls active/` is the ordered queue. All backlog
+`depends_on` prereqs (event-emit-primitive, remote-ssh-transport,
+pty-session-mode) have shipped, so nothing is dependency-blocked.
 
 | ID | File | Depends On |
 |----|------|------------|
-| fleet-migration | `fleet-migration.md` | remote-ssh-transport |
-| pty-automation | `pty-automation.md` | pty-session-mode |
-| powershell-exec-framing | `powershell-exec-framing.md` | — |
-| hermes-block-runtime-integration | `hermes-block-runtime-integration.md` | event-emit-primitive |
-| boo-integration | `boo-integration.md` | — |
-| boundary-metadata | `boundary-metadata.md` | — |
-| content-addressable-storage | `content-addressable-storage.md` | event-emit-primitive |
-| egui-block-terminal | `egui-block-terminal.md` | event-emit-primitive, content-addressable-storage |
-| tender-completer | `tender-completer.md` | event-emit-primitive |
-| event-log-analytics | `event-log-analytics.md` | event-emit-primitive |
-| skill-agent-block-runtime | `skill-agent-block-runtime.md` | all other backlog items |
+| event-log-analytics | `00_event-log-analytics-v1.md` | — (all shipped) |
+| boundary-metadata | `01_boundary-metadata.md` | — |
+
+## backlog/ — Future Work
+
+Groomed 2026-07-09 (see git history). `depends_on` gates are all satisfied;
+the live distinction is keep-ready vs deferred-until-a-consumer.
+
+| ID | File | Lane / status |
+|----|------|---------------|
+| agent-hook-routing | `agent-hook-routing.md` | Lane B/D — small docs/glue; ready (replaces the cut skill-agent + hermes cards) |
+| boo-integration | `boo-integration.md` | Lane D — first slice ready; strategic path-5 deferred |
+| egui-block-terminal | `egui-block-terminal.md` | Lane B — unblocked; large, external libghostty risk |
+| tender-completer | `tender-completer.md` | Lane B — deferred behind egui (needs a UI consumer) |
+| content-addressable-storage | `content-addressable-storage.md` | Lane C — deferred; blob primitive already absorbed into event-protocol, rest is consumer-gated |
+| pty-automation | `pty-automation.md` | Lane A — deferred; hardens a contention nobody has hit |
 
 ## completed/
 
-41 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
+42 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
 
 ## specs/
 

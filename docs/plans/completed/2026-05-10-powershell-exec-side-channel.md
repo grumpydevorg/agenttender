@@ -3,7 +3,7 @@ id: powershell-exec-side-channel
 depends_on:
   - powershell-exec-framing
 links:
-  - powershell-exec-framing.md
+  - 2026-05-10-powershell-exec-framing.md
   - ../../../src/exec_frame.rs
   - ../../../src/commands/exec.rs
 ---
@@ -158,7 +158,7 @@ If the PowerShell child dies before writing the result file, `wait_side_channel_
    - `exec_powershell_stderr_separated`: `Write-Error 'oops'` → stderr `oops`, stdout empty, exit non-zero.
    - `exec_powershell_cwd_after`: `Set-Location C:\Users` → next exec reports `cwd_after = C:\Users`.
 
-6. **Update `docs/plans/backlog/powershell-exec-framing.md`** — mark the framing half done (commit `3f6ff2b`) and link to this plan.
+6. **Update the framing plan** (`powershell-exec-framing`, since archived to `docs/plans/completed/2026-05-10-powershell-exec-framing.md`) — mark the framing half done (commit `3f6ff2b`) and link to this plan.
 
 7. **Verify on Win 11 ARM64 VM** — same dev loop as the breakaway fix: cross-compile, scp `tender.exe` to `~/.local/bin/`, restart `ps` session, run integration tests.
 

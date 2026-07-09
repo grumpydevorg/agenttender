@@ -15,9 +15,10 @@ links:
 truth for tender's structured event stream — "the protocol layer between
 supervised execution and any presentation." It supersedes the event schemas
 in `01_event-emit-primitive.md` (pre-2026-07 version), the event/persistence
-sections of `persistence-architecture.md`, and the envelope in
-`hermes-block-runtime-integration.md` (§10 maps their fields here). Where
-those documents disagree with this one, this one wins.
+sections of `persistence-architecture.md`, and the envelope in the now-retired
+Hermes backlog sketch (its §10 mapped those fields here; that sketch has since
+been folded into `agent-hook-routing.md`). Where those documents disagree with
+this one, this one wins.
 
 Provenance: produced 2026-07-06 from a judged three-design bake-off
 (files-first vs sidecar-owned single-writer vs per-host bus), grounded in a
