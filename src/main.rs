@@ -308,6 +308,27 @@ enum Commands {
         #[arg(long)]
         strict: bool,
     },
+    /// Query the event log with DuckDB SQL (analytical surface)
+    ///
+    /// Registers an `events` view over the on-disk JSONL and runs your SQL via
+    /// the external `duckdb` CLI. Distinct from `events` (streaming/replay):
+    /// `query` is the offline analytical surface. Local-only in v1.
+    Query {
+        /// Inline SQL to run against the `events` view
+        sql: Option<String>,
+        /// Read SQL from a file instead of the inline argument
+        #[arg(long, conflicts_with = "sql")]
+        file: Option<PathBuf>,
+        /// Namespaces to scope the view (comma-separated); default = all
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Drop into a DuckDB shell with the `events` view pre-registered
+        #[arg(long, conflicts_with_all = ["sql", "file"])]
+        shell: bool,
+        /// Print the DuckDB version tender will use, then exit
+        #[arg(long = "version", conflicts_with_all = ["sql", "file", "shell", "namespace"])]
+        version: bool,
+    },
     /// Append an event to a session's event log
     Emit {
         /// Event kind (dotted, e.g. "hook.post_tool_use"; tender-owned
@@ -683,6 +704,7 @@ impl Commands {
             Commands::Run { .. } => "run",
             Commands::Exec { .. } => "exec",
             Commands::Events { .. } => "events",
+            Commands::Query { .. } => "query",
             Commands::Emit { .. } => "emit",
             Commands::Wrap { .. } => "wrap",
             Commands::Prune { .. } => "prune",
@@ -935,6 +957,19 @@ fn main() {
             cursors,
             include_logs,
             strict,
+        }),
+        Commands::Query {
+            sql,
+            file,
+            namespace,
+            shell,
+            version,
+        } => commands::cmd_query(commands::QueryOptions {
+            sql,
+            file,
+            namespace,
+            shell,
+            version,
         }),
         Commands::Emit {
             kind,
