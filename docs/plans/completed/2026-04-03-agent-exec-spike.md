@@ -85,3 +85,45 @@ tender log research  # Does this give useful context to pass to the next agent?
 - Prompt engineering or agent behavior tuning
 - Multi-model routing or cost tracking
 - Building an AI framework
+
+## Results (spike outcome)
+
+Ported from `spike/agent-exec/README.md` when the spike scripts were retired
+(2026-07-09) — this plan is now the single source of truth for the findings.
+
+**Verdict: it works.** Tender's existing primitives (sessions, `--after`,
+`--cwd`, timeouts, namespaces, `wait`, `watch`, `log -r`) are sufficient to
+orchestrate multi-agent pipelines of one-shot coding agents (`claude -p`,
+`codex exec`) with **no Rust changes needed**.
+
+| Script (retired) | What it tested | Result |
+|---|---|---|
+| `01-basic-chain.sh` | linear 3-session chain: research → impl → review | PASS |
+| `02-parallel-fan-out.sh` | two parallel sessions, one fan-in waiting for both | PASS |
+| `03-failure-propagation.sh` | middle session fails, downstream behavior | PASS (documented) |
+| `04-real-agent-chain.sh` | template for real claude/codex agents (echo stand-ins by default) | PASS |
+
+Each script used a unique namespace (`spike-*-$$`) and cleaned up after itself;
+`04` ran real agents under `USE_REAL_AGENTS=1`.
+
+Key findings:
+
+1. **`--after` chaining is reliable.** Linear A→B→C runs in strict order; each session waits for its dependency's terminal state before starting.
+2. **Parallel fan-out + fan-in works.** Multiple `--after` flags AND-join (`--after auth --after db` waits for both); upstreams run in parallel.
+3. **Failure propagation is well-designed.** A non-zero dependency puts downstream in `DependencyFailed` (`dep_reason: "Failed"`, warning, child never started) — the safe default; `--any-exit` opts into best-effort "run anyway".
+4. **`--cwd` gives shared workdirs** — the natural file-based comms channel for coding agents, simpler than piping logs.
+5. **`tender log -r`** strips the JSONL envelope → clean text to feed a downstream agent or human.
+6. **Status reporting is clear** — `Exited`(`ExitedOk`/`ExitedError`+code), `DependencyFailed`(`dep_reason`+warnings), `Starting` while waiting, plus timestamps.
+
+Answers to the spike questions:
+
+1. `--after` chaining reliable with one-shot agents? **Yes.**
+2. File-based comms sufficient? **Yes**, via `--cwd` shared workdirs.
+3. Practical timeouts? ~**300 s** (5 min) per real-agent session via `--timeout`.
+4. Parallel fan-out + fan-in? **Yes**, via multiple `--after`.
+5. What's missing? Nothing blocking — see below.
+
+Non-blocking improvement ideas (not built): a declarative `tender pipeline` DAG
+spec; `--inject-dep-logs` to auto-prepend a dependency's output to a prompt;
+`tender wait` forwarding the child's real exit code (currently 42 on any failed
+dependency); a pipeline-level success/fail summary.
