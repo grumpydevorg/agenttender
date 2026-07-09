@@ -89,6 +89,7 @@ pub fn cmd_run(
         &effective.namespace,
         false, // pty not supported via `run`
         Some(tender::model::spec::ExecTarget::None),
+        None, // `run` does not expose --boundary
     )?;
 
     // Check for spawn failure.

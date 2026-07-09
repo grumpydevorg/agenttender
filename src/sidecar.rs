@@ -403,7 +403,11 @@ impl LifecycleEvents {
             source: Source::trusted("tender.sidecar").expect("tender.sidecar is grammatical"),
             block_id: None,
             parent_id: None,
-            data: Some(events::lifecycle_data(meta.status(), "direct")),
+            data: Some(events::lifecycle_data(
+                meta.status(),
+                "direct",
+                meta.launch_spec().boundary.as_ref(),
+            )),
             preview: None,
         };
         if let Err(e) = self.writer.append(draft.clone(), durable) {

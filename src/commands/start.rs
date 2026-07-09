@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::Context;
+use tender::model::boundary::BoundaryContext;
 use tender::model::ids::{Namespace, SessionName};
 use tender::model::spec::{ExecTarget, IoMode, LaunchSpec, StdinMode};
 use tender::platform::{Current, Platform};
@@ -20,10 +21,23 @@ pub fn cmd_start(
     namespace: &Namespace,
     pty: bool,
     exec_target: Option<ExecTarget>,
+    boundary: Option<BoundaryContext>,
 ) -> anyhow::Result<()> {
     let (meta, _session) = launch_session(
-        name, cmd, stdin, replace, timeout, cwd, env_vars, on_exit, after, any_exit, namespace, pty,
+        name,
+        cmd,
+        stdin,
+        replace,
+        timeout,
+        cwd,
+        env_vars,
+        on_exit,
+        after,
+        any_exit,
+        namespace,
+        pty,
         exec_target,
+        boundary,
     )?;
 
     let json = serde_json::to_string_pretty(&meta)?;
@@ -61,6 +75,7 @@ pub(crate) fn launch_session(
     namespace: &Namespace,
     pty: bool,
     exec_target: Option<ExecTarget>,
+    boundary: Option<BoundaryContext>,
 ) -> anyhow::Result<(tender::model::meta::Meta, session::SessionDir)> {
     let session_name = SessionName::new(name)?;
     let root = SessionRoot::default_path()?;
@@ -93,6 +108,7 @@ pub(crate) fn launch_session(
         launch_spec.env.insert(key.to_string(), value.to_string());
     }
     launch_spec.on_exit = on_exit.to_vec();
+    launch_spec.boundary = boundary;
     if pty {
         launch_spec.io_mode = IoMode::Pty;
     }

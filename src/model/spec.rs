@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use super::boundary::BoundaryContext;
 use super::ids::{RunId, SessionName};
 
 fn is_false(b: &bool) -> bool {
@@ -74,6 +75,11 @@ pub struct LaunchSpec {
     #[serde(default)]
     pub io_mode: IoMode,
     pub exec_target: ExecTarget,
+    /// Declared execution boundary (host/container/vm/pod). User-supplied,
+    /// authoritative here and in `meta.json`. Omitted when absent so specs
+    /// without a boundary hash identically to pre-feature specs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<BoundaryContext>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -97,6 +103,7 @@ impl LaunchSpec {
             stdin_mode: StdinMode::None,
             io_mode: IoMode::Pipe,
             exec_target: ExecTarget::None,
+            boundary: None,
         })
     }
 
@@ -135,6 +142,8 @@ impl<'de> Deserialize<'de> for LaunchSpec {
             #[serde(default)]
             io_mode: IoMode,
             exec_target: ExecTarget,
+            #[serde(default)]
+            boundary: Option<BoundaryContext>,
         }
 
         let raw = Raw::deserialize(deserializer)?;
@@ -153,6 +162,7 @@ impl<'de> Deserialize<'de> for LaunchSpec {
             stdin_mode: raw.stdin_mode,
             io_mode: raw.io_mode,
             exec_target: raw.exec_target,
+            boundary: raw.boundary,
         })
     }
 }

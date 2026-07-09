@@ -91,6 +91,16 @@ enum Commands {
         /// Proceed even if dependency exits non-zero
         #[arg(long = "any-exit", requires = "after")]
         any_exit: bool,
+        /// Declared execution boundary as KIND:LABEL (host, container, vm, pod)
+        #[arg(long, value_name = "KIND:LABEL")]
+        boundary: Option<tender::model::boundary::Boundary>,
+        /// Ancestry boundary as KIND:LABEL (repeatable; outermost last)
+        #[arg(
+            long = "boundary-parent",
+            value_name = "KIND:LABEL",
+            requires = "boundary"
+        )]
+        boundary_parent: Vec<tender::model::boundary::Boundary>,
         /// Command and arguments
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<String>,
@@ -409,6 +419,8 @@ impl Commands {
                 on_exit,
                 after,
                 any_exit,
+                boundary,
+                boundary_parent,
                 cmd,
             } => {
                 let mut args = vec!["start".to_string(), name.clone()];
@@ -450,6 +462,13 @@ impl Commands {
                         CliExecTarget::DuckDb => "duckdb",
                         CliExecTarget::None => "none",
                     }.to_string()]);
+                }
+                if let Some(b) = boundary {
+                    // Display is the inverse of the parse, so this round-trips.
+                    args.extend(["--boundary".to_string(), b.to_string()]);
+                }
+                for parent in boundary_parent {
+                    args.extend(["--boundary-parent".to_string(), parent.to_string()]);
                 }
                 args.push("--".to_string());
                 args.extend(cmd.iter().cloned());
@@ -855,7 +874,13 @@ fn main() {
             on_exit,
             after,
             any_exit,
+            boundary,
+            boundary_parent,
         } => resolve_namespace(namespace).and_then(|ns| {
+            let boundary_ctx = boundary.map(|current| tender::model::boundary::BoundaryContext {
+                current,
+                parents: boundary_parent,
+            });
             commands::cmd_start(
                 &name,
                 cmd,
@@ -870,6 +895,7 @@ fn main() {
                 &ns,
                 pty,
                 exec_target.map(tender::model::spec::ExecTarget::from),
+                boundary_ctx,
             )
         }),
         Commands::Run {
