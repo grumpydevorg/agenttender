@@ -3,7 +3,7 @@ id: remote-exec-host-parity
 depends_on: []
 links:
   - ../../architecture/06-transport-boundaries.md
-  - ../active/00_exec-annotation-ergonomics.md
+  - ../completed/2026-07-09-exec-annotation-ergonomics.md
 ---
 
 # `--host` Parity for `exec` — Frame-from-Stdin Transport

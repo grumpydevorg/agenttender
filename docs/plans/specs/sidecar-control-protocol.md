@@ -154,7 +154,7 @@ Already shipped. The provenance model (Direct vs Inferred) applies equally to fi
 
 Describes where sessions run. The control protocol describes how clients talk to the sidecar. Orthogonal.
 
-### Exec annotation ergonomics (`active/00_exec-annotation-ergonomics.md`)
+### Exec annotation ergonomics (`completed/2026-07-09-exec-annotation-ergonomics.md`)
 
 Annotation noise and breadcrumbs are log-side concerns. If `exec_begin` migrates to control RPC, the annotation model would still write to `output.log` via the sidecar, not via the protocol.
 
