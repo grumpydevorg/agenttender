@@ -9,6 +9,32 @@ links: []
 
 Add lease-backed agent control for PTY sessions so Tender can honestly enforce exclusive ownership of terminal input while still allowing human takeover when needed.
 
+> **Status: deferred — correctness hardening, not roadmap (decided 2026-07-09).**
+> Keep the current PTY behavior as-is. This plan is a lease system that hardens
+> exclusive control of Tender's PTY **input** path; it is not strategic roadmap
+> and not terminal *screen* automation. Build it only if real contention actually
+> shows up — two agents, or a human and an agent, both writing into the same PTY
+> and causing bad behavior. Absent that, today's one-writer-at-a-time behavior is
+> good enough, and the effort (a new state machine + lease IPC + framed-push
+> authorization) is not justified.
+>
+> **Already works today (shipped, no change needed):** `start --pty` backs a child
+> with a real terminal; `push` writes raw bytes into the PTY; `attach` gives a
+> human live control; while a human is attached, `push` is rejected; PTY output
+> merges into `output.log` as `O` lines; generic `exec` is rejected on PTY sessions
+> except the Python-REPL side-channel. The gap this plan closes is only that there
+> is no *agent identity* on the input path — exclusivity is a label, not an
+> enforced property. That is a latent correctness gap, not a felt pain.
+>
+> **Boundary with Boo:** this is input-ownership correctness, **not** screen
+> automation. Rendered-screen reads (`peek`, `wait --text`/`--idle`, a VT/grid
+> model) belong to Boo, the screen authority — Tender supervises the process and
+> owns the durable record; Boo makes the terminal legible and controllable (see
+> [boo-integration](boo-integration.md)). Between the two, Boo integration is the
+> more immediately useful, docs-and-composition work; this PTY lease system is
+> correctness hardening that waits for demand. The design below is preserved as-is
+> for whenever that demand appears.
+
 ## Why
 
 PTY session mode already exists for terminal-sensitive programs: password prompts, REPLs, TUIs, `ssh`, `psql`, and similar tools that do not fit the pipe+exec lane.
@@ -423,10 +449,13 @@ HumanAttached
 - browser terminal relay
 - Windows ConPTY
 - lease persistence across sidecar restart
+- **rendered-screen automation of any kind** — `peek`, `wait --text`, `wait --idle`, or a VT/grid screen model. That is Boo's domain (screen authority); Tender owns process lifecycle + the durable record, not the rendered screen. See [boo-integration](boo-integration.md).
+- **any terminal renderer in core** — no libghostty, no embedded VT engine. If a native screen layer is ever wanted it is a separate, deliberately-built satellite, not part of this lease work.
 
 Clarification:
 
 - Python REPL PTY exec already exists as a special side-channel protocol. This plan does not change that exception and does not generalize it to shell PTY sessions.
+- This plan governs *who may write* to the PTY, never *what the screen shows*. The moment a requirement is about reading rendered output, it belongs to Boo, not here.
 
 ## Implementation Order
 
