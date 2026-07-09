@@ -2,7 +2,7 @@
 id: portable-run-launcher
 depends_on: []
 links:
-  - docs/plans/completed/2026-04-01-run-shebang.md
+  - 2026-04-01-run-shebang.md
 ---
 
 # Portable Run Launcher — Cross-Platform Script Execution

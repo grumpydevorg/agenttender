@@ -28,14 +28,14 @@ tender --host data-box log    ddb -f
 tender --host data-box kill   ddb
 ```
 
-`--host` carries `start`, `status`, `list`, `log`, `push`, `kill`, `wait`, `watch`, and `attach`. **`exec` is local-only** — it needs coordinated access to the session's FIFO, lock, and log scan that `ssh -T` can't tunnel. Use ssh in the one place it's still required:
+`--host` carries `start`, `status`, `list`, `log`, `push`, `kill`, `wait`, `watch`, `attach`, and `exec`. Remote `exec` rides a JSON request frame over the ssh stdin channel — the payload never traverses a remote shell, so there is no nested-quoting layer to escape:
 
 ```bash
-ssh data-box 'tender exec ddb -- "INSTALL httpfs;"'
-ssh data-box 'tender exec ddb -- "SELECT count(*) FROM read_parquet('\''s3://bucket/*.parquet'\'');"'
+tender --host data-box exec ddb -- "INSTALL httpfs;"
+tender --host data-box exec ddb -- "SELECT count(*) FROM read_parquet('s3://bucket/*.parquet');"
 ```
 
-Same rule applies to `run`, `wrap`, `prune` — all local-only by design, all fine via a one-line ssh wrapper.
+Only `run`, `wrap`, and `prune` stay local-only by design; `--host` on those exits 2 with a pre-filled `ssh` fallback you can paste.
 
 The same model also works for REPL and database lanes — Python, IPython, DuckDB, and a known-limited PowerShell target — not just shells:
 
