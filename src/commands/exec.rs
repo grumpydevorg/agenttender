@@ -255,50 +255,21 @@ pub fn cmd_exec(
     };
 
     // The output.log A-line projection (bounded by MAX_LINE), linked to the
-    // authoritative event by event_id (spec §0). Shape additive-only.
+    // authoritative event by event_id (spec §0). Shape additive-only. Overflow
+    // degrades quietly — full → field-truncated → compact breadcrumb — with no
+    // stderr warning; see write_exec_annotation (exec-annotation-ergonomics).
     {
-        use tender::annotation;
-
-        let run_id = meta.run_id().to_string();
-        let hook_stdin = shell_words::join(&cmd);
         let log_path = session.path().join("output.log");
-        let annotation_payload = |stdout: &str, stderr: &str, truncated: bool| {
-            let mut payload = serde_json::json!({
-                "source": "agent.exec",
-                "event": "exec",
-                "run_id": run_id,
-                "block_id": block_id.to_string(),
-                "data": {
-                    "hook_stdin": &hook_stdin,
-                    "command": &cmd,
-                    "hook_stdout": stdout,
-                    "hook_stderr": stderr,
-                    "hook_exit_code": result.exit_code,
-                    "cwd_after": &result.cwd_after,
-                    "sentinel": format!("TENDER_EXEC_{token}"),
-                    "timed_out": result.timed_out,
-                    "truncated": truncated,
-                }
-            });
-            if let Some(event) = &result_event {
-                payload["event_id"] = serde_json::json!(event.id.to_string());
-            }
-            payload
-        };
-
-        // Try full payload first
-        let payload = annotation_payload(&result.stdout, &result.stderr, result.truncated);
-        if !annotation::write_annotation_line(&log_path, &payload)? {
-            // Truncate and retry
-            let trunc_stdout =
-                annotation::truncate_string(&result.stdout, annotation::MAX_FIELD_BYTES);
-            let trunc_stderr =
-                annotation::truncate_string(&result.stderr, annotation::MAX_FIELD_BYTES);
-            let payload = annotation_payload(&trunc_stdout, &trunc_stderr, true);
-            if !annotation::write_annotation_line(&log_path, &payload)? {
-                eprintln!("tender exec: annotation too large even after truncation, dropping");
-            }
-        }
+        let event_id = result_event.as_ref().map(|event| event.id.to_string());
+        write_exec_annotation(
+            &log_path,
+            &cmd,
+            &result,
+            &meta.run_id().to_string(),
+            &block_id.to_string(),
+            event_id.as_deref(),
+            &token,
+        )?;
     }
 
     let json = serde_json::to_string_pretty(&result)?;
@@ -770,6 +741,312 @@ fn drain_until_sentinel(session: &SessionDir, token: &str) {
             }
             Err(_) => return, // IO error — give up
         }
+    }
+}
+
+/// SHA-256 of `bytes` as lowercase hex (same convention as `events::hex`).
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    let digest = Sha256::digest(bytes);
+    let mut s = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// Write the `agent.exec` A-line annotation to `output.log`, degrading
+/// gracefully as the payload grows: full record → field-truncated record →
+/// compact `exec_truncated` breadcrumb (lengths + digests, no raw bytes).
+///
+/// Annotation overflow is normal for large-output execs, so it is silent — no
+/// stderr warning to grep away (exec-annotation-ergonomics plan). The final
+/// breadcrumb is bounded by construction, so an oversized exec always leaves a
+/// durable record instead of a silent hole. The exec's own JSON result and
+/// exit code are untouched (spec §6).
+fn write_exec_annotation(
+    log_path: &std::path::Path,
+    cmd: &[String],
+    result: &ExecResult,
+    run_id: &str,
+    block_id: &str,
+    event_id: Option<&str>,
+    token: &str,
+) -> std::io::Result<()> {
+    use tender::annotation;
+
+    let hook_stdin = shell_words::join(cmd);
+    let sentinel = format!("TENDER_EXEC_{token}");
+
+    let with_event_id = |mut payload: serde_json::Value| {
+        if let Some(id) = event_id {
+            payload["event_id"] = serde_json::json!(id);
+        }
+        payload
+    };
+
+    let full_payload = |stdout: &str, stderr: &str, truncated: bool| {
+        with_event_id(serde_json::json!({
+            "source": "agent.exec",
+            "event": "exec",
+            "run_id": run_id,
+            "block_id": block_id,
+            "data": {
+                "hook_stdin": &hook_stdin,
+                "command": cmd,
+                "hook_stdout": stdout,
+                "hook_stderr": stderr,
+                "hook_exit_code": result.exit_code,
+                "cwd_after": &result.cwd_after,
+                "sentinel": &sentinel,
+                "timed_out": result.timed_out,
+                "truncated": truncated,
+            }
+        }))
+    };
+
+    // 1. Full record.
+    let payload = full_payload(&result.stdout, &result.stderr, result.truncated);
+    if annotation::write_annotation_line(log_path, &payload)? {
+        return Ok(());
+    }
+
+    // 2. Field-truncated record.
+    let trunc_stdout = annotation::truncate_string(&result.stdout, annotation::MAX_FIELD_BYTES);
+    let trunc_stderr = annotation::truncate_string(&result.stderr, annotation::MAX_FIELD_BYTES);
+    let payload = full_payload(&trunc_stdout, &trunc_stderr, true);
+    if annotation::write_annotation_line(log_path, &payload)? {
+        return Ok(());
+    }
+
+    // 3. Compact breadcrumb: durable evidence the exec ran, without the
+    //    oversized payload. Digests let a reader who still holds the output
+    //    correlate it; lengths explain why the full record was dropped. Every
+    //    field except `command` is fixed-size, and `cwd_after` is bounded here.
+    let breadcrumb = |include_command: bool| {
+        let mut data = serde_json::json!({
+            "stdout_len": result.stdout.len(),
+            "stderr_len": result.stderr.len(),
+            "hook_exit_code": result.exit_code,
+            "cwd_after": annotation::truncate_string(&result.cwd_after, 512),
+            "sentinel": &sentinel,
+            "timed_out": result.timed_out,
+            "truncated": true,
+            "stdout_sha256": sha256_hex(result.stdout.as_bytes()),
+            "stderr_sha256": sha256_hex(result.stderr.as_bytes()),
+        });
+        if include_command {
+            data["command"] = serde_json::json!(cmd);
+        }
+        with_event_id(serde_json::json!({
+            "source": "agent.exec",
+            "event": "exec_truncated",
+            "run_id": run_id,
+            "block_id": block_id,
+            "data": data,
+        }))
+    };
+
+    let payload = breadcrumb(true);
+    if annotation::write_annotation_line(log_path, &payload)? {
+        return Ok(());
+    }
+
+    // 4. Pathological: even the breadcrumb overflows (a giant command line).
+    //    Drop the command; the remaining fields are fixed/bounded and always
+    //    fit, so the exec is never a silent hole in the log.
+    let payload = breadcrumb(false);
+    annotation::write_annotation_line(log_path, &payload)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// Independent SHA-256 hex reference (does not go through exec.rs's own helper).
+    fn expected_sha256(s: &str) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(s.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    fn exec_result(stdout: String, stderr: String) -> ExecResult {
+        ExecResult {
+            session: "shell".to_owned(),
+            stdout,
+            stderr,
+            exit_code: 0,
+            cwd_after: "/tmp".to_owned(),
+            timed_out: false,
+            truncated: false,
+        }
+    }
+
+    /// The single `agent.exec` annotation line written to `log`, parsed.
+    fn only_annotation(log: &Path) -> serde_json::Value {
+        let content = std::fs::read_to_string(log).unwrap();
+        let mut lines = content
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|line| line["tag"] == "A" && line["content"]["source"] == "agent.exec");
+        let line = lines.next().expect("an agent.exec annotation line");
+        assert!(lines.next().is_none(), "exactly one annotation line");
+        line
+    }
+
+    /// Every stored line stays within the annotation size cap (incl. newline).
+    fn assert_all_lines_fit(log: &Path) {
+        let content = std::fs::read_to_string(log).unwrap();
+        for line in content.lines() {
+            // `lines()` strips the newline; the stored line includes it, so the
+            // on-disk length is line.len() + 1 and must not exceed MAX_LINE.
+            assert!(
+                line.len() < tender::annotation::MAX_LINE,
+                "line of {} bytes exceeds MAX_LINE",
+                line.len() + 1
+            );
+        }
+    }
+
+    /// Output so large that even the field-truncated annotation overflows the
+    /// cap: the annotation degrades to a compact `exec_truncated` breadcrumb
+    /// carrying lengths + digests instead of the raw bytes, and it fits.
+    #[test]
+    fn oversized_exec_writes_compact_breadcrumb() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("output.log");
+        let stdout = "x".repeat(5000);
+        let stderr = "y".repeat(5000);
+        let result = exec_result(stdout.clone(), stderr.clone());
+
+        write_exec_annotation(
+            &log,
+            &["cat".to_owned(), "big".to_owned()],
+            &result,
+            "run-1",
+            "block-1",
+            Some("evt-1"),
+            "TOKEN",
+        )
+        .unwrap();
+
+        let ann = only_annotation(&log);
+        let content = &ann["content"];
+        assert_eq!(content["event"], "exec_truncated");
+        assert_eq!(content["run_id"], "run-1");
+        assert_eq!(content["block_id"], "block-1");
+        assert_eq!(content["event_id"], "evt-1");
+
+        let data = &content["data"];
+        assert_eq!(data["stdout_len"], 5000);
+        assert_eq!(data["stderr_len"], 5000);
+        assert_eq!(data["truncated"], true);
+        assert_eq!(data["stdout_sha256"], expected_sha256(&stdout));
+        assert_eq!(data["stderr_sha256"], expected_sha256(&stderr));
+        // The raw payload must not leak back into the breadcrumb.
+        assert!(data.get("hook_stdout").is_none());
+        assert!(data.get("hook_stderr").is_none());
+
+        assert_all_lines_fit(&log);
+    }
+
+    /// Normal-sized output is recorded verbatim in the full `exec` annotation —
+    /// the degradation ladder must not touch the common path.
+    #[test]
+    fn small_exec_writes_full_annotation_untruncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("output.log");
+        let result = exec_result("hello".to_owned(), String::new());
+
+        write_exec_annotation(
+            &log,
+            &["echo".to_owned(), "hello".to_owned()],
+            &result,
+            "run-1",
+            "block-1",
+            Some("evt-1"),
+            "TOKEN",
+        )
+        .unwrap();
+
+        let ann = only_annotation(&log);
+        let content = &ann["content"];
+        assert_eq!(content["event"], "exec");
+        assert_eq!(content["event_id"], "evt-1");
+        let data = &content["data"];
+        assert_eq!(data["hook_stdout"], "hello");
+        assert_eq!(data["truncated"], false);
+        assert_eq!(data["command"], serde_json::json!(["echo", "hello"]));
+        assert_all_lines_fit(&log);
+    }
+
+    /// One oversized field, the other small: the full record overflows but the
+    /// field-truncated retry fits, so we keep the rich `exec` annotation (with
+    /// `truncated: true`) rather than dropping to a breadcrumb.
+    #[test]
+    fn large_stdout_truncates_but_keeps_full_exec_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("output.log");
+        let result = exec_result("z".repeat(100_000), "small".to_owned());
+
+        write_exec_annotation(
+            &log,
+            &["big".to_owned()],
+            &result,
+            "run-1",
+            "block-1",
+            None,
+            "TOKEN",
+        )
+        .unwrap();
+
+        let ann = only_annotation(&log);
+        let content = &ann["content"];
+        assert_eq!(content["event"], "exec");
+        let data = &content["data"];
+        assert_eq!(data["truncated"], true);
+        let out = data["hook_stdout"].as_str().unwrap();
+        assert!(out.len() <= tender::annotation::MAX_FIELD_BYTES);
+        assert!(out.starts_with("zzz"));
+        assert_eq!(data["hook_stderr"], "small");
+        assert_all_lines_fit(&log);
+    }
+
+    /// Pathological: the command line alone busts the cap. The breadcrumb drops
+    /// the command but the exec is still recorded — never a silent hole.
+    #[test]
+    fn giant_command_still_leaves_a_breadcrumb() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("output.log");
+        let result = exec_result("x".repeat(5000), "y".repeat(5000));
+
+        write_exec_annotation(
+            &log,
+            &["a".repeat(6000)],
+            &result,
+            "run-1",
+            "block-1",
+            None,
+            "TOKEN",
+        )
+        .unwrap();
+
+        let ann = only_annotation(&log);
+        let content = &ann["content"];
+        assert_eq!(content["event"], "exec_truncated");
+        let data = &content["data"];
+        assert_eq!(data["stdout_len"], 5000);
+        assert!(
+            data.get("command").is_none(),
+            "giant command dropped from breadcrumb"
+        );
+        assert!(data["stdout_sha256"].is_string());
+        assert_all_lines_fit(&log);
     }
 }
 

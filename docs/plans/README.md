@@ -8,9 +8,7 @@ Convention: see [CONVENTIONS.md](CONVENTIONS.md)
 
 Filename prefix sets priority. `ls active/` is the ordered queue.
 
-| ID | File | Depends On |
-|----|------|------------|
-| exec-annotation-ergonomics | `00_exec-annotation-ergonomics.md` | — |
+_Empty — no active work queued. Pull the next item from `backlog/`._
 
 ## backlog/ — Future Work
 
@@ -30,7 +28,7 @@ Filename prefix sets priority. `ls active/` is the ordered queue.
 
 ## completed/
 
-40 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
+41 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
 
 ## specs/
 

@@ -244,6 +244,60 @@ fn exec_writes_annotation() {
         .assert();
 }
 
+/// Oversized exec output must be quiet — no "annotation too large" warning on
+/// stderr — and must still leave a compact `exec_truncated` breadcrumb in
+/// output.log instead of dropping the record silently.
+/// (exec-annotation-ergonomics)
+#[test]
+fn exec_oversized_output_is_quiet_and_leaves_breadcrumb() {
+    let _lock = lock();
+    let root = tempfile::TempDir::new().unwrap();
+
+    harness::tender(&root)
+        .args(["start", "shell", "--stdin", "--", "bash"])
+        .assert()
+        .success();
+    harness::wait_running(&root, "shell");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // Both streams multi-KB so even the field-truncated annotation overflows
+    // the cap, forcing the breadcrumb path.
+    let output = harness::tender(&root)
+        .args(["exec", "shell", "--", "bash", "-c", "seq 1 2000; seq 1 2000 >&2"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("annotation too large"),
+        "annotation overflow must be silent, got stderr: {stderr:?}"
+    );
+
+    let log_path = root
+        .path()
+        .join(".tender/sessions/default/shell/output.log");
+    let content = std::fs::read_to_string(&log_path).unwrap();
+    let ann = content
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|line| line["tag"] == "A" && line["content"]["event"] == "exec_truncated")
+        .expect("an exec_truncated breadcrumb should exist in output.log");
+    let data = &ann["content"]["data"];
+    assert!(
+        data["stdout_len"].as_u64().unwrap() > 3000,
+        "breadcrumb records the true stdout length"
+    );
+    assert!(data["stderr_len"].as_u64().unwrap() > 3000);
+    assert!(data["stdout_sha256"].is_string());
+    assert!(data["stderr_sha256"].is_string());
+    assert_eq!(data["truncated"], true);
+
+    let _ = harness::tender(&root)
+        .args(["kill", "shell", "--force"])
+        .assert();
+}
+
 /// exec --timeout: returns timeout error, shell stays alive.
 #[test]
 fn exec_timeout() {

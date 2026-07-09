@@ -6,6 +6,35 @@ links: []
 
 # Exec Annotation Ergonomics
 
+**Shipped 2026-07-09 via PR #17.** The routine `tender exec: annotation too
+large even after truncation, dropping` stderr warning is gone, and oversized
+annotations
+now degrade to a compact `exec_truncated` breadcrumb instead of a silent drop.
+The write path was isolated into `write_exec_annotation` (`src/commands/exec.rs`)
+as a four-rung ladder: full record → field-truncated record → breadcrumb (with
+`command`) → minimal breadcrumb (command dropped). The breadcrumb carries
+`stdout_len`/`stderr_len` and `stdout_sha256`/`stderr_sha256` (no raw payload),
+plus the queryable `hook_exit_code`/`cwd_after`/`timed_out` and the
+`block_id`/`event_id` linkage the full A-line uses. The exec JSON envelope and
+exit-code behavior are untouched.
+
+Test-covered: four unit tests in `exec.rs` (breadcrumb on double-overflow,
+full-record preserved, field-truncated record preserved, and a giant-command
+case that exercises the minimal rung) plus one end-to-end test in `cli_exec`
+(`exec_oversized_output_is_quiet_and_leaves_breadcrumb`) asserting no stderr
+warning and a real breadcrumb in `output.log`.
+
+Deviations from the sketch below: the shipped breadcrumb includes more than the
+plan's example JSON — `block_id`/`event_id` for linkage parity with the full
+A-line, and `hook_exit_code`/`cwd_after`/`sentinel` for debuggability — and adds
+a rung 4 (drop `command`, bound `cwd_after`) so an oversized-command exec can
+never overflow the breadcrumb itself, making the "always leaves a record"
+guarantee unconditional. The `using-tender` skill §4 was rewritten from a
+"filter this noise" workaround to a short breadcrumb note, and the two matching
+"known limitations" bullets were retired.
+
+---
+
 Keep `tender exec` usable for large-output commands by removing noisy annotation-overflow warnings and leaving a breadcrumb when the full annotation cannot be recorded.
 
 ## Why
