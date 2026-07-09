@@ -102,18 +102,21 @@ boo has no remote story. Remote exec parity shipped 2026-07-08
 structured remote screen reads. Tender's remote lane is a distribution
 advantage over boo rather than a parallel effort.
 
-### 5. Native rendered-state reads in tender (strategic, deliberate scope call)
+### 5. Native rendered-state reads in tender — rejected for core
 
 The sharpest confirmed gap: tender waits only on exit; boo waits on screen
-content/quiescence. Long term, tender's PTY lane wants `peek`/`wait --text`
-natively. The pieces exist (maintained `libghostty-vt` crate on crates.io —
-Uzaaft/libghostty-rs; boo as a ~1,200-LOC-of-glue reference; the sidecar
-already holds the PTY master). But this reverses `pty-automation.md`'s
-explicit "What NOT to Build" list and touches the keep-libghostty-out-of-core
-layering — decide it together with the egui/block-runtime work, not as a
-bolt-on. If built: VT state lives in the sidecar, exposed via the planned
-sidecar control protocol (not a second attach client — attach is
-single-client and steals).
+content/quiescence. It is tempting to give tender's PTY lane `peek`/`wait --text`
+natively, and the pieces exist (maintained `libghostty-vt` crate on crates.io —
+Uzaaft/libghostty-rs; boo as a ~1,200-LOC-of-glue reference; the sidecar already
+holds the PTY master). **The decision (2026-07-09) is not to build this in tender
+core.** Rendered-screen reads are Boo's domain — Boo is the screen authority;
+tender supervises the process and owns the durable record, and keeps no terminal
+renderer (no libghostty) in core (see `pty-automation.md`'s "What NOT to Build"
+and the ecosystem-landscape non-goals). If a native screen layer is ever wanted
+it is a separate, deliberately-built satellite/UI decision — taken with the
+egui/block-runtime work, never smuggled into core as a bolt-on. Until then, path 4
+above (`tender --host <h> exec -- boo peek … --json`) already delivers structured
+screen reads by composition, which is the whole point of the stack.
 
 ## Ideas to steal regardless of integration
 

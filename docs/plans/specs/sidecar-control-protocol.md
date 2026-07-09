@@ -144,7 +144,7 @@ These are the operations that would migrate from file-based IPC to control RPC i
 
 ### PTY automation (`backlog/pty-automation.md`)
 
-PTY automation is designed against file-based lease IPC and does not depend on this protocol. If the control protocol is built later, lease operations are natural migration candidates — but PTY automation should ship first on the current file-based design.
+PTY automation is designed against file-based lease IPC and does not depend on this protocol. Note (2026-07-09): PTY automation is now **deferred hardening** — built only if real PTY-input contention actually shows up (see `backlog/pty-automation.md`). If it is ever revived, the preserved file-based lease design stands on its own; and if this control protocol already exists by then, lease operations are natural migration candidates onto it. Either way PTY automation neither gates nor is gated by this protocol.
 
 ### Provenance (`completed/2026-04-16-provenance-on-lifecycle-transitions.md`)
 
