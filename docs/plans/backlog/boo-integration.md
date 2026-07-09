@@ -108,11 +108,13 @@ Rendered-screen reads stay boo's, never tender core (see path 5). Tender keeps
 the process alive and accountable; boo makes the terminal legible and
 controllable.
 
+> Documented composition pattern; live validation against a pinned Boo build remains open.
+
 **First slice — documented, not yet validated:** the composition pattern and
-the ownership boundary are now documented (here + the `using-tender` skill).
-Live validation — running a real Claude Code TUI under `tender start`
-end-to-end against a **pinned** Boo build — remains open; Boo is not
-installed/pinned locally.
+the ownership boundary are documented (here + the `using-tender` skill). The
+`BOO_FOREGROUND=1` recipe and `boo` syntax come from the source-verified review
+(v0.6.4), not a live run — Boo is not installed/pinned locally. The first real
+Boo slice stays **incomplete** until a pinned Boo build is validated end-to-end.
 
 ### 3. A `boo` exec target in tender
 
