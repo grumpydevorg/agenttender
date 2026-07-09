@@ -44,7 +44,7 @@ struct Cli {
     ///
     /// Supported remotely: start, status, list, log, push, kill, wait,
     /// watch, attach, and exec (the payload rides the frame transport,
-    /// not a shell). Local-only: run, wrap, prune.
+    /// not a shell). Local-only: run, wrap, prune, query.
     #[arg(long, global = true)]
     host: Option<String>,
 
@@ -682,6 +682,33 @@ impl Commands {
                 }
                 if *dry_run {
                     args.push("--dry-run".to_string());
+                }
+                Some(args)
+            }
+            Commands::Query {
+                sql,
+                file,
+                namespace,
+                shell,
+                version,
+            } => {
+                let mut args = vec!["query".to_string()];
+                if let Some(f) = file {
+                    args.extend(["--file".to_string(), f.display().to_string()]);
+                }
+                if let Some(ns) = namespace {
+                    args.extend(["--namespace".to_string(), ns.clone()]);
+                }
+                if *shell {
+                    args.push("--shell".to_string());
+                }
+                if *version {
+                    args.push("--version".to_string());
+                }
+                // The positional SQL goes last so a hyphen-led statement is
+                // unambiguous when the fallback is pasted.
+                if let Some(s) = sql {
+                    args.push(s.clone());
                 }
                 Some(args)
             }

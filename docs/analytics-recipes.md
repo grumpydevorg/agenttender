@@ -45,8 +45,9 @@ per-`kind` payload stays JSON so you query it with `->`/`->>`:
 | `data` | JSON | payload — query with `data->>'field'` (text) or `data->'field'` (JSON) |
 | `data_ref` | JSON | `{path,bytes,sha256,media_type}` spill ref when `data` was truncated |
 
-A malformed line yields NULLs in the affected columns (via `TRY_CAST`), never a
-failed query.
+One bad line never kills a query: a valid line whose field has an unexpected
+value gets a NULL in that column (`TRY_CAST`), and an unparseable or torn line is
+skipped entirely (`ignore_errors`) — it is neither an error nor a counted row.
 
 ## Recipes
 

@@ -185,3 +185,27 @@ fn query_requires_sql_file_or_shell() {
     // usage error.
     tender(&root).args(["query"]).assert().failure();
 }
+
+#[test]
+fn query_tolerates_a_malformed_line() {
+    let root = TempDir::new().unwrap();
+    // A corrupt/torn line between two valid events must not kill the query: it
+    // is skipped, and the two real events still count. (Unparseable JSON is not
+    // rescued by TRY_CAST — the reader itself must tolerate it.)
+    seed(
+        &root,
+        "default",
+        "s1",
+        &[
+            r#"{"v":1,"id":"a1","ts":"2026-07-09T10:00:00.000000Z","kind":"exec.result","namespace":"default","session":"s1","data":{"exit_code":0}}"#,
+            "not-json{",
+            r#"{"v":1,"id":"a2","ts":"2026-07-09T10:00:01.000000Z","kind":"exec.result","namespace":"default","session":"s1","data":{"exit_code":7}}"#,
+        ],
+    );
+
+    tender(&root)
+        .args(["query", "SELECT COUNT(*) AS n FROM events"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2"));
+}

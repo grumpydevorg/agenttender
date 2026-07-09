@@ -649,6 +649,40 @@ fn host_local_only_rejection_spawns_no_ssh() {
     assert!(!marker.exists(), "ssh must not be spawned on rejection");
 }
 
+/// query is local-only in v1: it reads the local session tree and shells to a
+/// local duckdb, so --host is a usage error (exit 2) with a copy-paste ssh
+/// fallback — the same treatment as run/wrap/prune, not the generic rejection
+/// (which would print a false "local-only: run, wrap, prune" list omitting it).
+#[test]
+fn host_query_is_local_only_with_fallback() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+
+    let tmp = poison_ssh();
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+        .args(["--host", "user@box", "query", "SELECT 1"])
+        .env("PATH", tmp.path())
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "query --host is a usage error"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("'query' is local-only"),
+        "query names itself and says local-only: {stderr}"
+    );
+    let remote = parse_fallback_argv(&stderr, "user@box");
+    assert_eq!(remote[0], "tender");
+    assert_eq!(remote[1], "query", "fallback reconstructs the verb");
+    assert!(
+        remote.contains(&"SELECT 1".to_string()),
+        "fallback carries the SQL: {remote:?}"
+    );
+}
+
 /// Commands outside the plan's four verbs (`events`, `emit`) keep the
 /// generic unsupported-over-SSH rejection untouched — spec §8 defers
 /// their local-only help text to slice 5.

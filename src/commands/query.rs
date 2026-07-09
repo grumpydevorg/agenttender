@@ -37,8 +37,12 @@ pub struct QueryOptions {
 /// value (`records=false` → column `j`), then the envelope fields are pulled out
 /// with typed casts. `ts` becomes a real TIMESTAMP; `data`/`data_ref` stay JSON
 /// so `data->>'exit_code'` works and the open-vocabulary payload is not forced
-/// into a wide mostly-NULL table. TRY_CAST so one malformed line yields NULLs,
-/// not a failed query. Envelope contract: event-protocol.md §1.
+/// into a wide mostly-NULL table. Two layers of tolerance keep one bad line from
+/// killing the query: `TRY_CAST` turns a valid line with an unexpected field
+/// value into a NULL in that column (not an error), and the reader itself skips
+/// an unparseable or torn line (`ignore_errors` + `WHERE j IS NOT NULL` in
+/// `build_view_sql`) so it is neither an error nor a phantom counted row.
+/// Envelope contract: event-protocol.md §1.
 const VIEW_PROJECTION: &str = "\
     TRY_CAST(j->>'v' AS INT) AS v, \
     j->>'id' AS id, \
@@ -146,6 +150,11 @@ fn discover_segments(root: &SessionRoot, namespaces: &[Namespace]) -> anyhow::Re
 /// Build the `CREATE VIEW events` preamble over the discovered segments. With no
 /// segments in scope, define an empty view with the same column types so
 /// `SELECT COUNT(*)` returns 0 rather than erroring on a no-file glob.
+///
+/// `ignore_errors=true` lets a torn or corrupt line come back as a NULL row
+/// instead of aborting the read; `WHERE j IS NOT NULL` then drops those rows so
+/// a bad line neither fails the query nor inflates a count. (Event envelopes are
+/// always JSON objects, so a non-NULL `j` is exactly a well-formed event.)
 fn build_view_sql(segments: &[PathBuf]) -> String {
     if segments.is_empty() {
         return format!(
@@ -160,7 +169,9 @@ fn build_view_sql(segments: &[PathBuf]) -> String {
         .join(", ");
     format!(
         "CREATE VIEW events AS SELECT {VIEW_PROJECTION} \
-         FROM read_json([{list}], format='newline_delimited', records=false) t(j);"
+         FROM read_json([{list}], format='newline_delimited', records=false, \
+         ignore_errors=true) t(j) \
+         WHERE j IS NOT NULL;"
     )
 }
 
