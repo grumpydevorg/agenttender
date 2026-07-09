@@ -143,9 +143,9 @@ tender exec ddb -- "$SQL" | jq -e '.exit_code == 0' >/dev/null \
 
 When debugging a failed exec, inspect `.stderr`. The session log still has the surrounding context after the fact.
 
-### 4. `"annotation too large, dropping"` stderr noise is not the exec failing
+### 4. Oversized exec output is silent — it leaves a breadcrumb, not a warning
 
-Large `tender exec` payloads can emit `tender exec: annotation too large even after truncation, dropping` on stderr. It only means the command text could not fit in the annotation line written to `output.log` — the exec itself succeeded or failed normally. Treat it as log-side noise, or filter it: `2> >(rg -v "annotation too large" >&2)`.
+Large `tender exec` payloads no longer print any stderr warning: overflow is normal and quiet. When the full output cannot fit in the annotation line written to `output.log`, Tender records a compact `exec_truncated` breadcrumb instead — `stdout_len`/`stderr_len` plus `stdout_sha256`/`stderr_sha256` (no raw payload). The exec's own JSON result (`stdout`, `stderr`, `exit_code`) is always complete; only the log-side annotation degrades. To find breadcrumbs: `rg '"event":"exec_truncated"' output.log`.
 
 ### 5. Building Tender for target hosts
 
@@ -276,8 +276,6 @@ Frame schema (v1): `{"v":1,"session":"<name>","namespace":"<ns>"?,"cmd":["argv",
 
 ## Known limitations worth filing against Tender
 
-- `tender log` cannot show the original payload for an oversized dropped annotation; a small breadcrumb with size and hash would help.
-- `tender exec` still emits annotation-overflow noise on stderr during large payloads (gotcha §4).
 - PowerShell exec scope rule (gotcha §6) is correct behavior but surprises every new user. A `--persist-scope` flag or session-level toggle would help.
 - `--host exec` against a Windows remote is untested on real hardware (the frame transport is platform-neutral and POSIX-verified; a `win11-vm` smoke run would close this).
 
