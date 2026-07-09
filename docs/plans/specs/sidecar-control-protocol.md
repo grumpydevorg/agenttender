@@ -135,7 +135,7 @@ These are the operations that would migrate from file-based IPC to control RPC i
 ## What this is not
 
 - **Not a second lifecycle model.** The sidecar still owns lifecycle truth; the protocol is how clients talk to it, not a competing authority.
-- **Not a container manager.** Boundary metadata (see `backlog/boundary-metadata.md`) describes where sessions run; the control protocol does not manage those environments.
+- **Not a container manager.** Boundary metadata (see `active/01_boundary-metadata.md`) describes where sessions run; the control protocol does not manage those environments.
 - **Not a durability replacement.** `meta.json` and `output.log` survive sidecar death. RPC connections do not. The protocol augments file-based truth with live control; it does not replace it.
 - **Not HTTP or gRPC.** Too much ceremony for sidecar-local control. Length-prefixed JSON over a duplex stream is sufficient.
 - **Not a multiplexed mega-stream.** Control, work, and terminal traffic stay on separate channels. Mixing semantics violates the control/work plane split (Theme 5).
@@ -150,7 +150,7 @@ PTY automation is designed against file-based lease IPC and does not depend on t
 
 Already shipped. The provenance model (Direct vs Inferred) applies equally to file-based and RPC-based writes. No interaction.
 
-### Boundary metadata (`backlog/boundary-metadata.md`)
+### Boundary metadata (`active/01_boundary-metadata.md`)
 
 Describes where sessions run. The control protocol describes how clients talk to the sidecar. Orthogonal.
 

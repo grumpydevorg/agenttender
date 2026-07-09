@@ -12,7 +12,7 @@ regular files), and this doc's headline principle: event-protocol v1 keeps
 — the event log is not the sole source of truth. Do not implement from this
 doc.  
 **Date:** 2026-05-23  
-**Composes with:** [tender-as-block-runtime.md](tender-as-block-runtime.md), [content-addressable-storage](../backlog/content-addressable-storage.md), [event-log-analytics](../backlog/event-log-analytics.md)
+**Composes with:** [tender-as-block-runtime.md](tender-as-block-runtime.md), [content-addressable-storage](../backlog/content-addressable-storage.md), [event-log-analytics](../active/00_event-log-analytics-v1.md)
 
 How Tender stores and queries every kind of state it accumulates. Three primitives, two file formats, **no transactional database**.
 
@@ -75,7 +75,7 @@ Considered SQLite for live state. Rejected for Tender's scale and shape:
 
 Tender is one daemon per host. Block counts are small (~10k/year for heavy users). Restart cost from log replay is ~50–100 ms for 100k events. SQLite earns nothing here.
 
-DuckDB handles analytical queries (multi-namespace, time-range, joins, aggregation) without writes — see [event-log-analytics](../backlog/event-log-analytics.md). No need for a transactional DB for analytics either.
+DuckDB handles analytical queries (multi-namespace, time-range, joins, aggregation) without writes — see [event-log-analytics](../active/00_event-log-analytics-v1.md). No need for a transactional DB for analytics either.
 
 ## Event log schema
 
@@ -179,7 +179,7 @@ In-memory state index updates on each. Audit trail is automatic — the log show
 3. A test fixture proving forward conversion preserves semantics
 4. Documentation of breaking-vs-additive changes
 
-**Rule**: Tender accepts events with `schema_version <= current`. Newer events from a fresher Tender process are rejected by older readers (forward compatibility is opt-in). Same shape as [boundary-metadata](../backlog/boundary-metadata.md)'s discipline.
+**Rule**: Tender accepts events with `schema_version <= current`. Newer events from a fresher Tender process are rejected by older readers (forward compatibility is opt-in). Same shape as [boundary-metadata](../active/01_boundary-metadata.md)'s discipline.
 
 ## Storage scaling shape
 
@@ -215,8 +215,8 @@ Tender's first delivery is single-machine; later backends are opt-in. Same inter
 | Plan | Relationship |
 |---|---|
 | [content-addressable-storage](../backlog/content-addressable-storage.md) | Implements ③ blob store + provenance hashing |
-| [event-log-analytics](../backlog/event-log-analytics.md) | DuckDB read-side over ① event log; no writes through DuckDB |
-| [boundary-metadata](../backlog/boundary-metadata.md) | Adds `boundary_kind` / `boundary_label` as event fields; reflected in in-memory index |
+| [event-log-analytics](../active/00_event-log-analytics-v1.md) | DuckDB read-side over ① event log; no writes through DuckDB |
+| [boundary-metadata](../active/01_boundary-metadata.md) | Adds `boundary_kind` / `boundary_label` as event fields; reflected in in-memory index |
 | [provenance-on-lifecycle-transitions](../completed/2026-04-16-provenance-on-lifecycle-transitions.md) | Adds `transition_provenance` as event field |
 | event-emit-primitive (active) | Defines the JSONL schema and `tender event emit` writer |
 

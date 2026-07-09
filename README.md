@@ -84,7 +84,7 @@ tender exec  ps -- Get-Date
 tender exec  ps -- Get-Location
 ```
 
-PowerShell variables, imported modules, and loaded `.ps1` dot-sourced state persist. The current exec framing is **known-limited** compared with the shell, Python REPL, and DuckDB lanes: complex expressions and clean stdout capture are not yet reliable. Use it today for simple cmdlets; track the framing cleanup in [`docs/plans/backlog/powershell-exec-framing.md`](docs/plans/backlog/powershell-exec-framing.md).
+PowerShell variables, imported modules, and loaded `.ps1` dot-sourced state persist. Arbitrary expressions, pipelines, multi-statement payloads, and clean stdout/stderr capture all work (via the side-channel result frame). Two documented quirks of the `[scriptblock]::Create` approach are worth knowing — `$global:` scope for cross-call variables, and `Format-*` cmdlets failing inside the frame (use `ConvertTo-Json`) — both covered in the `using-tender` skill (§6/§8).
 
 </details>
 

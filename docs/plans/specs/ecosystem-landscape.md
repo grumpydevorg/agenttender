@@ -85,20 +85,29 @@ answering for PTY sessions.
 Consumers of tender's surface. None of these may gate Lane A, and Lane A
 must not grow features that exist only for them:
 `egui-block-terminal`, the `tender-shell` OSC-133 adapter,
-`tender-completer`, `hermes-block-runtime-integration`,
-`skill-agent-block-runtime`. Their plan docs stay in backlog/ but carry this
-lane label. The egui plan's hard dependency on CAS is dropped (its first
-slice never uses it — confirmed finding).
+`tender-completer`, and `agent-hook-routing`. Their plan docs stay in backlog/
+but carry this lane label. The egui plan's hard dependency on CAS is dropped
+(its first slice never uses it — confirmed finding).
+
+_(Groomed 2026-07-09: `hermes-block-runtime-integration` and
+`skill-agent-block-runtime` were collapsed into the single small
+`agent-hook-routing` item — the skill core already shipped as `using-tender`,
+and the Hermes doc was pre-`event-protocol.md` glue. The umbrella "teach agents
+the Tender CLI" epic is retired.)_
 
 ### Lane C — storage architecture (decision-gated)
 
 `persistence-architecture`, `content-addressable-storage`,
 `event-log-analytics`. All three were written against the now-rejected
 daemon assumption (see [event-protocol.md](./event-protocol.md)) and
-disagree on schema/paths. **No implementation in this lane until the Lane A
-event schema ships and the daemon question is decided.** Analytics v1
-(DuckDB over JSONL) is the least speculative and can follow the emit
-primitive directly.
+disagreed on schema/paths. **The gate is now lifted:** the Lane A event
+schema shipped (event-protocol.md, the daemonless envelope) and the daemon
+question is decided. Accordingly (2026-07-09) `event-log-analytics` was
+rewritten to the shipped v1 envelope and **promoted to the active queue**
+(`active/00_event-log-analytics-v1.md`) — the least-speculative Lane C item,
+DuckDB over JSONL. `content-addressable-storage` stays deferred: its blob
+primitive was already absorbed into event-protocol (`events/blobs/<sha256>`),
+and the remaining provenance/bundle ambition is consumer-gated.
 
 ### Lane D — ecosystem interop (external-facing, opportunistic)
 

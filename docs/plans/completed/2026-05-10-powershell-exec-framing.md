@@ -7,6 +7,15 @@ links:
 
 # PowerShell Exec Framing
 
+**Shipped ~2026-05-10; archived 2026-07-09.** Both halves landed (framing in
+`3f6ff2b`, transcript-noise/side-channel in `f109c52`; design captured in the
+sibling [powershell-exec-side-channel](./2026-05-10-powershell-exec-side-channel.md)),
+verified end-to-end on Windows 11 ARM64. The live PowerShell exec gotchas that
+emerged from the shipped `[scriptblock]::Create` approach (`$global:` scope,
+`Format-*` NullReferenceException) are documented in the `using-tender` skill
+(§6/§8), not open work here. Moved out of `backlog/` where it was sitting as a
+completed plan. See **Status** below.
+
 Fix the PowerShell `exec` target so it can execute arbitrary PowerShell expressions and return clean stdout/stderr without prompt transcript noise.
 
 ## Status
