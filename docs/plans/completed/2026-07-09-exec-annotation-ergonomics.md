@@ -6,8 +6,9 @@ links: []
 
 # Exec Annotation Ergonomics
 
-**Shipped 2026-07-09.** The routine `tender exec: annotation too large even
-after truncation, dropping` stderr warning is gone, and oversized annotations
+**Shipped 2026-07-09 via PR #17.** The routine `tender exec: annotation too
+large even after truncation, dropping` stderr warning is gone, and oversized
+annotations
 now degrade to a compact `exec_truncated` breadcrumb instead of a silent drop.
 The write path was isolated into `write_exec_annotation` (`src/commands/exec.rs`)
 as a four-rung ladder: full record → field-truncated record → breadcrumb (with
