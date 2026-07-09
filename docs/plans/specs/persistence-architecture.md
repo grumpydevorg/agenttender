@@ -179,7 +179,7 @@ In-memory state index updates on each. Audit trail is automatic — the log show
 3. A test fixture proving forward conversion preserves semantics
 4. Documentation of breaking-vs-additive changes
 
-**Rule**: Tender accepts events with `schema_version <= current`. Newer events from a fresher Tender process are rejected by older readers (forward compatibility is opt-in). Same shape as [boundary-metadata](../active/01_boundary-metadata.md)'s discipline.
+**Rule**: Tender accepts events with `schema_version <= current`. Newer events from a fresher Tender process are rejected by older readers (forward compatibility is opt-in). Same shape as [boundary-metadata](../completed/2026-07-10-boundary-metadata.md)'s discipline.
 
 ## Storage scaling shape
 
@@ -216,7 +216,7 @@ Tender's first delivery is single-machine; later backends are opt-in. Same inter
 |---|---|
 | [content-addressable-storage](../backlog/content-addressable-storage.md) | Implements ③ blob store + provenance hashing |
 | [event-log-analytics](../completed/2026-07-09-event-log-analytics-v1.md) | DuckDB read-side over ① event log; no writes through DuckDB |
-| [boundary-metadata](../active/01_boundary-metadata.md) | Adds `boundary_kind` / `boundary_label` as event fields; reflected in in-memory index |
+| [boundary-metadata](../completed/2026-07-10-boundary-metadata.md) | Adds `boundary_kind` / `boundary_label` as event fields; reflected in in-memory index |
 | [provenance-on-lifecycle-transitions](../completed/2026-04-16-provenance-on-lifecycle-transitions.md) | Adds `transition_provenance` as event field |
 | [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md) | Defines the JSONL schema and `tender emit` / `tender events` surfaces |
 

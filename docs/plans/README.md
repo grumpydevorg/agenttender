@@ -10,9 +10,8 @@ Filename prefix sets priority. `ls active/` is the ordered queue. All backlog
 `depends_on` prereqs (event-emit-primitive, remote-ssh-transport,
 pty-session-mode) have shipped, so nothing is dependency-blocked.
 
-| ID | File | Depends On |
-|----|------|------------|
-| boundary-metadata | `01_boundary-metadata.md` | — |
+_Queue empty — boundary-metadata shipped 2026-07-10 (PR #27, main@`d3da227`).
+Next work is pulled from `backlog/` below._
 
 ## backlog/ — Future Work
 
@@ -30,7 +29,7 @@ the live distinction is keep-ready vs deferred-until-a-consumer.
 
 ## completed/
 
-43 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
+44 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
 
 ## specs/
 

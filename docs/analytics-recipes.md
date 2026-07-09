@@ -139,7 +139,12 @@ ORDER BY runs DESC;
 
 - `--namespace` accepts a comma-separated list (`--namespace default,agents`);
   omit it to query every namespace.
-- Grouping by *host* / *boundary* becomes a one-line `GROUP BY` once
-  [boundary-metadata](plans/active/01_boundary-metadata.md) adds those columns to
-  the lifecycle events.
+- Group by *host* / *boundary* using the immutable `data.boundary` snapshot that
+  [boundary-metadata](plans/completed/2026-07-10-boundary-metadata.md) stamps
+  onto `run.starting` / `run.started`. Filter to those launch events and
+  `GROUP BY data->'boundary'->'current'->>'kind'` (or `->>'label'`); to bucket
+  *other* events by boundary, join them to their run's launch event on `run_id`
+  rather than to current `meta.json` — the snapshot is the historical authority,
+  `meta.json` is only current state. The optional `boundary_kind` /
+  `boundary_label` convenience columns remain a deferred `tender query` nicety.
 - Save a query you run often to a `.sql` file and run it with `--file`.

@@ -91,4 +91,4 @@ The practical consequence:
 - **Tender outside, supervising `docker run ...`** works for foreground container jobs. Tender supervises the `docker` client process, not the container object. Do not use with detached containers (`docker run -d`) — Tender would supervise the short-lived client and lose the real workload.
 - **Cross-container session sharing** violates *Theme 2: One authority per fact*. Shared volumes for artifacts are fine; shared volumes for multiple Tender instances mutating the same session state are not.
 
-Tender does not model containers, VMs, or orchestrators as first-class objects. A planned `Boundary` metadata field would *describe* where a session runs without *managing* that environment. See [../plans/active/01_boundary-metadata.md](../plans/active/01_boundary-metadata.md).
+Tender does not model containers, VMs, or orchestrators as first-class objects. The `Boundary` metadata field (shipped 2026-07-10) *describes* where a session runs without *managing* that environment. See [../plans/completed/2026-07-10-boundary-metadata.md](../plans/completed/2026-07-10-boundary-metadata.md).

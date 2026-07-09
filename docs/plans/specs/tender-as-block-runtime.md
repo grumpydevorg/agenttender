@@ -168,13 +168,13 @@ None of these are Tender's responsibility to ship. They are *enabled* by the pro
 | Publish a versioned NDJSON event stream | Embed libghostty for VT parsing (separate `tender-shell` crate) |
 | Store blocks with content-addressed I/O | Provide a query language over outputs (consumers `grep`/`jq` the stream) |
 | Track causality (`parent_block_id`, namespace) | Track tokens, costs, model selection (layer 5 framework concerns) |
-| Cross-host execution (`--host` + Win32 Job Objects + SSH) | Manage container/VM lifecycles (boundary metadata describes only — see [boundary-metadata](../active/01_boundary-metadata.md)) |
+| Cross-host execution (`--host` + Win32 Job Objects + SSH) | Manage container/VM lifecycles (boundary metadata describes only — see [boundary-metadata](../completed/2026-07-10-boundary-metadata.md)) |
 
 ## How This Composes With Existing Backlog
 
 | Backlog item | Relationship |
 |--------------|--------------|
-| [boundary-metadata](../active/01_boundary-metadata.md) | Blocks gain a `boundary` field via `LaunchSpec.boundary`. No conflict. |
+| [boundary-metadata](../completed/2026-07-10-boundary-metadata.md) | Blocks gain a `boundary` field via `LaunchSpec.boundary`. No conflict. |
 | [provenance-on-lifecycle-transitions](../completed/2026-04-16-provenance-on-lifecycle-transitions.md) | The `transition_provenance` becomes a first-class field on every emitted lifecycle event. Aligns. |
 | [agent-hook-routing](../backlog/agent-hook-routing.md) | The skill should teach hooks → `tender emit` as the primary integration pattern for hook-capable agents. |
 | [pty-automation](../backlog/pty-automation.md) | Orthogonal — automation is layer 3 control; events are layer 3 observation. |

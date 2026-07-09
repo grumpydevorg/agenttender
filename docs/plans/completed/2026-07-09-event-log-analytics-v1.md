@@ -173,7 +173,7 @@ GROUP BY tool ORDER BY calls DESC;
 ```
 
 (Grouping by *host*/*boundary* becomes trivial once
-[boundary-metadata](../active/01_boundary-metadata.md) adds those columns to the
+[boundary-metadata](2026-07-10-boundary-metadata.md) adds those columns to the
 lifecycle events.)
 
 ## Scope (v1)
@@ -217,6 +217,6 @@ range).
 ## How this composes
 
 - [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md) — produces the JSONL this queries.
-- [boundary-metadata](../active/01_boundary-metadata.md) — adds boundary columns, making "hosts vs containers" a GROUP BY.
+- [boundary-metadata](2026-07-10-boundary-metadata.md) — adds boundary columns, making "hosts vs containers" a GROUP BY.
 - [content-addressable-storage](../backlog/content-addressable-storage.md) — `data_ref` blob metadata is queryable/joinable if that lands.
 - [egui-block-terminal](../backlog/egui-block-terminal.md) — a GUI's ad-hoc charts run the same DuckDB queries.

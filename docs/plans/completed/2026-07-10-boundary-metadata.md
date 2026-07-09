@@ -7,6 +7,24 @@ links:
 
 # Boundary Metadata — Describe Where a Session Runs
 
+> **Shipped 2026-07-10 via PR #27 at main@`d3da227`.**
+> `LaunchSpec.boundary: Option<BoundaryContext>` (host/container/vm/pod +
+> label) is the current-state authority in `meta.json`; an immutable
+> `data.boundary` snapshot rides `run.starting` / `run.started` **only**
+> (terminal and inferred events join back on `run_id`) as the history
+> authority. CLI: `--boundary KIND:LABEL` (first-colon split, so labels keep
+> tag colons like `my-image:latest`) and repeatable `--boundary-parent`; both
+> survive `--host` arg reconstruction. `status` surfaces it through the existing
+> meta-JSON output; old `meta.json` deserializes with `boundary: None`, and an
+> absent boundary is omitted so canonical hashes stay stable. Covered by
+> `model_boundary`, `cli_boundary`, `model_spec`, and `cli_remote` tests; full
+> suite green. Plan archival follows the implementation PR by design.
+>
+> **Scope note:** the optional `boundary_kind` / `boundary_label` query
+> convenience columns remain the documented *later nicety* (see "Querying by
+> boundary" below) — **not** part of this slice. Strong-v1 boundary analytics
+> is the snapshot / `run_id` join, which needs no `tender query` change.
+
 Add an optional boundary descriptor to sessions so `status`, `watch`, and a future `graph` command can show where sessions run without managing those environments.
 
 ## Why
