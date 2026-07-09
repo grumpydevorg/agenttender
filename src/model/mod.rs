@@ -1,3 +1,4 @@
+pub mod boundary;
 pub mod dep_fail;
 pub mod event;
 pub mod ids;

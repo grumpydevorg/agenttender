@@ -22,6 +22,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::log::LogLine;
+use crate::model::boundary::BoundaryContext;
 use crate::model::dep_fail::DepFailReason;
 use crate::model::event::{DataRef, ENVELOPE_VERSION, Event, EventTimestamp, Kind, Uuid7};
 use crate::model::ids::{Namespace, RunId, SessionName, Source};
@@ -387,8 +388,18 @@ pub fn lifecycle_kind(status: &RunStatus) -> Kind {
 /// Lifecycle event `data`: watch's data shape (kept intact — watch output is
 /// a frozen compat surface) plus `provenance` per spec §1 example (a) and
 /// the §4 one-provenance-vocabulary rule.
+///
+/// When `boundary` is present it is stamped — denormalized and immutable — into
+/// the `run.starting` / `run.started` events only (the launch events). This is
+/// a copy *derived from* `LaunchSpec.boundary`; historical analytics read it,
+/// or join other events to the launch event on `run_id`. Terminal events do not
+/// re-carry it (docs/plans/active/01_boundary-metadata.md).
 #[must_use]
-pub fn lifecycle_data(status: &RunStatus, provenance: &str) -> serde_json::Value {
+pub fn lifecycle_data(
+    status: &RunStatus,
+    provenance: &str,
+    boundary: Option<&BoundaryContext>,
+) -> serde_json::Value {
     let mut data = match status {
         RunStatus::Starting => serde_json::json!({"status": "Starting"}),
         RunStatus::Running { .. } => serde_json::json!({"status": "Running"}),
@@ -420,6 +431,14 @@ pub fn lifecycle_data(status: &RunStatus, provenance: &str) -> serde_json::Value
         }
     };
     data["provenance"] = serde_json::Value::String(provenance.to_owned());
+    // The boundary snapshot rides only the launch events; terminal/inferred
+    // events join back to it on run_id.
+    if let Some(boundary) = boundary {
+        if matches!(status, RunStatus::Starting | RunStatus::Running { .. }) {
+            data["boundary"] =
+                serde_json::to_value(boundary).expect("BoundaryContext is always serializable");
+        }
+    }
     data
 }
 

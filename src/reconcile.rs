@@ -133,7 +133,11 @@ fn append_sidecar_lost_event(session: &SessionDir, meta: &Meta) {
         source,
         block_id: None,
         parent_id: None,
-        data: Some(events::lifecycle_data(meta.status(), "inferred")),
+        data: Some(events::lifecycle_data(
+            meta.status(),
+            "inferred",
+            meta.launch_spec().boundary.as_ref(),
+        )),
         preview: None,
     };
     let mut writer = EventWriter::new(session.path());

@@ -971,3 +971,52 @@ fn host_exec_frame_stdin_passes_through() {
         .args(["kill", "shell", "--force"])
         .assert();
 }
+
+#[test]
+fn start_boundary_is_reconstructed_for_ssh() {
+    // --boundary / --boundary-parent must survive the local→remote arg
+    // reconstruction so a `--host` start declares the same boundary remotely.
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+
+    let tmp = fake_ssh_echo();
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+        .args([
+            "--host",
+            "user@box",
+            "start",
+            "job",
+            "--boundary",
+            "container:img:latest",
+            "--boundary-parent",
+            "host:data-box",
+            "--",
+            "echo",
+            "hi",
+        ])
+        .env("PATH", tmp.path())
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let args: Vec<&str> = stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("ARG:"))
+        .collect();
+
+    assert!(args.contains(&"--boundary"), "missing --boundary: {args:?}");
+    assert!(
+        args.contains(&"container:img:latest"),
+        "missing boundary value: {args:?}"
+    );
+    assert!(
+        args.contains(&"--boundary-parent"),
+        "missing --boundary-parent: {args:?}"
+    );
+    assert!(
+        args.contains(&"host:data-box"),
+        "missing boundary-parent value: {args:?}"
+    );
+    // The trailing command must still be present and after the boundary flags.
+    assert!(args.contains(&"echo"), "missing trailing cmd: {args:?}");
+}
