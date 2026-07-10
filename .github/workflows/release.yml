@@ -26,6 +26,10 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job has no checkout, so gh can't infer the repo from a local
+          # git remote — point it at the repo explicitly (the create/view calls
+          # are pure API operations, no working tree needed).
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
