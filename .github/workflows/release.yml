@@ -19,8 +19,20 @@ permissions:
   attestations: write # write build provenance
 
 jobs:
+  create-release:
+    name: create release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+
   build:
     name: ${{ matrix.target }}
+    needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -39,7 +51,9 @@ jobs:
 
       - name: Install Zig (for cargo-zigbuild musl cross)
         if: matrix.zig
-        uses: mlugg/setup-zig@v1
+        uses: mlugg/setup-zig@v2.2.1
+        with:
+          version: 0.15.2
 
       - name: Install cargo-zigbuild
         if: matrix.zig
@@ -71,8 +85,11 @@ jobs:
           subject-path: ${{ steps.pkg.outputs.archive }}
 
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ${{ steps.pkg.outputs.archive }}
-            ${{ steps.pkg.outputs.archive }}.sha256
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "${{ steps.pkg.outputs.archive }}" \
+            "${{ steps.pkg.outputs.archive }}.sha256" \
+            --clobber
