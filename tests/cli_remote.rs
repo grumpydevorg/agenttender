@@ -683,6 +683,55 @@ fn host_query_is_local_only_with_fallback() {
     );
 }
 
+/// `guide` and `skill` print/write local files, so `--host` is meaningless:
+/// exit 2 with a copy-paste ssh fallback, the same treatment as run/wrap/prune/
+/// query rather than the generic rejection. The skill case also proves the
+/// subcommand + its flags round-trip into the fallback argv.
+#[test]
+fn host_guide_and_skill_are_local_only_with_fallback() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+
+    let tmp = poison_ssh();
+    for (verb, cmd_args, expected_tail) in [
+        (
+            "guide",
+            vec!["--host", "user@box", "guide", "exec"],
+            vec!["guide", "exec"],
+        ),
+        (
+            "skill",
+            vec![
+                "--host", "user@box", "skill", "install", "--global", "--force",
+            ],
+            vec!["skill", "install", "--global", "--force"],
+        ),
+    ] {
+        let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+            .args(&cmd_args)
+            .env("PATH", tmp.path())
+            .output()
+            .unwrap();
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{verb} --host is a usage error"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("'{verb}' is local-only")),
+            "{verb} names itself and says local-only: {stderr}"
+        );
+        let remote = parse_fallback_argv(&stderr, "user@box");
+        assert_eq!(remote[0], "tender");
+        assert_eq!(
+            &remote[1..],
+            expected_tail.as_slice(),
+            "fallback round-trips"
+        );
+    }
+}
+
 /// Commands outside the plan's four verbs (`events`, `emit`) keep the
 /// generic unsupported-over-SSH rejection untouched — spec §8 defers
 /// their local-only help text to slice 5.

@@ -83,7 +83,9 @@ The same start/exec model turns any REPL into a durable session. In-memory
 state — imported modules, loaded DataFrames, DuckDB tables, open connections —
 survives across every `exec`.
 
-**DuckDB** — structured JSON rows, ready to parse:
+### DuckDB
+
+Structured JSON rows, ready to parse:
 
 ```bash
 tender start --stdin ddb -- duckdb :memory:
@@ -91,7 +93,9 @@ tender exec  ddb -- "CREATE TABLE t AS SELECT range AS id, range * 2 AS val FROM
 tender exec  ddb -- "SELECT count(*), sum(val) FROM t;"     # → [{"count_star()":5,"sum(val)":"20"}]
 ```
 
-**Python / IPython** — the namespace persists:
+### Python / IPython
+
+The namespace persists:
 
 ```bash
 tender start --stdin py -- python3 -i                       # or: ipython --no-banner
@@ -99,8 +103,10 @@ tender exec  py -- 'import pandas as pd; df = pd.read_csv("data.csv")'
 tender exec  py -- 'print(df.describe())'                   # df still loaded
 ```
 
-**PowerShell** (`powershell` or `pwsh`) — same clean-capture envelope, with two
-quirks worth knowing:
+### PowerShell
+
+`powershell` or `pwsh` — same clean-capture envelope, with two quirks worth
+knowing:
 
 - Each `exec` runs inside a fresh scriptblock scope, so variables need `$global:`
   to persist across calls (`$global:x = 42`). `Set-Location`, modules, and
