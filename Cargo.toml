@@ -9,6 +9,9 @@ repository = "https://github.com/grumpydevorg/agenttender"
 readme = "README.md"
 keywords = ["cli", "supervisor", "agent", "process", "session"]
 categories = ["command-line-utilities", "development-tools"]
+# Keep internal test helpers under src/bin from becoming published/installable
+# binaries; the public binary is declared explicitly below.
+autobins = false
 # Whitelist the crate package: all source (carries the embedded
 # src/embedded/SKILL.md), the guide the binary include_str!s, README, licenses.
 # `include` (not `exclude`) so the two include_str! targets can never be dropped
