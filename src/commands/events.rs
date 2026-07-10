@@ -11,8 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tender::events::{
-    POLL_INTERVAL, decode_cursor, encode_cursor, merge_key, project_log_line,
-    read_segment_records,
+    POLL_INTERVAL, decode_cursor, encode_cursor, merge_key, project_log_line, read_segment_records,
 };
 use tender::log::LogLine;
 use tender::model::event::{Event, EventTimestamp};
@@ -123,7 +122,10 @@ impl CursorTracker {
     }
 
     fn note_pending(&mut self, rel: &str, start: u64) {
-        self.pending.entry(rel.to_owned()).or_default().insert(start);
+        self.pending
+            .entry(rel.to_owned())
+            .or_default()
+            .insert(start);
     }
 
     fn note_consumed(&mut self, rel: &str, start: u64) {

@@ -234,6 +234,7 @@ fn append_wrap_event(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_annotation_payloads(
     source: &Source,
     event: &str,

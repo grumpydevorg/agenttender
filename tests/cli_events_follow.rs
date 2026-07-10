@@ -141,7 +141,10 @@ fn follow_replays_history_then_streams_new_events() {
     std::thread::sleep(Duration::from_millis(500));
 
     let records = kill_and_read(child);
-    let kinds: Vec<&str> = records.iter().map(|r| r["kind"].as_str().unwrap()).collect();
+    let kinds: Vec<&str> = records
+        .iter()
+        .map(|r| r["kind"].as_str().unwrap())
+        .collect();
     assert!(
         kinds.starts_with(&["run.starting", "run.started"]),
         "history replays first, got: {kinds:?}"
@@ -165,7 +168,13 @@ fn follow_output_is_merge_ordered_by_ts_writer_seq() {
     // next poll — they arrive in one batch and must come out merge-ordered.
     for i in 0..5 {
         tender(&root)
-            .args(["emit", "--kind", &format!("test.burst{i}"), "--session", "s1"])
+            .args([
+                "emit",
+                "--kind",
+                &format!("test.burst{i}"),
+                "--session",
+                "s1",
+            ])
             .assert()
             .success();
     }

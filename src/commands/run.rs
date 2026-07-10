@@ -8,6 +8,7 @@ use tender::model::ids::Namespace;
 use tender::model::state::{ExitReason, RunStatus};
 use tender::session;
 
+#[allow(clippy::too_many_arguments)] // launch surface; bundled into a request DTO by the frame-transport work
 pub fn cmd_run(
     script: &Path,
     args: Vec<String>,
@@ -302,6 +303,7 @@ struct EffectiveOptions {
     any_exit: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn merge_directives_with_cli(
     d: &Directives,
     cli_namespace: Option<&Namespace>,
@@ -430,8 +432,13 @@ mod tests {
     #[test]
     fn resolve_extension_case_insensitive() {
         let result = resolve_shell_argv(
-            None, "/tmp/HELLO.PY", Path::new("/tmp/HELLO.PY"), "", vec![]
-        ).unwrap();
+            None,
+            "/tmp/HELLO.PY",
+            Path::new("/tmp/HELLO.PY"),
+            "",
+            vec![],
+        )
+        .unwrap();
         assert_eq!(result[0], if cfg!(windows) { "py" } else { "python3" });
     }
 
@@ -444,13 +451,19 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn shebang_basic() {
-        assert_eq!(parse_shebang("#!/bin/bash\necho hi"), Some("/bin/bash".to_string()));
+        assert_eq!(
+            parse_shebang("#!/bin/bash\necho hi"),
+            Some("/bin/bash".to_string())
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn shebang_env() {
-        assert_eq!(parse_shebang("#!/usr/bin/env python3\nprint(1)"), Some("python3".to_string()));
+        assert_eq!(
+            parse_shebang("#!/usr/bin/env python3\nprint(1)"),
+            Some("python3".to_string())
+        );
     }
 
     #[cfg(unix)]
@@ -468,16 +481,26 @@ mod tests {
     #[test]
     fn resolve_shell_override() {
         let result = resolve_shell_argv(
-            Some("ruby"), "/tmp/test.xyz", Path::new("/tmp/test.xyz"), "", vec![]
-        ).unwrap();
+            Some("ruby"),
+            "/tmp/test.xyz",
+            Path::new("/tmp/test.xyz"),
+            "",
+            vec![],
+        )
+        .unwrap();
         assert_eq!(result, vec!["ruby", "/tmp/test.xyz"]);
     }
 
     #[test]
     fn resolve_extension_py() {
         let result = resolve_shell_argv(
-            None, "/tmp/test.py", Path::new("/tmp/test.py"), "", vec!["arg1".to_string()]
-        ).unwrap();
+            None,
+            "/tmp/test.py",
+            Path::new("/tmp/test.py"),
+            "",
+            vec!["arg1".to_string()],
+        )
+        .unwrap();
         if cfg!(windows) {
             assert_eq!(result[0], "py");
             assert_eq!(result[1], "-3");
@@ -493,7 +516,11 @@ mod tests {
     #[test]
     fn resolve_unknown_fails() {
         let result = resolve_shell_argv(
-            None, "/tmp/test.xyz", Path::new("/tmp/test.xyz"), "no shebang here", vec![]
+            None,
+            "/tmp/test.xyz",
+            Path::new("/tmp/test.xyz"),
+            "no shebang here",
+            vec![],
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();

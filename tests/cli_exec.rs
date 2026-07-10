@@ -20,8 +20,17 @@ fn python_repl_argv() -> &'static [&'static str] {
 
 /// Build tender start args for a Python REPL session.
 fn python_start_args(session: &str) -> Vec<String> {
-    let mut args: Vec<String> = ["start", session, "--stdin", "--exec-target", "python-repl", "--"]
-        .iter().map(|s| s.to_string()).collect();
+    let mut args: Vec<String> = [
+        "start",
+        session,
+        "--stdin",
+        "--exec-target",
+        "python-repl",
+        "--",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     args.extend(python_repl_argv().iter().map(|s| s.to_string()));
     args
 }
@@ -29,7 +38,9 @@ fn python_start_args(session: &str) -> Vec<String> {
 /// Build tender start args for a Python session without --exec-target (for inference tests).
 fn python_start_args_no_target(session: &str) -> Vec<String> {
     let mut args: Vec<String> = ["start", session, "--stdin", "--"]
-        .iter().map(|s| s.to_string()).collect();
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     args.extend(python_repl_argv().iter().map(|s| s.to_string()));
     args
 }
@@ -263,7 +274,14 @@ fn exec_oversized_output_is_quiet_and_leaves_breadcrumb() {
     // Both streams multi-KB so even the field-truncated annotation overflows
     // the cap, forcing the breadcrumb path.
     let output = harness::tender(&root)
-        .args(["exec", "shell", "--", "bash", "-c", "seq 1 2000; seq 1 2000 >&2"])
+        .args([
+            "exec",
+            "shell",
+            "--",
+            "bash",
+            "-c",
+            "seq 1 2000; seq 1 2000 >&2",
+        ])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -379,7 +397,15 @@ fn exec_explicit_posix_target() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--exec-target", "posix-shell", "--", "bash"])
+        .args([
+            "start",
+            "shell",
+            "--stdin",
+            "--exec-target",
+            "posix-shell",
+            "--",
+            "bash",
+        ])
         .assert()
         .success();
     harness::wait_running(&root, "shell");
@@ -389,12 +415,18 @@ fn exec_explicit_posix_target() {
         .args(["exec", "shell", "--", "echo", "explicit"])
         .output()
         .unwrap();
-    assert!(output.status.success(), "exec failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "exec failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert!(result["stdout"].as_str().unwrap().contains("explicit"));
 
-    let _ = harness::tender(&root).args(["kill", "shell", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "shell", "--force"])
+        .assert();
 }
 
 /// exec on a session with no exec target fails with clear message.
@@ -415,7 +447,9 @@ fn exec_none_target_rejected() {
         .failure()
         .stderr(predicates::str::contains("no exec target"));
 
-    let _ = harness::tender(&root).args(["kill", "sleeper", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "sleeper", "--force"])
+        .assert();
 }
 
 /// bash infers PosixShell, exec works without --exec-target.
@@ -434,11 +468,17 @@ fn exec_infers_posix_from_bash() {
         .args(["exec", "shell", "--", "echo", "inferred"])
         .output()
         .unwrap();
-    assert!(output.status.success(), "exec failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "exec failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(result["stdout"].as_str().unwrap().contains("inferred"));
 
-    let _ = harness::tender(&root).args(["kill", "shell", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "shell", "--force"])
+        .assert();
 }
 
 /// Invalid --exec-target value fails at start (clap rejects it).
@@ -447,7 +487,15 @@ fn start_invalid_exec_target() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--exec-target", "fish", "--", "bash"])
+        .args([
+            "start",
+            "shell",
+            "--stdin",
+            "--exec-target",
+            "fish",
+            "--",
+            "bash",
+        ])
         .assert()
         .failure();
 }
@@ -460,19 +508,37 @@ fn exec_target_changes_session_identity() {
 
     // Start with posix-shell
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--exec-target", "posix-shell", "--", "bash"])
+        .args([
+            "start",
+            "shell",
+            "--stdin",
+            "--exec-target",
+            "posix-shell",
+            "--",
+            "bash",
+        ])
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
     // Same name, different exec-target → conflict
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--exec-target", "powershell", "--", "bash"])
+        .args([
+            "start",
+            "shell",
+            "--stdin",
+            "--exec-target",
+            "powershell",
+            "--",
+            "bash",
+        ])
         .assert()
         .failure()
         .stderr(predicates::str::contains("session conflict"));
 
-    let _ = harness::tender(&root).args(["kill", "shell", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "shell", "--force"])
+        .assert();
 }
 
 /// Python REPL exec: basic print statement.
@@ -489,21 +555,39 @@ fn exec_python_repl_basic() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     let output = harness::tender(&root)
-        .args(["exec", "py", "--timeout", "10", "--", "print('hello from python')"])
+        .args([
+            "exec",
+            "py",
+            "--timeout",
+            "10",
+            "--",
+            "print('hello from python')",
+        ])
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "exec failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "exec failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["exit_code"].as_i64(), Some(0));
-    assert!(result["stdout"].as_str().unwrap().contains("hello from python"));
+    assert!(
+        result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("hello from python")
+    );
     let cwd = result["cwd_after"].as_str().unwrap();
     assert!(
         std::path::Path::new(cwd).is_absolute(),
         "cwd_after should be absolute, got: {cwd}"
     );
 
-    let _ = harness::tender(&root).args(["kill", "py", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "py", "--force"])
+        .assert();
 }
 
 /// Python REPL exec: exception produces non-zero exit and traceback in stderr.
@@ -520,7 +604,14 @@ fn exec_python_repl_exception() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     let output = harness::tender(&root)
-        .args(["exec", "py", "--timeout", "10", "--", "raise ValueError('boom')"])
+        .args([
+            "exec",
+            "py",
+            "--timeout",
+            "10",
+            "--",
+            "raise ValueError('boom')",
+        ])
         .output()
         .unwrap();
 
@@ -530,7 +621,9 @@ fn exec_python_repl_exception() {
     assert!(result["stderr"].as_str().unwrap().contains("ValueError"));
     assert!(result["stderr"].as_str().unwrap().contains("boom"));
 
-    let _ = harness::tender(&root).args(["kill", "py", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "py", "--force"])
+        .assert();
 }
 
 /// Python REPL exec: cwd changes are tracked.
@@ -570,7 +663,9 @@ fn exec_python_repl_cwd() {
         "cwd should be absolute after chdir, got: {cwd}"
     );
 
-    let _ = harness::tender(&root).args(["kill", "py", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "py", "--force"])
+        .assert();
 }
 
 /// python/python3/ipython (and Windows `py`) infer PythonRepl when started
@@ -601,7 +696,9 @@ fn exec_python_inferred() {
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert_eq!(result["stdout"].as_str().unwrap().trim(), "2");
 
-    let _ = harness::tender(&root).args(["kill", "py", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "py", "--force"])
+        .assert();
 }
 
 /// DuckDB inferred from argv[0].
@@ -641,7 +738,13 @@ fn exec_duckdb_basic_select() {
 
     harness::tender(&root)
         .args([
-            "start", "db", "--stdin", "--exec-target", "duckdb", "--", "duckdb",
+            "start",
+            "db",
+            "--stdin",
+            "--exec-target",
+            "duckdb",
+            "--",
+            "duckdb",
         ])
         .assert()
         .success();
@@ -650,7 +753,12 @@ fn exec_duckdb_basic_select() {
 
     let output = harness::tender(&root)
         .args([
-            "exec", "db", "--timeout", "10", "--", "SELECT 42 as answer;",
+            "exec",
+            "db",
+            "--timeout",
+            "10",
+            "--",
+            "SELECT 42 as answer;",
         ])
         .output()
         .unwrap();
@@ -673,9 +781,7 @@ fn exec_duckdb_basic_select() {
     );
 
     // No exec-results directory — DuckDB doesn't use side-channel files
-    let results_dir = root
-        .path()
-        .join(".tender/sessions/default/db/exec-results");
+    let results_dir = root.path().join(".tender/sessions/default/db/exec-results");
     assert!(
         !results_dir.exists(),
         "exec-results/ should not exist for DuckDB"
@@ -694,7 +800,13 @@ fn exec_duckdb_sql_error() {
 
     harness::tender(&root)
         .args([
-            "start", "db", "--stdin", "--exec-target", "duckdb", "--", "duckdb",
+            "start",
+            "db",
+            "--stdin",
+            "--exec-target",
+            "duckdb",
+            "--",
+            "duckdb",
         ])
         .assert()
         .success();
@@ -740,7 +852,12 @@ fn exec_duckdb_sql_error() {
     // Verify the session can still handle another query after error
     let output2 = harness::tender(&root)
         .args([
-            "exec", "db", "--timeout", "10", "--", "SELECT 'recovered' as status;",
+            "exec",
+            "db",
+            "--timeout",
+            "10",
+            "--",
+            "SELECT 'recovered' as status;",
         ])
         .output()
         .unwrap();
@@ -766,7 +883,13 @@ fn exec_duckdb_multi_statement() {
 
     harness::tender(&root)
         .args([
-            "start", "db", "--stdin", "--exec-target", "duckdb", "--", "duckdb",
+            "start",
+            "db",
+            "--stdin",
+            "--exec-target",
+            "duckdb",
+            "--",
+            "duckdb",
         ])
         .assert()
         .success();
@@ -795,8 +918,14 @@ fn exec_duckdb_multi_statement() {
 
     // Both query results should be in stdout
     let stdout = result["stdout"].as_str().expect("stdout should be present");
-    assert!(stdout.contains('1'), "stdout should contain first query result");
-    assert!(stdout.contains('2'), "stdout should contain second query result");
+    assert!(
+        stdout.contains('1'),
+        "stdout should contain first query result"
+    );
+    assert!(
+        stdout.contains('2'),
+        "stdout should contain second query result"
+    );
 
     let _ = harness::tender(&root)
         .args(["kill", "db", "--force"])
@@ -811,7 +940,13 @@ fn exec_duckdb_explicit_target() {
 
     harness::tender(&root)
         .args([
-            "start", "db", "--stdin", "--exec-target", "duckdb", "--", "duckdb",
+            "start",
+            "db",
+            "--stdin",
+            "--exec-target",
+            "duckdb",
+            "--",
+            "duckdb",
         ])
         .assert()
         .success();
@@ -852,7 +987,13 @@ fn exec_duckdb_mixed_success_reports_error() {
 
     harness::tender(&root)
         .args([
-            "start", "db", "--stdin", "--exec-target", "duckdb", "--", "duckdb",
+            "start",
+            "db",
+            "--stdin",
+            "--exec-target",
+            "duckdb",
+            "--",
+            "duckdb",
         ])
         .assert()
         .success();
@@ -871,8 +1012,8 @@ fn exec_duckdb_mixed_success_reports_error() {
         .output()
         .unwrap();
 
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .expect("stdout should contain JSON result");
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should contain JSON result");
     assert_eq!(
         result["exit_code"].as_i64(),
         Some(1),
@@ -880,7 +1021,10 @@ fn exec_duckdb_mixed_success_reports_error() {
     );
     // stdout should still have the first query's results
     let stdout = result["stdout"].as_str().unwrap_or("");
-    assert!(stdout.contains('1'), "stdout should contain first query result: {stdout}");
+    assert!(
+        stdout.contains('1'),
+        "stdout should contain first query result: {stdout}"
+    );
     // stderr should have the error from the second query
     let stderr = result["stderr"].as_str().unwrap_or("");
     assert!(
@@ -912,7 +1056,13 @@ fn exec_duckdb_path_with_spaces() {
     let mut cmd = assert_cmd::Command::cargo_bin("tender").unwrap();
     cmd.env("HOME", &spaced_dir);
     cmd.args([
-        "start", "db", "--stdin", "--exec-target", "duckdb", "--", "duckdb",
+        "start",
+        "db",
+        "--stdin",
+        "--exec-target",
+        "duckdb",
+        "--",
+        "duckdb",
     ]);
     cmd.assert().success();
 
@@ -939,7 +1089,12 @@ fn exec_duckdb_path_with_spaces() {
     let mut exec_cmd = assert_cmd::Command::cargo_bin("tender").unwrap();
     exec_cmd.env("HOME", &spaced_dir);
     exec_cmd.args([
-        "exec", "db", "--timeout", "10", "--", "SELECT 42 as answer;",
+        "exec",
+        "db",
+        "--timeout",
+        "10",
+        "--",
+        "SELECT 42 as answer;",
     ]);
     let output = exec_cmd.output().unwrap();
 
@@ -977,9 +1132,19 @@ fn powershell_start_args(session: &str) -> Vec<String> {
     // Plain `powershell -NoProfile` enters interactive REPL mode and reads
     // commands from the persistent stdin pipe. `-Command -` would buffer
     // until EOF and only execute once — incompatible with multiple execs.
-    ["start", session, "--stdin", "--exec-target", "powershell", "--",
-     "powershell", "-NoProfile"]
-        .iter().map(|s| s.to_string()).collect()
+    [
+        "start",
+        session,
+        "--stdin",
+        "--exec-target",
+        "powershell",
+        "--",
+        "powershell",
+        "-NoProfile",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 /// PowerShell exec: simple echo produces clean stdout — no prompt prefix,
@@ -1005,16 +1170,31 @@ fn exec_powershell_clean_stdout() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "exec failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "exec failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     let stdout = result["stdout"].as_str().unwrap();
-    assert!(!stdout.contains("PS "), "stdout must not contain prompt: {stdout:?}");
-    assert!(!stdout.contains("__TENDER_EXEC__"), "stdout must not contain framing");
-    assert!(!stdout.contains("FromBase64String"), "stdout must not contain frame source");
+    assert!(
+        !stdout.contains("PS "),
+        "stdout must not contain prompt: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("__TENDER_EXEC__"),
+        "stdout must not contain framing"
+    );
+    assert!(
+        !stdout.contains("FromBase64String"),
+        "stdout must not contain frame source"
+    );
     assert_eq!(stdout.trim(), "hello-world");
 
-    let _ = harness::tender(&root).args(["kill", "ps", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "ps", "--force"])
+        .assert();
 }
 
 /// PowerShell exec: arbitrary expression — `$x = 1; $x + 1` → stdout `2`.
@@ -1024,7 +1204,10 @@ fn exec_powershell_arbitrary_expression() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root).args(powershell_start_args("ps")).assert().success();
+    harness::tender(&root)
+        .args(powershell_start_args("ps"))
+        .assert()
+        .success();
     harness::wait_running(&root, "ps");
     std::thread::sleep(std::time::Duration::from_millis(800));
 
@@ -1033,12 +1216,18 @@ fn exec_powershell_arbitrary_expression() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "exec failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "exec failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert_eq!(result["stdout"].as_str().unwrap().trim(), "2");
 
-    let _ = harness::tender(&root).args(["kill", "ps", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "ps", "--force"])
+        .assert();
 }
 
 /// PowerShell exec: pipeline emits each item on its own line.
@@ -1048,24 +1237,43 @@ fn exec_powershell_pipeline() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root).args(powershell_start_args("ps")).assert().success();
+    harness::tender(&root)
+        .args(powershell_start_args("ps"))
+        .assert()
+        .success();
     harness::wait_running(&root, "ps");
     std::thread::sleep(std::time::Duration::from_millis(800));
 
     let output = harness::tender(&root)
-        .args(["exec", "ps", "--timeout", "15", "--",
-               "1..3 | ForEach-Object { $_ * 10 }"])
+        .args([
+            "exec",
+            "ps",
+            "--timeout",
+            "15",
+            "--",
+            "1..3 | ForEach-Object { $_ * 10 }",
+        ])
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "exec failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "exec failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     let stdout = result["stdout"].as_str().unwrap();
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert_eq!(lines, vec!["10", "20", "30"], "pipeline output unexpected: {stdout:?}");
+    assert_eq!(
+        lines,
+        vec!["10", "20", "30"],
+        "pipeline output unexpected: {stdout:?}"
+    );
 
-    let _ = harness::tender(&root).args(["kill", "ps", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "ps", "--force"])
+        .assert();
 }
 
 /// PowerShell exec: variables persist across exec calls (same REPL session).
@@ -1075,28 +1283,51 @@ fn exec_powershell_state_persists_across_calls() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root).args(powershell_start_args("ps")).assert().success();
+    harness::tender(&root)
+        .args(powershell_start_args("ps"))
+        .assert()
+        .success();
     harness::wait_running(&root, "ps");
     std::thread::sleep(std::time::Duration::from_millis(800));
 
     // Set a variable
     harness::tender(&root)
-        .args(["exec", "ps", "--timeout", "15", "--", "$global:tender_test_var = 42"])
+        .args([
+            "exec",
+            "ps",
+            "--timeout",
+            "15",
+            "--",
+            "$global:tender_test_var = 42",
+        ])
         .assert()
         .success();
 
     // Read it back in a separate exec
     let output = harness::tender(&root)
-        .args(["exec", "ps", "--timeout", "15", "--", "$global:tender_test_var"])
+        .args([
+            "exec",
+            "ps",
+            "--timeout",
+            "15",
+            "--",
+            "$global:tender_test_var",
+        ])
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "exec failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "exec failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert_eq!(result["stdout"].as_str().unwrap().trim(), "42");
 
-    let _ = harness::tender(&root).args(["kill", "ps", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "ps", "--force"])
+        .assert();
 }
 
 /// PowerShell exec: Write-Error goes to stderr field, not stdout.
@@ -1106,7 +1337,10 @@ fn exec_powershell_stderr_separated() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root).args(powershell_start_args("ps")).assert().success();
+    harness::tender(&root)
+        .args(powershell_start_args("ps"))
+        .assert()
+        .success();
     harness::wait_running(&root, "ps");
     std::thread::sleep(std::time::Duration::from_millis(800));
 
@@ -1117,12 +1351,20 @@ fn exec_powershell_stderr_separated() {
 
     // Write-Error sets $? = false, so frame reports exit 1; CLI propagates.
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(result["stderr"].as_str().unwrap().contains("oops"),
-            "stderr should contain error: {:?}", result["stderr"]);
-    assert!(!result["stdout"].as_str().unwrap().contains("oops"),
-            "stderr must not leak into stdout: {:?}", result["stdout"]);
+    assert!(
+        result["stderr"].as_str().unwrap().contains("oops"),
+        "stderr should contain error: {:?}",
+        result["stderr"]
+    );
+    assert!(
+        !result["stdout"].as_str().unwrap().contains("oops"),
+        "stderr must not leak into stdout: {:?}",
+        result["stdout"]
+    );
 
-    let _ = harness::tender(&root).args(["kill", "ps", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "ps", "--force"])
+        .assert();
 }
 
 /// PowerShell exec: Set-Location is reflected in cwd_after on next call.
@@ -1132,7 +1374,10 @@ fn exec_powershell_cwd_after() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root).args(powershell_start_args("ps")).assert().success();
+    harness::tender(&root)
+        .args(powershell_start_args("ps"))
+        .assert()
+        .success();
     harness::wait_running(&root, "ps");
     std::thread::sleep(std::time::Duration::from_millis(800));
 
@@ -1142,13 +1387,21 @@ fn exec_powershell_cwd_after() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "exec failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "exec failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let cwd = result["cwd_after"].as_str().unwrap();
-    assert!(cwd.eq_ignore_ascii_case("C:\\") || cwd.eq_ignore_ascii_case("C:/"),
-            "cwd_after should reflect Set-Location, got: {cwd:?}");
+    assert!(
+        cwd.eq_ignore_ascii_case("C:\\") || cwd.eq_ignore_ascii_case("C:/"),
+        "cwd_after should reflect Set-Location, got: {cwd:?}"
+    );
 
-    let _ = harness::tender(&root).args(["kill", "ps", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "ps", "--force"])
+        .assert();
 }
 
 /// Side-channel result file is cleaned up after exec.
@@ -1165,7 +1418,14 @@ fn exec_python_result_file_cleaned() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     harness::tender(&root)
-        .args(["exec", "py", "--timeout", "10", "--", "print('cleanup test')"])
+        .args([
+            "exec",
+            "py",
+            "--timeout",
+            "10",
+            "--",
+            "print('cleanup test')",
+        ])
         .assert()
         .success();
 
@@ -1173,10 +1433,15 @@ fn exec_python_result_file_cleaned() {
     let results_dir = root.path().join(".tender/sessions/default/py/exec-results");
     if results_dir.exists() {
         let entries: Vec<_> = std::fs::read_dir(&results_dir).unwrap().collect();
-        assert!(entries.is_empty(), "result files should be cleaned up, found: {entries:?}");
+        assert!(
+            entries.is_empty(),
+            "result files should be cleaned up, found: {entries:?}"
+        );
     }
 
-    let _ = harness::tender(&root).args(["kill", "py", "--force"]).assert();
+    let _ = harness::tender(&root)
+        .args(["kill", "py", "--force"])
+        .assert();
 }
 
 // --- Slice 3: exec.started / exec.result events (plan scope 1) ---

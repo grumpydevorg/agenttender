@@ -77,10 +77,7 @@ fn since_excludes_earlier_events() {
         .filter(|e| e["ts"].as_str().unwrap() >= since.as_str())
         .map(|e| e["id"].as_str().unwrap())
         .collect();
-    let got: Vec<&str> = filtered
-        .iter()
-        .map(|e| e["id"].as_str().unwrap())
-        .collect();
+    let got: Vec<&str> = filtered.iter().map(|e| e["id"].as_str().unwrap()).collect();
     assert_eq!(got, expected);
     assert!(filtered.len() < all.len(), "--since excluded something");
 }
@@ -136,10 +133,6 @@ fn warm_start_flags_are_mutually_exclusive() {
         &["--from-cursor", "abc", "--last", "5"],
     ];
     for combo in combos {
-        tender(&root)
-            .arg("events")
-            .args(*combo)
-            .assert()
-            .code(2);
+        tender(&root).arg("events").args(*combo).assert().code(2);
     }
 }

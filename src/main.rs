@@ -501,13 +501,17 @@ impl Commands {
                     args.push("--any-exit".to_string());
                 }
                 if let Some(et) = exec_target {
-                    args.extend(["--exec-target".to_string(), match et {
-                        CliExecTarget::PosixShell => "posix-shell",
-                        CliExecTarget::PowerShell => "powershell",
-                        CliExecTarget::PythonRepl => "python-repl",
-                        CliExecTarget::DuckDb => "duckdb",
-                        CliExecTarget::None => "none",
-                    }.to_string()]);
+                    args.extend([
+                        "--exec-target".to_string(),
+                        match et {
+                            CliExecTarget::PosixShell => "posix-shell",
+                            CliExecTarget::PowerShell => "powershell",
+                            CliExecTarget::PythonRepl => "python-repl",
+                            CliExecTarget::DuckDb => "duckdb",
+                            CliExecTarget::None => "none",
+                        }
+                        .to_string(),
+                    ]);
                 }
                 if let Some(b) = boundary {
                     // Display is the inverse of the parse, so this round-trips.

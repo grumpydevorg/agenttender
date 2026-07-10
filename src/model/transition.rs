@@ -213,9 +213,7 @@ impl Meta {
                 });
             }
         }
-        self.set_transition_provenance(TransitionProvenance::direct(&[
-            Evidence::EventLogTerminal,
-        ]));
+        self.set_transition_provenance(TransitionProvenance::direct(&[Evidence::EventLogTerminal]));
         Ok(())
     }
 }
@@ -233,9 +231,7 @@ pub enum HealedTerminal {
 #[cfg(test)]
 mod provenance_tests {
     use super::*;
-    use crate::model::ids::{
-        EpochTimestamp, Generation, ProcessIdentity, RunId, SessionName,
-    };
+    use crate::model::ids::{EpochTimestamp, Generation, ProcessIdentity, RunId, SessionName};
     use crate::model::provenance::Evidence;
     use crate::model::spec::LaunchSpec;
 
@@ -266,7 +262,9 @@ mod provenance_tests {
         m.transition_running(child()).unwrap();
         let p = m.transition_provenance().unwrap();
         assert!(p.is_direct());
-        let TransitionProvenance::Direct { evidence } = p else { unreachable!() };
+        let TransitionProvenance::Direct { evidence } = p else {
+            unreachable!()
+        };
         assert!(evidence.contains(&Evidence::SidecarWrite));
         assert!(evidence.contains(&Evidence::ChildSpawned));
     }
@@ -274,10 +272,13 @@ mod provenance_tests {
     #[test]
     fn spawn_failed_is_direct_with_syscall_evidence() {
         let mut m = fresh_meta();
-        m.transition_spawn_failed(EpochTimestamp::from_secs(1)).unwrap();
+        m.transition_spawn_failed(EpochTimestamp::from_secs(1))
+            .unwrap();
         let p = m.transition_provenance().unwrap();
         assert!(p.is_direct());
-        let TransitionProvenance::Direct { evidence } = p else { unreachable!() };
+        let TransitionProvenance::Direct { evidence } = p else {
+            unreachable!()
+        };
         assert!(evidence.contains(&Evidence::SpawnFailedSyscall));
     }
 
@@ -289,21 +290,22 @@ mod provenance_tests {
             .unwrap();
         let p = m.transition_provenance().unwrap();
         assert!(p.is_direct());
-        let TransitionProvenance::Direct { evidence } = p else { unreachable!() };
+        let TransitionProvenance::Direct { evidence } = p else {
+            unreachable!()
+        };
         assert!(evidence.contains(&Evidence::ChildExitObserved));
     }
 
     #[test]
     fn dependency_failed_is_direct_with_dependency_evidence() {
         let mut m = fresh_meta();
-        m.transition_dependency_failed(
-            EpochTimestamp::from_secs(1),
-            DepFailReason::Failed,
-        )
-        .unwrap();
+        m.transition_dependency_failed(EpochTimestamp::from_secs(1), DepFailReason::Failed)
+            .unwrap();
         let p = m.transition_provenance().unwrap();
         assert!(p.is_direct());
-        let TransitionProvenance::Direct { evidence } = p else { unreachable!() };
+        let TransitionProvenance::Direct { evidence } = p else {
+            unreachable!()
+        };
         assert!(evidence.contains(&Evidence::DependencyFailed));
     }
 
@@ -315,7 +317,9 @@ mod provenance_tests {
             .unwrap();
         let p = m.transition_provenance().unwrap();
         assert!(p.is_inferred());
-        let TransitionProvenance::Inferred { evidence } = p else { unreachable!() };
+        let TransitionProvenance::Inferred { evidence } = p else {
+            unreachable!()
+        };
         assert!(evidence.contains(&Evidence::LockReleased));
         assert!(evidence.contains(&Evidence::NonTerminalMeta));
     }

@@ -114,12 +114,7 @@ fn run_foreground_overrides_detach_directive() {
 
     // With --foreground, the directive is overridden.
     tender(&root)
-        .args([
-            "run",
-            "--foreground",
-            "--replace",
-            script.to_str().unwrap(),
-        ])
+        .args(["run", "--foreground", "--replace", script.to_str().unwrap()])
         .assert()
         .success()
         .stdout(predicate::str::contains("foreground-output"));
@@ -128,11 +123,7 @@ fn run_foreground_overrides_detach_directive() {
 #[test]
 fn run_detach_returns_immediately_with_json() {
     let root = TempDir::new().unwrap();
-    let script = write_py_script(
-        root.path(),
-        "slow.py",
-        "import time; time.sleep(30)",
-    );
+    let script = write_py_script(root.path(), "slow.py", "import time; time.sleep(30)");
 
     tender(&root)
         .args(["run", "--detach", script.to_str().unwrap()])
@@ -326,11 +317,7 @@ fn run_invalid_session_directive_fails() {
 #[test]
 fn run_unknown_directive_errors() {
     let root = TempDir::new().unwrap();
-    let script = write_py_script(
-        root.path(),
-        "bad.py",
-        "#tender: timout=30\nprint('hi')",
-    );
+    let script = write_py_script(root.path(), "bad.py", "#tender: timout=30\nprint('hi')");
 
     tender(&root)
         .args(["run", script.to_str().unwrap()])
