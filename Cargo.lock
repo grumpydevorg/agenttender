@@ -3,6 +3,29 @@
 version = 4
 
 [[package]]
+name = "agenttender"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "base64",
+ "clap",
+ "humantime",
+ "libc",
+ "predicates",
+ "proptest",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shell-words",
+ "tempfile",
+ "thiserror",
+ "uuid",
+ "windows-sys",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -725,29 +748,6 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys",
-]
-
-[[package]]
-name = "tender"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "base64",
- "clap",
- "humantime",
- "libc",
- "predicates",
- "proptest",
- "rustix",
- "serde",
- "serde_json",
- "sha2",
- "shell-words",
- "tempfile",
- "thiserror",
- "uuid",
  "windows-sys",
 ]
 

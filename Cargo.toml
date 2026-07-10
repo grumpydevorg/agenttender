@@ -1,10 +1,42 @@
 [package]
-name = "tender"
+name = "agenttender"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Agent process sitter — supervised runs, not processes"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/grumpydevorg/agenttender"
+readme = "README.md"
+keywords = ["cli", "supervisor", "agent", "process", "session"]
+categories = ["command-line-utilities", "development-tools"]
+# Whitelist the crate package: all source (carries the embedded
+# src/embedded/SKILL.md), the guide the binary include_str!s, README, licenses.
+# `include` (not `exclude`) so the two include_str! targets can never be dropped
+# by a future file addition — cargo publish --dry-run verifies this.
+include = [
+    "/src/**/*",
+    "/docs/guide.md",
+    "/README.md",
+    "/LICENSE-APACHE",
+    "/LICENSE-MIT",
+]
+
+# The crate is `agenttender`; the library stays importable as `tender` and the
+# binary keeps the short name `tender`.
+[lib]
+name = "tender"
+
+[[bin]]
+name = "tender"
+path = "src/main.rs"
+
+# `cargo binstall agenttender` fetches the prebuilt binary from GitHub releases.
+# Asset naming here must match what release.yml uploads: agenttender-<target>.tar.gz
+# containing the `tender` binary at the archive root.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
 
 [dependencies]
 anyhow = "1"
