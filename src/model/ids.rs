@@ -388,6 +388,21 @@ pub struct ProcessIdentity {
     pub start_time_ns: u64,
 }
 
+impl ProcessIdentity {
+    /// Identity for a child that spawned successfully but had already exited
+    /// before its start time could be read (a fast-exit race). The `0` start
+    /// time is a sentinel that can never equal a live process's real start
+    /// time, so this identity only ever compares as `Missing`/`IdentityMismatch`
+    /// — never as a false "alive" — which keeps PID-reuse-safe kill correct.
+    #[must_use]
+    pub fn already_exited(pid: NonZeroU32) -> Self {
+        Self {
+            pid,
+            start_time_ns: 0,
+        }
+    }
+}
+
 /// Validated epoch timestamp in seconds. Serializes as string for schema v1
 /// compatibility. Accepts both string ("1773653954") and integer (1773653954)
 /// on deserialization for backwards compatibility with existing meta.json files.
