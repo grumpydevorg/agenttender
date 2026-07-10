@@ -49,4 +49,5 @@ Long-lived design documents (not queue items).
 | `decision-process-sitter-not-framework.md` | Decision: no native LLM protocol support (extended by `tender-as-block-runtime.md`) |
 | `sidecar-control-protocol.md` | Target architecture: portable sidecar control RPC (not scheduled) |
 | `ecosystem-landscape.md` | Where tender sits vs boo/libghostty/Warp + the four work lanes (core / satellites / storage / interop) |
+| `windows-parity.md` | Full Windows-parity roadmap (observable-contract parity): the 6-phase plan (CI gate → typed frame → lifecycle hardening → ConPTY/attach → PowerShell), gap inventory + final qualification matrix |
 | `event-protocol.md` | **Schema owner** for the structured event stream: daemonless files-first envelope, ordering contract, cursors, watch/wrap migration |

@@ -234,7 +234,14 @@ fn exec_python_pty() {
     std::thread::sleep(std::time::Duration::from_millis(1000));
 
     let output = tender(&root)
-        .args(["exec", "py-pty", "--timeout", "10", "--", "print('pty hello')"])
+        .args([
+            "exec",
+            "py-pty",
+            "--timeout",
+            "10",
+            "--",
+            "print('pty hello')",
+        ])
         .output()
         .unwrap();
 
@@ -247,9 +254,7 @@ fn exec_python_pty() {
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert!(result["stdout"].as_str().unwrap().contains("pty hello"));
 
-    let _ = tender(&root)
-        .args(["kill", "py-pty", "--force"])
-        .assert();
+    let _ = tender(&root).args(["kill", "py-pty", "--force"]).assert();
 }
 
 /// PTY exec is still rejected for shell targets.
@@ -458,7 +463,10 @@ fn resize_message_accepted() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let meta: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(meta["status"], "Running", "session should still be running after resize");
+    assert_eq!(
+        meta["status"], "Running",
+        "session should still be running after resize"
+    );
     assert_eq!(meta["pty"]["control"], "HumanControl");
 
     // Verify the resize was actually applied by checking the PTY's window size.

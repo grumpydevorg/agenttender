@@ -218,12 +218,7 @@ fn one_mib_emit_spills_to_deduped_blob() {
 /// Self-skips when duckdb is not installed.
 #[test]
 fn duckdb_reads_events_as_typed_rows() {
-    if std::process::Command::new("duckdb")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipped: duckdb not on PATH");
+    if !harness::duckdb_or_skip() {
         return;
     }
 
@@ -410,12 +405,7 @@ fn exec_one_mib_stdout_spills_with_structured_preview() {
 /// Self-skips when duckdb is not installed.
 #[test]
 fn wrap_hook_causal_tree_rebuilds_in_duckdb() {
-    if std::process::Command::new("duckdb")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipped: duckdb not on PATH");
+    if !harness::duckdb_or_skip() {
         return;
     }
 

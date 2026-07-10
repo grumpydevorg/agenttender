@@ -85,8 +85,8 @@ fn cursor_decode_rejects_unknown_version() {
     // {"v":2,"s":[]} — a future cursor version is treated as stale (exit 44
     // at the CLI layer), never silently accepted.
     use base64::Engine as _;
-    let token =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"v":2,"s":[["a/b/events/c.jsonl",0]]}"#);
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(r#"{"v":2,"s":[["a/b/events/c.jsonl",0]]}"#);
     assert!(decode_cursor(&token).is_err());
 }
 

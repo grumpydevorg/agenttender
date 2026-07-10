@@ -119,7 +119,10 @@ fn rebacked_snapshot_carries_the_true_timestamp() {
         .output()
         .unwrap();
     let stored: serde_json::Value = serde_json::from_str(
-        String::from_utf8_lossy(&replay.stdout).lines().next().unwrap(),
+        String::from_utf8_lossy(&replay.stdout)
+            .lines()
+            .next()
+            .unwrap(),
     )
     .unwrap();
     let stored_micros = stored["ts"]
@@ -235,12 +238,7 @@ fn replaced_session_streams_the_new_generation_uncollapsed() {
     // Snapshot of gen 1, then gen 2's full lifecycle from its fresh log.
     assert_eq!(
         names,
-        [
-            "run.exited",
-            "run.starting",
-            "run.started",
-            "run.exited"
-        ],
+        ["run.exited", "run.starting", "run.started", "run.exited"],
         "got: {records:?}"
     );
 }

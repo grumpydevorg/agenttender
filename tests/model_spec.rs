@@ -33,10 +33,7 @@ fn launch_spec_python_repl_deserializes() {
 fn launch_spec_duckdb_deserializes() {
     let json = r#"{"argv":["duckdb"],"stdin_mode":"Pipe","exec_target":"DuckDb"}"#;
     let spec: tender::model::spec::LaunchSpec = serde_json::from_str(json).unwrap();
-    assert_eq!(
-        spec.exec_target,
-        tender::model::spec::ExecTarget::DuckDb
-    );
+    assert_eq!(spec.exec_target, tender::model::spec::ExecTarget::DuckDb);
 }
 
 #[test]

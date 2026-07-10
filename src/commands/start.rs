@@ -7,6 +7,7 @@ use tender::model::spec::{ExecTarget, IoMode, LaunchSpec, StdinMode};
 use tender::platform::{Current, Platform};
 use tender::session::{self, SessionRoot};
 
+#[allow(clippy::too_many_arguments)] // launch surface; bundled into StartRequest by the frame-transport work
 pub fn cmd_start(
     name: &str,
     cmd: Vec<String>,
@@ -61,6 +62,7 @@ pub fn cmd_start(
 /// the same spec), it re-reads the existing meta from disk.
 ///
 /// Does not print to stdout or call process::exit — callers decide what to do.
+#[allow(clippy::too_many_arguments)] // launch surface; bundled into StartRequest by the frame-transport work
 pub(crate) fn launch_session(
     name: &str,
     cmd: Vec<String>,
@@ -112,7 +114,8 @@ pub(crate) fn launch_session(
     if pty {
         launch_spec.io_mode = IoMode::Pty;
     }
-    launch_spec.exec_target = exec_target.unwrap_or_else(|| infer_exec_target(&launch_spec.argv()[0]));
+    launch_spec.exec_target =
+        exec_target.unwrap_or_else(|| infer_exec_target(&launch_spec.argv()[0]));
 
     // Resolve --after: capture each dependency's run_id at bind time
     if !after.is_empty() {

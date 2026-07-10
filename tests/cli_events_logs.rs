@@ -37,7 +37,14 @@ fn segment_bytes(root: &TempDir, session: &str) -> BTreeMap<PathBuf, Vec<u8>> {
 fn include_logs_interleaves_derived_records_in_timestamp_order() {
     let root = TempDir::new().unwrap();
     tender(&root)
-        .args(["start", "s1", "--", "sh", "-c", "echo out-line; echo err-line 1>&2"])
+        .args([
+            "start",
+            "s1",
+            "--",
+            "sh",
+            "-c",
+            "echo out-line; echo err-line 1>&2",
+        ])
         .assert()
         .success();
     wait_terminal(&root, "s1");

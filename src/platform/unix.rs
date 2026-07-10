@@ -103,7 +103,10 @@ impl Platform for UnixPlatform {
 
         let child = cmd.spawn()?;
         let pid = child.id();
-        let identity = process_identity(pid)?;
+        // A child that exits between spawn() and identity capture is a
+        // successful short-lived run, not a spawn failure -- capture_spawned_identity
+        // returns an already_exited placeholder rather than erroring.
+        let identity = capture_spawned_identity(pid)?;
 
         Ok(SupervisedChild {
             child,
@@ -209,7 +212,7 @@ impl Platform for UnixPlatform {
         let master_write = File::from(master);
 
         let pid = child.id();
-        let identity = process_identity(pid)?;
+        let identity = capture_spawned_identity(pid)?;
 
         Ok(SupervisedChild {
             child,
@@ -275,7 +278,10 @@ impl Platform for UnixPlatform {
     }
 
     fn pty_resize_fd(child: &SupervisedChild) -> Option<File> {
-        child.pty_master_write.as_ref().and_then(|f| f.try_clone().ok())
+        child
+            .pty_master_write
+            .as_ref()
+            .and_then(|f| f.try_clone().ok())
     }
 
     fn child_kill_handle(child: &SupervisedChild) -> ChildKillHandle {
@@ -498,6 +504,36 @@ fn process_identity(pid: u32) -> io::Result<ProcessIdentity> {
     Ok(ProcessIdentity { pid, start_time_ns })
 }
 
+/// True if the error means the target process no longer exists. Linux surfaces
+/// a gone process as `ENOENT` (reading `/proc/<pid>/stat`); macOS as `ESRCH`.
+fn is_process_gone(e: &io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(libc::ESRCH) | Some(libc::ENOENT))
+}
+
+/// Capture the identity of a just-spawned child. If the child has already
+/// exited before its start time could be read (a fast-exit race: `spawn()`
+/// succeeded but the process is gone by the time we probe), this is a
+/// successful short-lived run — return an `already_exited` placeholder rather
+/// than an error. Linux masks this race because a zombie's `/proc/<pid>/stat`
+/// is still readable; macOS `proc_pidinfo` fails on the zombie, which is why
+/// the collapse-into-SpawnFailed bug only surfaced there.
+fn capture_spawned_identity(pid: u32) -> io::Result<ProcessIdentity> {
+    match process_identity(pid) {
+        Ok(id) => Ok(id),
+        Err(e) if is_process_gone(&e) => {
+            let pid = NonZeroU32::new(pid).ok_or_else(|| io::Error::other("pid is zero"))?;
+            Ok(ProcessIdentity::already_exited(pid))
+        }
+        // A real, unexpected identity-capture failure (e.g. EPERM on a foreign
+        // pid). Give it distinct context so it is not confused with a spawn()
+        // failure upstream.
+        Err(e) => Err(io::Error::new(
+            e.kind(),
+            format!("identity capture failed after spawn (pid {pid}): {e}"),
+        )),
+    }
+}
+
 /// Get process start time. Platform-specific.
 #[cfg(target_os = "linux")]
 fn process_start_time(pid: u32) -> io::Result<u64> {
@@ -548,7 +584,24 @@ fn process_start_time(pid: u32) -> io::Result<u64> {
     };
 
     if ret <= 0 {
-        return Err(io::Error::last_os_error());
+        // proc_pidinfo does not guarantee a freshly-set errno when it returns
+        // <= 0 (it can leave a stale errno from an earlier syscall — the source
+        // of phantom ENOENT reports on a gone process). Reprobe with kill(pid, 0),
+        // which sets errno reliably, to classify the failure deterministically.
+        // SAFETY: kill with signal 0 performs existence/permission checks only
+        // and sends no signal.
+        let signalable = unsafe { libc::kill(pid as i32, 0) } == 0;
+        let kill_err = io::Error::last_os_error();
+        if signalable {
+            // The process is signalable but has no readable bsdinfo. For a
+            // same-uid process that means an unreaped zombie: it has exited.
+            // (A live same-uid process — even in another session — has readable
+            // bsdinfo on modern macOS.) Report it as gone.
+            return Err(io::Error::from_raw_os_error(libc::ESRCH));
+        }
+        // kill failed: errno is now freshly ESRCH (gone) or EPERM (foreign,
+        // inaccessible) — both meaningful for process_status.
+        return Err(kill_err);
     }
 
     // pbi_start_tvsec and pbi_start_tvusec give the process start time
@@ -570,6 +623,11 @@ fn process_status(id: &ProcessIdentity) -> ProcessStatus {
         }
         Err(e) => match e.raw_os_error() {
             Some(libc::ESRCH) => ProcessStatus::Missing,
+            // Linux reads /proc/<pid>/stat; a gone process yields ENOENT, not
+            // ESRCH. Without this a dead PID is misclassified as OsError, which
+            // breaks the idempotent-kill contract (kill_process returns Err
+            // instead of Ok for a process that is simply gone).
+            Some(libc::ENOENT) => ProcessStatus::Missing,
             Some(libc::EPERM) => ProcessStatus::Inaccessible,
             _ => {
                 // On macOS, proc_pidinfo returns 0 for missing processes
@@ -687,6 +745,42 @@ mod tests {
         // PID 4_000_000 is safely above any real PID
         let id = fake_identity(4_000_000, 0);
         assert_eq!(process_status(&id), ProcessStatus::Missing);
+    }
+
+    #[test]
+    fn is_process_gone_classifies_esrch_and_enoent() {
+        assert!(is_process_gone(&io::Error::from_raw_os_error(libc::ESRCH)));
+        assert!(is_process_gone(&io::Error::from_raw_os_error(libc::ENOENT)));
+        assert!(!is_process_gone(&io::Error::from_raw_os_error(libc::EPERM)));
+        assert!(!is_process_gone(&io::Error::from_raw_os_error(
+            libc::EACCES
+        )));
+    }
+
+    #[test]
+    fn capture_spawned_identity_of_gone_pid_is_already_exited() {
+        // A pid that never existed models a child that exited before identity
+        // capture (the fast-exit race). Capture must yield the already-exited
+        // placeholder, NOT an error -- otherwise a successful short-lived run is
+        // misreported as SpawnFailed (the macOS-only regression this fixes).
+        let id = capture_spawned_identity(4_000_000)
+            .expect("a gone child is a short-lived run, not a spawn error");
+        assert_eq!(id.pid.get(), 4_000_000);
+        assert_eq!(
+            id.start_time_ns, 0,
+            "already-exited placeholder carries the sentinel start time"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_start_time_of_missing_pid_is_deterministic_esrch() {
+        // proc_pidinfo leaves errno stale on failure; the kill(pid, 0) reprobe
+        // must normalize a gone pid to ESRCH so callers classify it reliably
+        // (this is what stops the phantom ENOENT "No such file or directory"
+        // reports for a process that has simply exited).
+        let err = process_start_time(4_000_000).expect_err("pid 4_000_000 never exists");
+        assert_eq!(err.raw_os_error(), Some(libc::ESRCH));
     }
 
     #[test]

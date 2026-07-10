@@ -94,9 +94,7 @@ pub fn duckdb_frame(sql: &str, token: &str) -> String {
         token.bytes().all(|b| b.is_ascii_hexdigit()),
         "token must be hex-only, got: {token}"
     );
-    format!(
-        ".mode json\n.nullvalue null\n{sql}\n.print __TENDER_EXEC__ {token} 0 .\n"
-    )
+    format!(".mode json\n.nullvalue null\n{sql}\n.print __TENDER_EXEC__ {token} 0 .\n")
 }
 
 /// Parse a sentinel line, extracting exit code and cwd.
@@ -280,8 +278,14 @@ mod tests {
     fn duckdb_frame_basic_query() {
         let frame = duckdb_frame("SELECT 42 as answer;", "abc123");
         assert!(frame.starts_with(".mode json\n"));
-        assert!(!frame.contains(".bail on"), "frame must not use .bail on — it kills the session");
-        assert!(!frame.contains(".output"), "frame must not use .output — path escaping is fragile");
+        assert!(
+            !frame.contains(".bail on"),
+            "frame must not use .bail on — it kills the session"
+        );
+        assert!(
+            !frame.contains(".output"),
+            "frame must not use .output — path escaping is fragile"
+        );
         assert!(frame.contains(".nullvalue null\n"));
         assert!(frame.contains("SELECT 42 as answer;\n"));
         assert!(frame.contains("__TENDER_EXEC__ abc123 0 .\n"));

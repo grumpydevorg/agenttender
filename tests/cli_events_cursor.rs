@@ -63,7 +63,12 @@ fn ids(records: &[serde_json::Value]) -> Vec<String> {
     records
         .iter()
         .filter(|r| r["kind"] != "cursor.bookmark")
-        .map(|r| r["id"].as_str().expect("stored records carry ids").to_owned())
+        .map(|r| {
+            r["id"]
+                .as_str()
+                .expect("stored records carry ids")
+                .to_owned()
+        })
         .collect()
 }
 
@@ -91,7 +96,12 @@ fn batch_mode_emits_final_bookmark_and_resume_is_empty_then_exact() {
     );
     assert_eq!(bookmark["derived"], true);
     // Read-time record: exactly kind/ts/cursor/derived, no stored identity.
-    let keys: Vec<&str> = bookmark.as_object().unwrap().keys().map(String::as_str).collect();
+    let keys: Vec<&str> = bookmark
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     assert_eq!(keys, ["cursor", "derived", "kind", "ts"]);
 
     // Resuming from the final bookmark: nothing left.
@@ -120,7 +130,10 @@ fn batch_mode_emits_final_bookmark_and_resume_is_empty_then_exact() {
         .output()
         .unwrap();
     let resumed = parse_ndjson(&resumed.stdout);
-    let kinds: Vec<&str> = resumed.iter().map(|r| r["kind"].as_str().unwrap()).collect();
+    let kinds: Vec<&str> = resumed
+        .iter()
+        .map(|r| r["kind"].as_str().unwrap())
+        .collect();
     assert_eq!(kinds, ["test.post1", "test.post2"]);
 }
 
@@ -136,7 +149,13 @@ fn mid_stream_bookmark_resumes_remainder_exactly_across_segments() {
     // 3 lifecycle + 104 emits = 107 stored records.
     for i in 0..104 {
         tender(&root)
-            .args(["emit", "--kind", &format!("test.n{i:03}"), "--session", "s1"])
+            .args([
+                "emit",
+                "--kind",
+                &format!("test.n{i:03}"),
+                "--session",
+                "s1",
+            ])
             .assert()
             .success();
     }
@@ -244,7 +263,10 @@ fn cursor_gone_exits_44_with_structured_stderr() {
         .output()
         .unwrap();
     let records = parse_ndjson(&output.stdout);
-    let token = records.last().unwrap()["cursor"].as_str().unwrap().to_owned();
+    let token = records.last().unwrap()["cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
     // The cursor's segment file disappears (e.g. pruned).
     let segs = segments(&root, "s1");
@@ -317,7 +339,10 @@ fn cursors_never_cover_output_log() {
         records.iter().any(|r| r["kind"] == "log.stdout"),
         "log projection ran"
     );
-    let token = records.last().unwrap()["cursor"].as_str().unwrap().to_owned();
+    let token = records.last().unwrap()["cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let payload = decode_token(&token);
     assert!(
         payload["s"]

@@ -365,24 +365,35 @@ fn run_exec(
             let results_dir = session.path().join("exec-results");
             std::fs::create_dir_all(&results_dir)?;
             let result_path = results_dir.join(format!("{token}.json"));
-            let result_path_str = result_path.to_str()
+            let result_path_str = result_path
+                .to_str()
                 .ok_or_else(|| anyhow::anyhow!("session path is not valid UTF-8"))?;
             let code = cmd.join("\n");
-            (exec_frame::powershell_frame(&code, result_path_str), WaitMode::SideChannel)
+            (
+                exec_frame::powershell_frame(&code, result_path_str),
+                WaitMode::SideChannel,
+            )
         }
         ExecTarget::PythonRepl => {
             // Ensure exec-results dir exists
             let results_dir = session.path().join("exec-results");
             std::fs::create_dir_all(&results_dir)?;
             let result_path = results_dir.join(format!("{token}.json"));
-            let result_path_str = result_path.to_str()
+            let result_path_str = result_path
+                .to_str()
                 .ok_or_else(|| anyhow::anyhow!("session path is not valid UTF-8"))?;
             let code = cmd.join("\n");
-            (exec_frame::python_frame(&code, result_path_str), WaitMode::SideChannel)
+            (
+                exec_frame::python_frame(&code, result_path_str),
+                WaitMode::SideChannel,
+            )
         }
         ExecTarget::DuckDb => {
             let sql = cmd.join("\n");
-            (exec_frame::duckdb_frame(&sql, token), WaitMode::SentinelWithStderrCheck)
+            (
+                exec_frame::duckdb_frame(&sql, token),
+                WaitMode::SentinelWithStderrCheck,
+            )
         }
         ExecTarget::None => {
             anyhow::bail!(
@@ -418,12 +429,8 @@ fn run_exec(
 
     // 4. Wait for result
     match wait_mode {
-        WaitMode::SideChannel => {
-            wait_side_channel_result(session, &session_name, token, deadline)
-        }
-        WaitMode::Sentinel => {
-            wait_sentinel_result(session, &session_name, token, cursor, deadline)
-        }
+        WaitMode::SideChannel => wait_side_channel_result(session, &session_name, token, deadline),
+        WaitMode::Sentinel => wait_sentinel_result(session, &session_name, token, cursor, deadline),
         WaitMode::SentinelWithStderrCheck => {
             let mut result = wait_sentinel_result(session, &session_name, token, cursor, deadline)?;
 
@@ -559,7 +566,10 @@ fn wait_side_channel_result(
     token: &str,
     deadline: Option<Instant>,
 ) -> anyhow::Result<ExecResult> {
-    let result_path = session.path().join("exec-results").join(format!("{token}.json"));
+    let result_path = session
+        .path()
+        .join("exec-results")
+        .join(format!("{token}.json"));
 
     loop {
         if let Some(dl) = deadline {
@@ -613,7 +623,10 @@ fn wait_side_channel_result(
 /// After a timeout on a PythonRepl exec, hold the exec lock until the result file
 /// appears (meaning the frame finished) or the session dies. Then clean up.
 fn drain_until_side_channel(session: &SessionDir, token: &str) {
-    let result_path = session.path().join("exec-results").join(format!("{token}.json"));
+    let result_path = session
+        .path()
+        .join("exec-results")
+        .join(format!("{token}.json"));
     loop {
         if result_path.exists() {
             // Frame finished — clean up and release lock
@@ -682,7 +695,10 @@ fn drain_trailing_stderr(session: &SessionDir, cursor: u64) -> String {
         let trimmed = buf.trim_end_matches('\n').trim_end_matches('\r');
         if let Ok(parsed) = serde_json::from_str::<LogLine>(trimmed) {
             match parsed.tag.as_str() {
-                "O" if parsed.content_text().is_some_and(|c| c.contains("__TENDER_EXEC__")) => {
+                "O" if parsed
+                    .content_text()
+                    .is_some_and(|c| c.contains("__TENDER_EXEC__")) =>
+                {
                     saw_sentinel = true;
                 }
                 "E" if saw_sentinel => {
@@ -1049,4 +1065,3 @@ mod tests {
         assert_all_lines_fit(&log);
     }
 }
-
