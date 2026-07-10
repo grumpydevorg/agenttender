@@ -216,6 +216,11 @@ nested-quoting layer to escape.
 > command forwarding remains POSIX-shell-only** — do not point general `--host`
 > commands at a Windows host (cmd.exe / PowerShell) until the
 > [remote frame transport](plans/active/00_remote-frame-transport.md) lands.
+>
+> *(A 2026-07-10 ARM-Windows smoke ran `start`/`kill`/`exec` with simple
+> arguments — happy-path evidence that the mechanism runs, **not** proof of
+> general Windows `--host` safety. Hostile or space-containing arguments were not
+> exercised and remain exposed on the reconstructed-argv commands.)*
 
 **`run`, `wrap`, `prune`, `query`, `guide`, and `skill`** are local-only.
 Naming `--host` on them exits `2` with a ready-to-paste fallback:
