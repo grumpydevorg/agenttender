@@ -6,8 +6,9 @@ is under [plans/completed/](plans/completed/).
 
 ## Now
 
-- Package / release identity: crate `agenttender`, binary `tender`
-- First release docs and install path
+- Remote frame transport — make `--host` genuinely cross-platform and close the Windows `--host` command-injection gap by sending every remote op as a typed frame ([plan](plans/active/00_remote-frame-transport.md))
+- Native Windows CI (x64 + ARM64) so Windows regressions are gated
+- Shipped: crate `agenttender` + binary `tender` on crates.io, attested multi-platform releases
 
 ## Next
 
