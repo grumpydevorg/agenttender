@@ -38,6 +38,7 @@ fn guide_exec_prints_only_the_exec_section() {
         .success()
         .stdout(predicate::str::contains("Drive it with"))
         .stdout(predicate::str::contains("takes argv, not a shell snippet"))
+        .stdout(predicate::str::contains("exec_truncated"))
         .stdout(predicate::str::contains("Reach remote hosts").not())
         .stdout(predicate::str::contains("Record where a session runs").not());
 }
@@ -54,6 +55,7 @@ fn guide_remote_includes_the_frame_subsection() {
         .success()
         .stdout(predicate::str::contains("Reach remote hosts"))
         .stdout(predicate::str::contains("frame-from-stdin"))
+        .stdout(predicate::str::contains("default ssh shell"))
         .stdout(predicate::str::contains("Drive it with").not());
 }
 
@@ -83,6 +85,19 @@ fn guide_duckdb_section_is_relevant() {
 }
 
 #[test]
+fn guide_install_section_is_relevant() {
+    let root = TempDir::new().unwrap();
+
+    tender(&root)
+        .args(["guide", "install"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Install and build"))
+        .stdout(predicate::str::contains("cargo install agenttender"))
+        .stdout(predicate::str::contains("cargo-zigbuild"));
+}
+
+#[test]
 fn guide_topic_is_case_insensitive() {
     let root = TempDir::new().unwrap();
 
@@ -103,6 +118,7 @@ fn guide_unknown_topic_exits_2_and_lists_topics() {
         .code(2)
         .stderr(predicate::str::contains("bogus"))
         .stderr(predicate::str::contains("exec"))
+        .stderr(predicate::str::contains("install"))
         .stderr(predicate::str::contains("remote"))
         .stderr(predicate::str::contains("duckdb"));
 }

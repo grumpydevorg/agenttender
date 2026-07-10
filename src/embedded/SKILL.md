@@ -16,6 +16,7 @@ For current, version-matched usage, run:
 
 ```bash
 tender guide
+tender guide install
 tender guide exec
 tender guide remote
 tender guide python

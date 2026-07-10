@@ -7,6 +7,7 @@ description = "Agent process sitter — supervised runs, not processes"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/grumpydevorg/agenttender"
 readme = "README.md"
+default-run = "tender"
 keywords = ["cli", "supervisor", "agent", "process", "session"]
 categories = ["command-line-utilities", "development-tools"]
 # Whitelist the crate package: public source, the embedded skill, the guide the
