@@ -573,6 +573,11 @@ fn process_status(id: &ProcessIdentity) -> ProcessStatus {
         }
         Err(e) => match e.raw_os_error() {
             Some(libc::ESRCH) => ProcessStatus::Missing,
+            // Linux reads /proc/<pid>/stat; a gone process yields ENOENT, not
+            // ESRCH. Without this a dead PID is misclassified as OsError, which
+            // breaks the idempotent-kill contract (kill_process returns Err
+            // instead of Ok for a process that is simply gone).
+            Some(libc::ENOENT) => ProcessStatus::Missing,
             Some(libc::EPERM) => ProcessStatus::Inaccessible,
             _ => {
                 // On macOS, proc_pidinfo returns 0 for missing processes

@@ -27,9 +27,11 @@ jobs:
       - name: Install Rust
         run: rustup update stable --no-self-update
       - name: Test
-        run: cargo test --locked --all-targets
+        # --no-fail-fast so every test binary runs and the log shows the full
+        # per-platform failure inventory, not just the first binary to fail.
+        run: cargo test --locked --all-targets --no-fail-fast
       - name: Doc tests
-        run: cargo test --locked --doc
+        run: cargo test --locked --doc --no-fail-fast
 
   lint:
     name: lint (ubuntu)
