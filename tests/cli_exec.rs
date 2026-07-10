@@ -45,6 +45,111 @@ fn python_start_args_no_target(session: &str) -> Vec<String> {
     args
 }
 
+// ---------------------------------------------------------------------------
+// Native-shell fixture (WS3). The OS-neutral exec_* tests below drive a native
+// interactive shell — bash + PosixShell on Unix, powershell + PowerShell on
+// Windows — instead of hard-coding bash. The Windows path reaches the very same
+// backend the #[cfg(windows)] exec_powershell_* tests already prove works.
+//
+// PowerShell exec joins a multi-element argv with "\n", so every PowerShell
+// command below is a single argument (single-string commands), matching the
+// exec_powershell_* pattern.
+// ---------------------------------------------------------------------------
+
+/// `tender start` args for a native interactive shell session.
+#[cfg(unix)]
+fn native_shell_start_args(session: &str) -> Vec<String> {
+    ["start", session, "--stdin", "--", "bash"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+#[cfg(windows)]
+fn native_shell_start_args(session: &str) -> Vec<String> {
+    [
+        "start",
+        session,
+        "--stdin",
+        "--exec-target",
+        "powershell",
+        "--",
+        "powershell",
+        "-NoProfile",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// The exec_target the native shell infers/declares, as it appears in meta.json
+/// and in exec events.
+#[cfg(unix)]
+fn expected_shell_target() -> &'static str {
+    "PosixShell"
+}
+#[cfg(windows)]
+fn expected_shell_target() -> &'static str {
+    "PowerShell"
+}
+
+/// A command that prints `text` verbatim on its own line.
+#[cfg(unix)]
+fn native_echo(text: &str) -> Vec<String> {
+    vec!["echo".into(), text.into()]
+}
+#[cfg(windows)]
+fn native_echo(text: &str) -> Vec<String> {
+    // Single-quote the literal; PowerShell escapes an embedded quote by doubling.
+    vec![format!("Write-Output '{}'", text.replace('\'', "''"))]
+}
+
+/// A command that exits non-zero (code 1) WITHOUT killing the REPL.
+#[cfg(unix)]
+fn native_failure() -> Vec<String> {
+    vec!["false".into()]
+}
+#[cfg(windows)]
+fn native_failure() -> Vec<String> {
+    // `cmd /c exit 1` sets $LASTEXITCODE=1, which the PowerShell frame reads.
+    vec!["cmd /c exit 1".into()]
+}
+
+/// A command that sleeps for `secs` seconds.
+#[cfg(unix)]
+fn native_sleep(secs: u64) -> Vec<String> {
+    vec!["sleep".into(), secs.to_string()]
+}
+#[cfg(windows)]
+fn native_sleep(secs: u64) -> Vec<String> {
+    vec![format!("Start-Sleep {secs}")]
+}
+
+/// A command that changes the session's working directory to `path`.
+#[cfg(unix)]
+fn native_cd(path: &std::path::Path) -> Vec<String> {
+    vec!["cd".into(), path.display().to_string()]
+}
+#[cfg(windows)]
+fn native_cd(path: &std::path::Path) -> Vec<String> {
+    vec![format!("Set-Location '{}'", path.display())]
+}
+
+/// `tender exec <session> -- <cmd...>` argv for the native fixture.
+fn exec_argv(session: &str, cmd: Vec<String>) -> Vec<String> {
+    let mut args = vec!["exec".to_string(), session.to_string(), "--".to_string()];
+    args.extend(cmd);
+    args
+}
+
+/// Sleep long enough after start for the freshly-spawned REPL to accept a
+/// frame: a POSIX shell is ready in ~300ms; the PowerShell REPL needs the same
+/// ~800ms the exec_powershell_* tests use.
+fn settle_after_start() {
+    let ms = if cfg!(windows) { 800 } else { 300 };
+    std::thread::sleep(std::time::Duration::from_millis(ms));
+}
+
 /// exec fails if session doesn't exist.
 #[test]
 fn exec_session_not_found() {
@@ -74,25 +179,25 @@ fn exec_session_not_running() {
         .stderr(predicates::str::contains("not running"));
 }
 
-/// Basic exec: run echo in a bash shell, get structured output.
+/// Basic exec: run echo in the native shell, get structured output.
 #[test]
 fn exec_basic_command() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    // Start a bash shell with --stdin
+    // Start the native shell with --stdin
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--", "bash"])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
-    // Give shell time to initialize
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // Give the REPL time to initialize
+    settle_after_start();
 
     // Exec a command
     let output = harness::tender(&root)
-        .args(["exec", "shell", "--", "echo", "hello world"])
+        .args(exec_argv("shell", native_echo("hello world")))
         .output()
         .unwrap();
 
@@ -106,8 +211,9 @@ fn exec_basic_command() {
     assert!(result["stdout"].as_str().unwrap().contains("hello world"));
     assert!(!result["timed_out"].as_bool().unwrap());
     let cwd = result["cwd_after"].as_str().unwrap();
-    // Git Bash on Windows returns MSYS paths like /c/Users/... which
-    // Path::is_absolute() doesn't recognise on Windows. Accept both styles.
+    // cwd_after is absolute: a drive path from the Windows PowerShell frame, a
+    // /-rooted path from a POSIX shell (starts_with('/') also covers MSYS-style
+    // paths that Path::is_absolute() misses on Windows).
     assert!(
         std::path::Path::new(cwd).is_absolute() || cwd.starts_with('/'),
         "cwd_after should be absolute, got: {cwd}"
@@ -145,14 +251,14 @@ fn exec_nonzero_exit() {
     let root = tempfile::TempDir::new().unwrap();
 
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--", "bash"])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    settle_after_start();
 
     let output = harness::tender(&root)
-        .args(["exec", "shell", "--", "false"])
+        .args(exec_argv("shell", native_failure()))
         .output()
         .unwrap();
 
@@ -180,36 +286,43 @@ fn exec_cwd_persists() {
     let root = tempfile::TempDir::new().unwrap();
 
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--", "bash"])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    settle_after_start();
 
-    // cd to /tmp
+    // A test-chosen directory (distinct from HOME) so the assertion is exact
+    // rather than a fuzzy "tmp" substring. Canonicalize both sides to absorb
+    // macOS /var→/private/var symlinks and Windows path normalization.
+    let target = tempfile::TempDir::new().unwrap();
+    let canon_target = std::fs::canonicalize(target.path()).unwrap();
+
+    // cd into the target directory
     let output1 = harness::tender(&root)
-        .args(["exec", "shell", "--", "cd", "/tmp"])
+        .args(exec_argv("shell", native_cd(target.path())))
         .output()
         .unwrap();
     let result1: serde_json::Value = serde_json::from_slice(&output1.stdout).unwrap();
-    // After cd, cwd_after should be /tmp (or /private/tmp on macOS)
     let cwd1 = result1["cwd_after"].as_str().unwrap();
-    assert!(
-        cwd1.contains("tmp"),
-        "cwd_after should contain tmp, got: {cwd1}"
+    assert_eq!(
+        std::fs::canonicalize(cwd1).unwrap(),
+        canon_target,
+        "cwd_after should be the directory we changed into, got: {cwd1}"
     );
 
-    // Next exec should see /tmp as cwd
+    // The next exec must still observe the target dir — state persisted.
     let output2 = harness::tender(&root)
-        .args(["exec", "shell", "--", "pwd"])
+        .args(exec_argv("shell", native_echo("persist")))
         .output()
         .unwrap();
     let result2: serde_json::Value = serde_json::from_slice(&output2.stdout).unwrap();
-    assert!(result2["stdout"].as_str().unwrap().contains("tmp"));
     let cwd2 = result2["cwd_after"].as_str().unwrap();
-    assert!(
-        cwd2.contains("tmp"),
-        "cwd_after should contain tmp, got: {cwd2}"
+    assert_eq!(cwd1, cwd2, "cwd persists across exec calls");
+    assert_eq!(
+        std::fs::canonicalize(cwd2).unwrap(),
+        canon_target,
+        "persisted cwd_after should be the target dir, got: {cwd2}"
     );
 
     let _ = harness::tender(&root)
@@ -224,14 +337,14 @@ fn exec_writes_annotation() {
     let root = tempfile::TempDir::new().unwrap();
 
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--", "bash"])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    settle_after_start();
 
     harness::tender(&root)
-        .args(["exec", "shell", "--", "echo", "annotated"])
+        .args(exec_argv("shell", native_echo("annotated")))
         .assert()
         .success();
 
@@ -265,26 +378,41 @@ fn exec_oversized_output_is_quiet_and_leaves_breadcrumb() {
     let root = tempfile::TempDir::new().unwrap();
 
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--", "bash"])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    settle_after_start();
 
     // Both streams multi-KB so even the field-truncated annotation overflows
-    // the cap, forcing the breadcrumb path.
+    // the cap (MAX_LINE 4096 / MAX_FIELD_BYTES 3000), forcing the breadcrumb.
+    // POSIX writes to fd 2 without erroring (exit 0). PowerShell's side-channel
+    // frame records stderr only from the error stream, and any captured error
+    // forces exit 1 — so a large *captured* stderr and exit 0 are mutually
+    // exclusive there. We take the large-stderr path (Write-Error, the same
+    // mechanism exec_powershell_stderr_separated relies on) and let exec mirror
+    // the inner exit 1.
+    let big_cmd: Vec<String> = if cfg!(windows) {
+        vec![
+            "1..2000 | ForEach-Object { $_ }; 1..2000 | ForEach-Object { Write-Error $_ }"
+                .to_string(),
+        ]
+    } else {
+        vec![
+            "bash".to_string(),
+            "-c".to_string(),
+            "seq 1 2000; seq 1 2000 >&2".to_string(),
+        ]
+    };
     let output = harness::tender(&root)
-        .args([
-            "exec",
-            "shell",
-            "--",
-            "bash",
-            "-c",
-            "seq 1 2000; seq 1 2000 >&2",
-        ])
+        .args(exec_argv("shell", big_cmd))
         .output()
         .unwrap();
-    assert!(output.status.success());
+    if cfg!(windows) {
+        assert_eq!(output.status.code(), Some(1));
+    } else {
+        assert!(output.status.success());
+    }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -323,16 +451,21 @@ fn exec_timeout() {
     let root = tempfile::TempDir::new().unwrap();
 
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--", "bash"])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    settle_after_start();
 
-    let output = harness::tender(&root)
-        .args(["exec", "shell", "--timeout", "1", "--", "sleep", "4"])
-        .output()
-        .unwrap();
+    let mut args = vec![
+        "exec".to_string(),
+        "shell".to_string(),
+        "--timeout".to_string(),
+        "1".to_string(),
+        "--".to_string(),
+    ];
+    args.extend(native_sleep(4));
+    let output = harness::tender(&root).args(args).output().unwrap();
 
     assert_eq!(output.status.code(), Some(124));
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -358,16 +491,16 @@ fn exec_concurrent_busy() {
     let root = tempfile::TempDir::new().unwrap();
 
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--", "bash"])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    settle_after_start();
 
-    // Start a long exec in the background
+    // Start a long exec in the background (holds the exec lock while it sleeps)
     let mut long_exec = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
         .env("HOME", root.path())
-        .args(["exec", "shell", "--", "sleep", "30"])
+        .args(exec_argv("shell", native_sleep(30)))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -378,7 +511,7 @@ fn exec_concurrent_busy() {
 
     // Second exec should fail with busy
     harness::tender(&root)
-        .args(["exec", "shell", "--", "echo", "hello"])
+        .args(exec_argv("shell", native_echo("hello")))
         .assert()
         .failure()
         .stderr(predicates::str::contains("another exec"));
@@ -392,6 +525,8 @@ fn exec_concurrent_busy() {
 }
 
 /// exec with explicit --exec-target posix-shell.
+// POSIX-shell contract; Windows parity is the exec_powershell_* tests, not this.
+#[cfg(unix)]
 #[test]
 fn exec_explicit_posix_target() {
     let _lock = lock();
@@ -453,6 +588,8 @@ fn exec_none_target_rejected() {
 }
 
 /// bash infers PosixShell, exec works without --exec-target.
+// POSIX-shell contract; Windows parity is the exec_powershell_* tests, not this.
+#[cfg(unix)]
 #[test]
 fn exec_infers_posix_from_bash() {
     let _lock = lock();
@@ -506,32 +643,31 @@ fn exec_target_changes_session_identity() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    // Start with posix-shell
+    // Start the native shell; its exec-target is expected_shell_target().
     harness::tender(&root)
-        .args([
-            "start",
-            "shell",
-            "--stdin",
-            "--exec-target",
-            "posix-shell",
-            "--",
-            "bash",
-        ])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
-    // Same name, different exec-target → conflict
+    // Re-start the same name with the *opposite* exec-target. A different
+    // exec-target changes the spec hash, so identity conflicts on either OS.
+    let (other_target, interp): (&str, &[&str]) = if expected_shell_target() == "PosixShell" {
+        ("powershell", &["bash"])
+    } else {
+        ("posix-shell", &["powershell", "-NoProfile"])
+    };
+    let mut conflict_args = vec![
+        "start",
+        "shell",
+        "--stdin",
+        "--exec-target",
+        other_target,
+        "--",
+    ];
+    conflict_args.extend_from_slice(interp);
     harness::tender(&root)
-        .args([
-            "start",
-            "shell",
-            "--stdin",
-            "--exec-target",
-            "powershell",
-            "--",
-            "bash",
-        ])
+        .args(conflict_args)
         .assert()
         .failure()
         .stderr(predicates::str::contains("session conflict"));
@@ -1475,14 +1611,15 @@ fn exec_emits_started_and_result_events() {
     let root = tempfile::TempDir::new().unwrap();
 
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--", "bash"])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    settle_after_start();
 
+    let echo_cmd = native_echo("event brigade");
     let output = harness::tender(&root)
-        .args(["exec", "shell", "--", "echo", "event brigade"])
+        .args(exec_argv("shell", echo_cmd.clone()))
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -1522,11 +1659,8 @@ fn exec_emits_started_and_result_events() {
 
     assert_eq!(started["source"], "tender.exec");
     assert_eq!(result["source"], "tender.exec");
-    assert_eq!(
-        started["data"]["command"],
-        serde_json::json!(["echo", "event brigade"])
-    );
-    assert_eq!(started["data"]["exec_target"], "PosixShell");
+    assert_eq!(started["data"]["command"], serde_json::json!(echo_cmd));
+    assert_eq!(started["data"]["exec_target"], expected_shell_target());
     assert!(
         started["data"].get("timeout_ms").is_none(),
         "no timeout flag → no field"
@@ -1576,16 +1710,16 @@ fn exec_events_inherit_parent_from_env_chain() {
     let root = tempfile::TempDir::new().unwrap();
 
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--", "bash"])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    settle_after_start();
 
     let outer = uuid::Uuid::now_v7().to_string();
     harness::tender(&root)
         .env("TENDER_BLOCK_ID", &outer)
-        .args(["exec", "shell", "--", "true"])
+        .args(exec_argv("shell", native_echo("chain")))
         .assert()
         .success();
 
@@ -1614,14 +1748,14 @@ fn exec_aline_links_event_id_and_block_id() {
     let root = tempfile::TempDir::new().unwrap();
 
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--", "bash"])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    settle_after_start();
 
     harness::tender(&root)
-        .args(["exec", "shell", "--", "echo", "linked"])
+        .args(exec_argv("shell", native_echo("linked")))
         .assert()
         .success();
 
@@ -1657,16 +1791,21 @@ fn exec_timeout_still_emits_result_event() {
     let root = tempfile::TempDir::new().unwrap();
 
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--", "bash"])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    settle_after_start();
 
-    let output = harness::tender(&root)
-        .args(["exec", "shell", "--timeout", "1", "--", "sleep", "3"])
-        .output()
-        .unwrap();
+    let mut args = vec![
+        "exec".to_string(),
+        "shell".to_string(),
+        "--timeout".to_string(),
+        "1".to_string(),
+        "--".to_string(),
+    ];
+    args.extend(native_sleep(3));
+    let output = harness::tender(&root).args(args).output().unwrap();
     assert_eq!(output.status.code(), Some(124));
 
     let events = harness::read_events(&root, "shell");
@@ -1719,6 +1858,10 @@ fn exec_event_append_is_best_effort() {
 
 /// The PosixShell frame exports TENDER_BLOCK_ID for the payload's duration:
 /// the payload sees exactly the block_id its exec events carry.
+#[cfg_attr(
+    windows,
+    ignore = "PowerShell TENDER_BLOCK_ID env propagation — windows-parity Phase 3"
+)]
 #[test]
 fn exec_payload_sees_block_id_env() {
     let _lock = lock();
@@ -1758,16 +1901,20 @@ fn exec_frame_from_stdin_runs_payload() {
     let root = tempfile::TempDir::new().unwrap();
 
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--", "bash"])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    settle_after_start();
 
-    let frame = r#"{"v":1,"session":"shell","cmd":["echo","framed hello"]}"#;
+    let frame = serde_json::json!({
+        "v": 1,
+        "session": "shell",
+        "cmd": native_echo("framed hello"),
+    });
     let output = harness::tender(&root)
         .args(["exec", "--frame-from-stdin"])
-        .write_stdin(frame)
+        .write_stdin(frame.to_string())
         .output()
         .unwrap();
 
@@ -1794,6 +1941,9 @@ fn exec_frame_from_stdin_runs_payload() {
 /// The frame carries argv as a JSON array, so quoting-hostile payloads
 /// never touch a shell on the way in: the payload byte-for-byte matches
 /// what the in-session command receives.
+// POSIX-shell contract (single-quote torture); Windows parity is the
+// exec_powershell_* tests, not this.
+#[cfg(unix)]
 #[test]
 fn exec_frame_payload_survives_quoting_torture() {
     let _lock = lock();
@@ -1843,16 +1993,21 @@ fn exec_frame_timeout_exits_124() {
     let root = tempfile::TempDir::new().unwrap();
 
     harness::tender(&root)
-        .args(["start", "shell", "--stdin", "--", "bash"])
+        .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    settle_after_start();
 
-    let frame = r#"{"v":1,"session":"shell","cmd":["sleep","3"],"timeout":1}"#;
+    let frame = serde_json::json!({
+        "v": 1,
+        "session": "shell",
+        "cmd": native_sleep(3),
+        "timeout": 1,
+    });
     let output = harness::tender(&root)
         .args(["exec", "--frame-from-stdin"])
-        .write_stdin(frame)
+        .write_stdin(frame.to_string())
         .output()
         .unwrap();
 
@@ -1967,5 +2122,53 @@ fn exec_frame_empty_cmd_exits_2() {
     assert!(
         stderr.contains("invalid exec frame"),
         "empty cmd is a frame error: {stderr}"
+    );
+}
+
+/// Drift guard: the ONLY exec tests permitted to carry a Windows `#[ignore]`.
+/// Each entry is a deliberate, documented parity gap; adding another
+/// Windows-ignored exec test without listing it here fails the suite, so the
+/// ignored set can never grow silently and every name stays tracked.
+#[test]
+fn windows_ignored_exec_set_is_exactly_tracked() {
+    // Tracked parity gaps (see the attribute above each named test):
+    //   exec_payload_sees_block_id_env — PowerShell has no TENDER_BLOCK_ID env
+    //     propagation yet (windows-parity Phase 3).
+    const EXPECTED: &[&str] = &["exec_payload_sees_block_id_env"];
+
+    let src = include_str!("cli_exec.rs");
+    // Scan only the source *before* this guard, so the guard's own body can
+    // never masquerade as a windows-ignore attribute (self-match immunity).
+    let guard_at = src
+        .find("fn windows_ignored_exec_set_is_exactly_tracked")
+        .expect("guard fn present");
+    let scan = &src[..guard_at];
+
+    // A windows-ignore is a `cfg_attr(...)` whose body names both `windows` and
+    // `ignore`, then a `fn <name>(`. Inspecting the attribute body (not a single
+    // literal) is tolerant of rustfmt wrapping the attribute across lines.
+    let mut found: Vec<String> = Vec::new();
+    let mut rest = scan;
+    while let Some(pos) = rest.find("cfg_attr(") {
+        let after = &rest[pos + "cfg_attr(".len()..];
+        let (body, post) = after.split_once(")]").unwrap_or((after, ""));
+        if body.contains("windows") && body.contains("ignore") {
+            let name = post
+                .split_once("fn ")
+                .and_then(|(_, tail)| tail.split('(').next())
+                .map(|n| n.trim().to_string())
+                .expect("a fn follows the windows-ignore attribute");
+            found.push(name);
+        }
+        rest = after;
+    }
+    found.sort();
+
+    let mut expected: Vec<String> = EXPECTED.iter().map(|s| s.to_string()).collect();
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "windows-ignored exec test set drifted; update EXPECTED and justify \
+         each parity gap"
     );
 }
