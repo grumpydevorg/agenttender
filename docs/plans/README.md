@@ -15,8 +15,9 @@ Filename prefix sets priority. `ls active/` is the ordered queue. All backlog
 `depends_on` prereqs (event-emit-primitive, remote-ssh-transport,
 pty-session-mode) have shipped, so nothing is dependency-blocked.
 
-_Queue empty — boundary-metadata shipped 2026-07-10 (PR #27, main@`d3da227`).
-Next work is pulled from `backlog/` below._
+| ID | File | Depends On |
+|----|------|------------|
+| remote-frame-transport | `00_remote-frame-transport.md` | — |
 
 ## backlog/ — Future Work
 

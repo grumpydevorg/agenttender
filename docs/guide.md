@@ -209,6 +209,14 @@ tender --host data-box wait  extract_all --timeout 3600
 over the ssh stdin channel — it never traverses a remote shell, so there is no
 nested-quoting layer to escape.
 
+> **Remote-shell scope (read before `--host` to Windows).** Only `exec` uses the
+> constant-argv frame transport, so it is safe against any remote shell. The other
+> `--host` commands still reconstruct argv for a **POSIX** remote login shell.
+> So today: **local Windows and remote `exec` are supported; general `--host`
+> command forwarding remains POSIX-shell-only** — do not point general `--host`
+> commands at a Windows host (cmd.exe / PowerShell) until the
+> [remote frame transport](plans/active/00_remote-frame-transport.md) lands.
+
 **`run`, `wrap`, `prune`, `query`, `guide`, and `skill`** are local-only.
 Naming `--host` on them exits `2` with a ready-to-paste fallback:
 
@@ -229,6 +237,11 @@ so the payload does not care whether the remote default shell is `cmd.exe` or
 PowerShell. If you manually ssh-wrap local-only commands, quote for that remote
 shell explicitly; for PowerShell-default hosts, `powershell -NoProfile -Command`
 is often clearer than relying on implicit quoting.
+
+This path was validated end to end on 2026-07-10 against a Parallels ARM Windows
+VM over SSH, using the released Tender 0.2.0 x64 binary under Windows emulation.
+Remote `exec` preserved PowerShell session state across frames, returned clean
+structured JSON, and composed correctly with remote `start` and `kill`.
 
 ### Scripting: `exec --frame-from-stdin`
 
