@@ -22,10 +22,43 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
+        # Native pinned DuckDB CLI per lane so the analytics tests actually run
+        # everywhere (see TENDER_REQUIRE_DUCKDB_TESTS below).
+        include:
+          - os: ubuntu-latest
+            duckdb_asset: duckdb_cli-linux-amd64.zip
+          - os: macos-latest
+            duckdb_asset: duckdb_cli-osx-universal.zip
+          - os: windows-latest
+            duckdb_asset: duckdb_cli-windows-amd64.zip
+          - os: windows-11-arm
+            duckdb_asset: duckdb_cli-windows-arm64.zip
+    env:
+      DUCKDB_VERSION: v1.5.2
+      # Absence of duckdb must FAIL these lanes, not silently skip -- otherwise a
+      # broken install step would turn analytics coverage falsely green.
+      TENDER_REQUIRE_DUCKDB_TESTS: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
         run: rustup update stable --no-self-update
+      - name: Install DuckDB CLI (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/duckdb.zip" \
+            "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/${{ matrix.duckdb_asset }}"
+          unzip -o "$RUNNER_TEMP/duckdb.zip" -d "$RUNNER_TEMP/duckdb-bin"
+          echo "$RUNNER_TEMP/duckdb-bin" >> "$GITHUB_PATH"
+      - name: Install DuckDB CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/duckdb/duckdb/releases/download/$env:DUCKDB_VERSION/${{ matrix.duckdb_asset }}"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\duckdb.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\duckdb.zip" -DestinationPath "$env:RUNNER_TEMP\duckdb-bin" -Force
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:RUNNER_TEMP\duckdb-bin"
+      - name: Verify DuckDB
+        run: duckdb --version
       - name: Test
         # --no-fail-fast so every test binary runs and the log shows the full
         # per-platform failure inventory, not just the first binary to fail.

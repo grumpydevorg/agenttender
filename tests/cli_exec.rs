@@ -704,6 +704,9 @@ fn exec_python_inferred() {
 /// DuckDB inferred from argv[0].
 #[test]
 fn exec_infers_duckdb() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
@@ -733,6 +736,9 @@ fn exec_infers_duckdb() {
 /// DuckDB exec: basic SELECT query returns structured JSON in stdout.
 #[test]
 fn exec_duckdb_basic_select() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
@@ -795,6 +801,9 @@ fn exec_duckdb_basic_select() {
 /// DuckDB exec: SQL error reports exit_code 1 but keeps the session alive.
 #[test]
 fn exec_duckdb_sql_error() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
@@ -878,6 +887,9 @@ fn exec_duckdb_sql_error() {
 /// DuckDB exec: multiple statements produce concatenated results.
 #[test]
 fn exec_duckdb_multi_statement() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
@@ -935,6 +947,9 @@ fn exec_duckdb_multi_statement() {
 /// DuckDB exec with explicit --exec-target duckdb.
 #[test]
 fn exec_duckdb_explicit_target() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
@@ -982,6 +997,9 @@ fn exec_duckdb_explicit_target() {
 /// Must report exit_code 1 even though stdout has partial results.
 #[test]
 fn exec_duckdb_mixed_success_reports_error() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
@@ -1046,6 +1064,9 @@ fn exec_duckdb_mixed_success_reports_error() {
 /// DuckDB exec: paths with spaces work correctly (no .output path escaping needed).
 #[test]
 fn exec_duckdb_path_with_spaces() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let _lock = lock();
     // Create a temp dir whose path includes spaces
     let parent = tempfile::TempDir::new().unwrap();

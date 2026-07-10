@@ -46,6 +46,9 @@ fn seed_mixed(root: &TempDir) {
 
 #[test]
 fn query_counts_all_events_across_namespaces() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let root = TempDir::new().unwrap();
     seed_mixed(&root);
 
@@ -58,6 +61,9 @@ fn query_counts_all_events_across_namespaces() {
 
 #[test]
 fn query_group_by_kind_reads_kind_column() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let root = TempDir::new().unwrap();
     seed_mixed(&root);
 
@@ -74,6 +80,9 @@ fn query_group_by_kind_reads_kind_column() {
 
 #[test]
 fn query_data_is_json_and_ts_is_timestamp() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let root = TempDir::new().unwrap();
     seed_mixed(&root);
 
@@ -93,6 +102,9 @@ fn query_data_is_json_and_ts_is_timestamp() {
 
 #[test]
 fn query_namespace_scopes_the_view() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let root = TempDir::new().unwrap();
     seed_mixed(&root);
 
@@ -112,6 +124,9 @@ fn query_namespace_scopes_the_view() {
 
 #[test]
 fn query_from_file_runs_sql_from_disk() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let root = TempDir::new().unwrap();
     seed_mixed(&root);
 
@@ -128,6 +143,9 @@ fn query_from_file_runs_sql_from_disk() {
 
 #[test]
 fn query_empty_scope_returns_zero() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let root = TempDir::new().unwrap();
     // No sessions seeded at all: the view exists but is empty.
 
@@ -140,6 +158,9 @@ fn query_empty_scope_returns_zero() {
 
 #[test]
 fn query_bad_sql_propagates_failure() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let root = TempDir::new().unwrap();
     seed_mixed(&root);
 
@@ -168,6 +189,9 @@ fn query_missing_duckdb_errors_clearly() {
 
 #[test]
 fn query_version_reports_duckdb() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let root = TempDir::new().unwrap();
 
     tender(&root)
@@ -188,6 +212,9 @@ fn query_requires_sql_file_or_shell() {
 
 #[test]
 fn query_tolerates_a_malformed_line() {
+    if !harness::duckdb_or_skip() {
+        return;
+    }
     let root = TempDir::new().unwrap();
     // A corrupt/torn line between two valid events must not kill the query: it
     // is skipped, and the two real events still count. (Unparseable JSON is not

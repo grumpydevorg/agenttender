@@ -133,3 +133,28 @@ pub fn wait_terminal(root: &TempDir, session: &str) -> serde_json::Value {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
+
+/// Gate a test on the external `duckdb` CLI. Returns `true` if the test should
+/// proceed. When duckdb is absent:
+///   - panics if `TENDER_REQUIRE_DUCKDB_TESTS` is set (CI installs duckdb, so a
+///     broken install must fail loudly rather than silently pass as green);
+///   - otherwise prints a skip notice and returns `false` so the caller returns
+///     early (friendly local runs without duckdb installed).
+#[allow(dead_code)]
+pub fn duckdb_or_skip() -> bool {
+    let available = std::process::Command::new("duckdb")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !available {
+        if std::env::var_os("TENDER_REQUIRE_DUCKDB_TESTS").is_some() {
+            panic!(
+                "duckdb not found on PATH but TENDER_REQUIRE_DUCKDB_TESTS is set \
+                 -- CI must install the DuckDB CLI"
+            );
+        }
+        eprintln!("skipped: duckdb not on PATH (set TENDER_REQUIRE_DUCKDB_TESTS to enforce)");
+    }
+    available
+}
