@@ -3,6 +3,7 @@
 Start at the [project README](../README.md) for what Tender is, how to install it,
 and a quickstart.
 
+- [Guide](guide.md) — using Tender day to day: sessions, `exec`, the REPL/DB lanes, observing work, and remote hosts via `--host`
 - [Roadmap](ROADMAP.md) — Now / Next / Later / Not in core
 - [Analytics recipes](analytics-recipes.md) — query the on-disk event log with DuckDB
 - [Architecture](architecture/README.md) — how the pieces fit together (system context, session storage, run lifecycle, PTY lane, key flows, transport boundaries)
