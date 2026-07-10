@@ -36,6 +36,17 @@ The gap is exploitable, not cosmetic:
 (`src/ssh.rs:96`). That is the proof the framed approach is correct; the older
 reconstructed-argv transport is not.
 
+### A second, higher-severity vector — LOCAL ssh-option injection (review 2026-07-10)
+
+Surfaced by the pre-implementation review: the `--host` **destination** is placed
+as a **bare argument** to the local `ssh` binary — no `--` guard, no leading-dash
+rejection — in *both* `build_ssh_command` (`ssh.rs:60`) **and the already-shipped
+constant-argv frame path** `build_ssh_exec_frame_command` (`ssh.rs:100-109`). So
+`tender --host '-oProxyCommand=<cmd>'` is parsed by the *local* ssh as an option
+→ **arbitrary local command execution**, before any remote hop. This does **not**
+reach the remote shell, so the frame redesign does **not** fix it, and it affects
+shipped `0.2.0`. It must be hardened independently (see **Step 0** below).
+
 ## Design
 
 ### 1. A typed command IR (independent of Clap and SSH)
@@ -118,8 +129,11 @@ Still OS-specific (by design): **workload syntax** (a Windows target needs
 Windows argv/paths; Linux needs Linux — Tender transports values exactly, it does
 NOT translate bash↔PowerShell) and **process supervision** (Unix/Windows
 backends). **`ExecTarget` stays session-local + authoritative in `meta.json`** —
-the request says "run these fragments against this session"; the remote side
-picks the existing PowerShell/POSIX/Python/DuckDB adapter from session metadata.
+for `exec`, the request says "run these fragments against this session" and the
+remote side READS the adapter from session metadata. **But `start` is session
+*creation* — it must WRITE `exec_target` into the new `meta.json`** (else the
+remote falls back to `infer_exec_target(argv0)` and a Windows box picks the wrong
+adapter), which is exactly why `StartRequest` must carry `exec_target` (step 1).
 
 ### 5. Not the sidecar control protocol
 
@@ -137,27 +151,57 @@ only if *local* correlated IPC genuinely needs it — this is not that.
 
 ## Implementation sequence (safe, incremental)
 
-1. Add `RemoteOperation` request types + shared `dispatch`. Route local supported
-   commands through the typed layer first. **No SSH behavior change yet.**
+> **Review additions (2026-07-10) marked in bold.**
+
+0. **Harden the `--host` destination — independent of the frame, ship first.**
+   Reject any `--host` value beginning with `-` (or that ssh would parse as an
+   option) at the CLI boundary before spawning ssh. Closes the local
+   ssh-option-injection vector above and **also fixes the already-shipped
+   exec-frame path** (`ssh.rs:100-109`), which the frame work never touches.
+1. Add `RemoteOperation` request types + shared `dispatch`. **Pin every DTO's
+   completeness here, where it's defined.** `StartRequest` must mirror the FULL
+   start/`LaunchSpec` surface: session, namespace, argv, cwd, env, stdin, timeout,
+   `exec_target`, pty, replace, `on_exit`, after, `any_exit`, **and `boundary` +
+   `boundary_parent`** (added on this branch — the header example above predates
+   them). A missing field silently no-ops over `--host` (wrong Windows adapter,
+   dropped boundary). Route local commands through the typed layer first. **No SSH
+   behavior change yet.**
 2. Add the framed codec + hidden `_remote` endpoint (partial-read handling, header
    limits, version check, semantic validation).
 3. Move `start, status, list, log, kill, wait, watch, exec` to the frame.
-   **`start` is the security priority** — its cwd, env, callbacks, and child argv
+   **`start` is the security priority** — cwd, env, callbacks, child argv,
+   `--boundary`/`--boundary-parent` labels, and (easy to miss) **`log --since`**
    are all currently shell-exposed.
 4. Move `push` (header + raw body framing).
-5. Build the `attach` bridge separately (Unix first; Windows needs ConPTY + a
-   local named-pipe attach carrier).
+5. Build the `attach` bridge — **two distinct halves**: **5a Windows-as-target**
+   (ConPTY + a Windows named-pipe carrier) and **5b Windows-as-client** (a local
+   Windows-console raw-mode frontend — newly required because moving raw-mode/resize
+   to the local frontend over `ssh -T` replaces today's `ssh -t` remote-frontend
+   model, which currently handles Windows-client→Unix-remote attach with zero
+   Windows terminal code). Keep the `ssh -t` path during transition if that case
+   matters. Unix first.
 6. Delete general POSIX remote-argv reconstruction. Keep shell quoting only for
-   the human-facing copy/paste **fallback text**, never for execution.
+   the human-facing copy/paste **fallback text** (verified: `local_fallback_args`
+   is only `eprintln!`'d, never spawned) — label it "(POSIX shell)" so users don't
+   paste POSIX-quoted text at a Windows host.
 7. Add native Windows x64 + ARM64 CI, including real cmd.exe and PowerShell
    OpenSSH tests.
 
 ## Required security tests
 
-- Every remote op emits the identical constant SSH argv.
+- Every remote op emits the identical constant SSH argv — mirror the shipped
+  `exec_frame_argv_is_constant` test (`ssh.rs:159`) so a future refactor that
+  sneaks a user value into argv fails CI.
+- **`--host` values beginning with `-` (ssh-option-shaped) are rejected before
+  ssh spawns** — the local option-injection guard (step 0).
 - Hostile values round-trip exactly: `` & | $ ; ( ) " ' ` ``, CR/LF, Unicode,
-  Windows paths, spaces.
-- `start` preserves arbitrary child argv, cwd, env, and callback strings.
+  Windows paths, spaces — **including `log --since`, which round-trips as data,
+  never executes.**
+- `start` preserves arbitrary child argv, cwd, env, callbacks, `after`, and
+  **`boundary`/`boundary_parent` labels — a completeness test asserts every start
+  flag survives `Commands → StartRequest → JSON → dispatch`.**
+- **Non-UTF-8 `cwd`/`env` is rejected at frame-build with a clear error, not
+  lossily transported** (JSON is UTF-8-only; `to_string_lossy` would corrupt).
 - Malformed / oversized headers → no side effects.
 - Unknown versions and operations fail clearly.
 - `push` preserves arbitrary binary bytes without truncation.
