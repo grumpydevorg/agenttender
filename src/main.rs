@@ -49,7 +49,10 @@ struct Cli {
     /// Supported remotely: start, status, list, log, push, kill, wait,
     /// watch, attach, and exec (the payload rides the frame transport,
     /// not a shell). Local-only: run, wrap, prune, query.
-    #[arg(long, global = true)]
+    // allow_hyphen_values so an option-shaped destination (`-oProxyCommand=…`)
+    // is captured as the value and rejected by our own validate_destination
+    // (clear error, exit 2) rather than mis-parsed by clap as a flag.
+    #[arg(long, global = true, allow_hyphen_values = true)]
     host: Option<String>,
 
     #[command(subcommand)]
@@ -861,6 +864,13 @@ fn main() {
 
     // If --host is set, dispatch to SSH transport.
     if let Some(ref host) = cli.host {
+        // The destination is a bare positional argument to the local ssh, so an
+        // empty or option-shaped value (e.g. `-oProxyCommand=<cmd>`) would run a
+        // local command. Reject it at the boundary before any ssh spawn (exit 2).
+        if let Err(e) = tender::ssh::validate_destination(host) {
+            eprintln!("error: {e}");
+            std::process::exit(2);
+        }
         // exec goes remote via the frame transport
         // (2026-07-08-remote-exec-host-parity.md slice 2): the whole request is
         // one JSON frame on the SSH stdin channel; the remote argv is

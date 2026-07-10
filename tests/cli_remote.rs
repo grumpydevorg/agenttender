@@ -1069,3 +1069,52 @@ fn start_boundary_is_reconstructed_for_ssh() {
     // The trailing command must still be present and after the boundary flags.
     assert!(args.contains(&"echo"), "missing trailing cmd: {args:?}");
 }
+
+// --- host destination hardening (v0.2.1) ---
+
+#[test]
+fn host_rejects_option_shaped_destination_general() {
+    // A `-`-prefixed --host destination must be rejected at the CLI boundary
+    // (exit 2) BEFORE ssh is spawned, so the fake ssh (which prints ARG: lines)
+    // is never invoked. Guards the general reconstructed-argv path.
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = fake_ssh_echo();
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+        .args(["--host", "-oProxyCommand=marker", "status", "job"])
+        .env("PATH", tmp.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "must exit 2");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("ARG:"),
+        "fake ssh must NOT be spawned for an option-shaped --host: {stdout}"
+    );
+}
+
+#[test]
+fn host_rejects_option_shaped_destination_framed_exec() {
+    // The framed exec path has a constant remote argv, but the destination still
+    // precedes it — so the same guard applies, rejected before any ssh spawn.
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = fake_ssh_echo();
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+        .args([
+            "--host",
+            "-oProxyCommand=marker",
+            "exec",
+            "job",
+            "--",
+            "echo",
+            "hi",
+        ])
+        .env("PATH", tmp.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "must exit 2");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("ARG:"),
+        "fake ssh must NOT be spawned for an option-shaped --host: {stdout}"
+    );
+}

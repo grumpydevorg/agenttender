@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.1 — Security: reject option-shaped `--host` destinations
+
+### Security
+
+- **`--host` destination hardening.** The SSH destination is a bare positional
+  argument to the local `ssh` binary, so an empty or option-shaped value (e.g.
+  `--host '-oProxyCommand=<cmd>'`) could be parsed by the local ssh as an option,
+  enabling **local command execution** when an untrusted value reaches `--host`.
+  Tender now rejects empty or `-`-prefixed destinations at the CLI boundary
+  (exit 2) and re-checks inside `exec_ssh` / `exec_ssh_frame` so no non-CLI
+  caller can bypass it. Valid forms (`user@host`, ssh aliases, IPv4, bracketed
+  IPv6) are unaffected. The vector was present in `v0.2.0` on both the general
+  `--host` path and the `exec` frame path; exploitation requires an untrusted
+  value reaching `--host`, so `v0.2.0` is not yanked.
+
 ## v0.2.0 — Agent Terminal Integration
 
 The minimum credible release for reactive process supervision consumers like terminal UIs and agent orchestrators.

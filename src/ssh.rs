@@ -15,6 +15,13 @@ pub enum SshError {
     /// SSH process was killed by a signal or returned an unexpected OS error.
     #[error("ssh process terminated abnormally")]
     Abnormal,
+
+    /// The SSH destination is empty or option-shaped (begins with `-`). It is
+    /// passed to the local `ssh` as a bare positional argument, so a value like
+    /// `-oProxyCommand=<cmd>` would be parsed by the local ssh as an option —
+    /// local command execution. Rejected before ssh is ever spawned.
+    #[error("invalid --host destination {0:?}: must not be empty or begin with '-'")]
+    InvalidDestination(String),
 }
 
 /// Commands whose argv is forwarded verbatim over SSH transport.
@@ -32,6 +39,24 @@ pub const REMOTE_COMMANDS: &[&str] = &[
 /// Check whether a subcommand is supported for remote execution.
 pub fn is_remote_supported(subcommand: &str) -> bool {
     REMOTE_COMMANDS.contains(&subcommand)
+}
+
+/// Validate an SSH destination before it is handed to the local `ssh` binary.
+///
+/// The destination is a *bare* positional argument to `ssh`. An empty or
+/// option-shaped value (one beginning with `-`, e.g. `-oProxyCommand=<cmd>`)
+/// would be parsed by the local ssh as an *option*, enabling local command
+/// execution. Valid destinations — `user@host`, ssh-config aliases, IPv4, and
+/// bracketed IPv6 (`[::1]`) — never begin with `-`, so a single non-empty /
+/// leading-dash check preserves every legitimate form while closing the vector.
+///
+/// Enforced at the CLI boundary (exit 2) AND re-checked inside `exec_ssh` /
+/// `exec_ssh_frame`, so no non-CLI caller can bypass the guard.
+pub fn validate_destination(host: &str) -> Result<(), SshError> {
+    if host.is_empty() || host.starts_with('-') {
+        return Err(SshError::InvalidDestination(host.to_owned()));
+    }
+    Ok(())
 }
 
 /// Build the SSH command line for remote tender invocation.
@@ -79,6 +104,7 @@ pub fn build_ssh_command(host: &str, tender_args: &[String], allocate_tty: bool)
 /// Returns the remote tender exit code on success.
 /// Returns `SshError::TransportFailed` for SSH connection failures (exit 255).
 pub fn exec_ssh(host: &str, tender_args: &[String], allocate_tty: bool) -> Result<i32, SshError> {
+    validate_destination(host)?;
     let mut child = build_ssh_command(host, tender_args, allocate_tty)
         .spawn()
         .map_err(SshError::SpawnFailed)?;
@@ -131,6 +157,7 @@ fn build_ssh_exec_frame_command(host: &str, inherit_stdin: bool) -> Command {
 /// command genuinely exiting 255 — an inherent ssh limitation),
 /// `SshError::SpawnFailed`/`Abnormal` as for `exec_ssh`.
 pub fn exec_ssh_frame(host: &str, frame: Option<&[u8]>) -> Result<i32, SshError> {
+    validate_destination(host)?;
     let mut child = build_ssh_exec_frame_command(host, frame.is_none())
         .spawn()
         .map_err(SshError::SpawnFailed)?;
@@ -175,6 +202,42 @@ mod tests {
                 "--frame-from-stdin"
             ]
         );
+    }
+
+    #[test]
+    fn validate_destination_rejects_empty_and_option_shaped() {
+        for bad in [
+            "",
+            "-",
+            "-t",
+            "--foo",
+            "-oProxyCommand=calc",
+            "-oProxyCommand=x",
+        ] {
+            assert!(
+                validate_destination(bad).is_err(),
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_destination_preserves_valid_forms() {
+        for ok in [
+            "box",
+            "rick-windows",
+            "user@host",
+            "user@10.0.0.1",
+            "10.0.0.1",
+            "host.example.com",
+            "[::1]",
+            "user@[fe80::1]",
+        ] {
+            assert!(
+                validate_destination(ok).is_ok(),
+                "expected {ok:?} to be accepted"
+            );
+        }
     }
 
     /// Helper: extract the args that `build_ssh_command` would pass to the ssh binary.
