@@ -6,8 +6,8 @@ see the [project README](../README.md); for how it works inside, see
 [Architecture](architecture/README.md).
 
 > Using Tender *from a coding agent?* The [`using-tender` skill](../.claude/skills/using-tender/SKILL.md)
-> is the agent-facing version of this guide, with the argv/quoting rules an agent
-> most often trips on. This page is the human-facing tour.
+> is a thin router that tells the agent the first rules to obey, then points it
+> back to `tender guide` for version-matched detail.
 
 ## The model
 
@@ -23,6 +23,35 @@ Each session has a stable **name** and lives under a **namespace** (default:
 (append-only history) — so it survives a crash, a disconnect, or your agent's
 context resetting. A per-session **sidecar** is the actual supervisor; the CLI
 just talks to it.
+
+## Install and build
+
+The crate is `agenttender`; the installed binary is `tender`:
+
+```bash
+cargo install agenttender
+tender --help
+```
+
+For unpublished local builds, build the `tender` binary from the repository:
+
+```bash
+cargo build --release --bin tender
+install -m 0755 target/release/tender ~/.local/bin/
+```
+
+For Linux hosts from macOS, `cargo-zigbuild` is the simplest static-musl path:
+
+```bash
+brew install zig
+cargo install cargo-zigbuild
+cargo zigbuild --release --target aarch64-unknown-linux-musl --bin tender
+```
+
+Musl builds avoid libc-version drift across remote hosts. Windows builds should
+prefer the MSVC target on Windows itself; cross-compiling GNU Windows targets from
+macOS/Linux may need an external binutils toolchain. For long remote builds, run
+the build under Tender too, then follow with `tender log -f` and `tender wait`.
 
 ## Start a session
 
@@ -76,6 +105,16 @@ tender exec ddb -- "$SQL" | jq -e '.exit_code == 0' >/dev/null || { echo FAIL; e
 Only one `exec` can be in flight per session — a second concurrent `exec` against
 the same session fails with *"another exec is already running."* Start a second
 session (`ddb2`, `py2`) for parallel inspection.
+
+Large exec results are quiet. The JSON result still contains the command's
+stdout/stderr and exit code, but the annotation line in `output.log` may degrade
+when it would be too large. In that case Tender writes a compact
+`exec_truncated` breadcrumb with `stdout_len`, `stderr_len`, `stdout_sha256`, and
+`stderr_sha256` instead of raw payload. Find them with:
+
+```bash
+rg '"event":"exec_truncated"' output.log
+```
 
 ## The REPL and database lanes
 
@@ -170,8 +209,8 @@ tender --host data-box wait  extract_all --timeout 3600
 over the ssh stdin channel — it never traverses a remote shell, so there is no
 nested-quoting layer to escape.
 
-Only **`run`, `wrap`, and `prune`** are local-only. Naming `--host` on them exits
-`2` with a ready-to-paste fallback:
+**`run`, `wrap`, `prune`, `query`, `guide`, and `skill`** are local-only.
+Naming `--host` on them exits `2` with a ready-to-paste fallback:
 
 ```text
 $ tender --host data-box run deploy.sh
@@ -182,6 +221,14 @@ try:  ssh data-box 'tender run deploy.sh'
 This is the workflow behind "leave long-running work on a remote box and come
 back to it": start it under `--host`, disconnect, and reconnect later to `log`,
 `status`, `wait`, or `exec` against the same live session.
+
+On Windows hosts, the default ssh shell only matters when you write your own
+`ssh host 'tender ...'` wrapper. `tender --host ... exec ...` uses a constant
+remote argv (`tender exec --frame-from-stdin`) and sends the payload over stdin,
+so the payload does not care whether the remote default shell is `cmd.exe` or
+PowerShell. If you manually ssh-wrap local-only commands, quote for that remote
+shell explicitly; for PowerShell-default hosts, `powershell -NoProfile -Command`
+is often clearer than relying on implicit quoting.
 
 ### Scripting: `exec --frame-from-stdin`
 
@@ -225,4 +272,4 @@ rendered-screen reads for nobody and deliberately never will.
 ## See also
 
 - [Architecture](architecture/README.md) · [Design principles](design-principles.md) · [Roadmap](ROADMAP.md)
-- [`using-tender` skill](../.claude/skills/using-tender/SKILL.md) — the agent-facing version, with the argv/quoting gotchas in full
+- [`using-tender` skill](../.claude/skills/using-tender/SKILL.md) — the thin agent-facing router to `tender guide`

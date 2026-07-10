@@ -16,6 +16,7 @@ const GUIDE: &str = include_str!("../../docs/guide.md");
 /// is unique across the guide's headings (guarded by a unit test), so the
 /// mapping is unambiguous.
 const TOPICS: &[(&str, &str)] = &[
+    ("install", "Install and build"),
     ("exec", "Drive it with"),
     ("remote", "Reach remote hosts"),
     ("python", "Python /"),
@@ -157,6 +158,7 @@ mod tests {
     fn exec_section_excludes_neighbouring_sections() {
         let exec = slice_section(GUIDE, "Drive it with").unwrap();
         assert!(exec.contains("takes argv, not a shell snippet"));
+        assert!(exec.contains("exec_truncated"));
         assert!(
             !exec.contains("Reach remote hosts"),
             "exec section must not bleed into the remote section"
@@ -173,6 +175,15 @@ mod tests {
         // The nested `### Scripting: exec --frame-from-stdin` rides along because
         // slicing stops only at the next same-or-higher-level (`##`) heading.
         assert!(remote.contains("frame-from-stdin"));
+        assert!(remote.contains("default ssh shell"));
+    }
+
+    #[test]
+    fn install_section_mentions_crate_and_binary_names() {
+        let install = slice_section(GUIDE, "Install and build").unwrap();
+        assert!(install.contains("agenttender"));
+        assert!(install.contains("cargo install agenttender"));
+        assert!(install.contains("cargo-zigbuild"));
     }
 
     #[test]
