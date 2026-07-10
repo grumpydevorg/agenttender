@@ -79,7 +79,15 @@ pub fn validate_destination(host: &str) -> Result<(), SshError> {
 /// **Scope:** POSIX remote login shells only (bash, zsh, sh, etc.).
 /// Windows remote hosts (PowerShell, cmd.exe) need a different quoting
 /// strategy and are deferred to a follow-on slice.
-pub fn build_ssh_command(host: &str, tender_args: &[String], allocate_tty: bool) -> Command {
+pub fn build_ssh_command(
+    host: &str,
+    tender_args: &[String],
+    allocate_tty: bool,
+) -> Result<Command, SshError> {
+    // Fail closed: the builder validates the destination, so no caller can
+    // obtain a spawnable Command for an option-shaped/empty host — not just the
+    // CLI path. See `validate_destination`.
+    validate_destination(host)?;
     let mut cmd = Command::new("ssh");
     let tty_flag = if allocate_tty { "-t" } else { "-T" };
     cmd.args([tty_flag, "-o", "ConnectTimeout=10", host]);
@@ -95,17 +103,17 @@ pub fn build_ssh_command(host: &str, tender_args: &[String], allocate_tty: bool)
     cmd.stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    cmd
+    Ok(cmd)
 }
 
 /// Execute a remote tender command via SSH, streaming stdout/stderr
 /// directly to the local stdout/stderr.
 ///
 /// Returns the remote tender exit code on success.
-/// Returns `SshError::TransportFailed` for SSH connection failures (exit 255).
+/// Returns `SshError::TransportFailed` for SSH connection failures (exit 255),
+/// or `SshError::InvalidDestination` for an option-shaped/empty host.
 pub fn exec_ssh(host: &str, tender_args: &[String], allocate_tty: bool) -> Result<i32, SshError> {
-    validate_destination(host)?;
-    let mut child = build_ssh_command(host, tender_args, allocate_tty)
+    let mut child = build_ssh_command(host, tender_args, allocate_tty)?
         .spawn()
         .map_err(SshError::SpawnFailed)?;
 
@@ -122,7 +130,8 @@ pub fn exec_ssh(host: &str, tender_args: &[String], allocate_tty: bool) -> Resul
 /// nothing user-controlled rides in argv, so there is no shell-quoting
 /// layer to traverse (2026-07-08-remote-exec-host-parity.md slice 2). The frame
 /// itself travels on the SSH stdin channel as opaque bytes.
-fn build_ssh_exec_frame_command(host: &str, inherit_stdin: bool) -> Command {
+fn build_ssh_exec_frame_command(host: &str, inherit_stdin: bool) -> Result<Command, SshError> {
+    validate_destination(host)?;
     let mut cmd = Command::new("ssh");
     cmd.args([
         "-T",
@@ -140,7 +149,7 @@ fn build_ssh_exec_frame_command(host: &str, inherit_stdin: bool) -> Command {
     })
     .stdout(Stdio::inherit())
     .stderr(Stdio::inherit());
-    cmd
+    Ok(cmd)
 }
 
 /// Execute a remote exec by shipping the frame over the SSH stdin
@@ -157,8 +166,7 @@ fn build_ssh_exec_frame_command(host: &str, inherit_stdin: bool) -> Command {
 /// command genuinely exiting 255 — an inherent ssh limitation),
 /// `SshError::SpawnFailed`/`Abnormal` as for `exec_ssh`.
 pub fn exec_ssh_frame(host: &str, frame: Option<&[u8]>) -> Result<i32, SshError> {
-    validate_destination(host)?;
-    let mut child = build_ssh_exec_frame_command(host, frame.is_none())
+    let mut child = build_ssh_exec_frame_command(host, frame.is_none())?
         .spawn()
         .map_err(SshError::SpawnFailed)?;
 
@@ -185,7 +193,7 @@ mod tests {
     /// The frame-transport argv is constant: the payload never appears.
     #[test]
     fn exec_frame_argv_is_constant() {
-        let cmd = build_ssh_exec_frame_command("user@box", false);
+        let cmd = build_ssh_exec_frame_command("user@box", false).unwrap();
         let argv: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -240,10 +248,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn builders_fail_closed_on_invalid_destination() {
+        // Neither builder can hand out a spawnable Command for an option-shaped
+        // or empty host — so no non-CLI caller can bypass the guard.
+        let no_args: Vec<String> = vec![];
+        assert!(build_ssh_command("-oProxyCommand=x", &no_args, false).is_err());
+        assert!(build_ssh_command("", &no_args, false).is_err());
+        assert!(build_ssh_exec_frame_command("-oProxyCommand=x", false).is_err());
+        assert!(build_ssh_exec_frame_command("", false).is_err());
+        // Valid destinations still build.
+        assert!(build_ssh_command("user@box", &no_args, false).is_ok());
+        assert!(build_ssh_exec_frame_command("user@box", false).is_ok());
+    }
+
     /// Helper: extract the args that `build_ssh_command` would pass to the ssh binary.
     fn ssh_argv(host: &str, tender_args: &[&str]) -> Vec<String> {
         let args: Vec<String> = tender_args.iter().map(|s| s.to_string()).collect();
-        let cmd = build_ssh_command(host, &args, false);
+        let cmd = build_ssh_command(host, &args, false).unwrap();
         cmd.get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
@@ -274,7 +296,7 @@ mod tests {
             "echo".to_string(),
             "hello world".to_string(),
         ];
-        let cmd = build_ssh_command("user@box", &args, false);
+        let cmd = build_ssh_command("user@box", &args, false).unwrap();
         let argv: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -298,7 +320,7 @@ mod tests {
             "-c".to_string(),
             "echo $HOME && ls".to_string(),
         ];
-        let cmd = build_ssh_command("user@box", &args, false);
+        let cmd = build_ssh_command("user@box", &args, false).unwrap();
         let argv: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
