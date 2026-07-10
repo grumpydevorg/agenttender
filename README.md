@@ -4,6 +4,17 @@ Coding agents run every shell command in a fresh subprocess. Shell state — cwd
 
 Tender fixes that. It supervises shells and long-lived processes as durable, named sessions. The agent's one-shot CLI calls become thin clients against a supervisor that owns the process. State persists across tool calls. Logs survive on disk. Multiple agents — Claude, Codex, or anything else with shell access — can share the same session because no agent owns it.
 
+## Install
+
+**From source** (available today):
+
+```bash
+git clone https://github.com/grumpydevorg/agenttender
+cd agenttender && cargo build --release   # → target/release/tender
+```
+
+Prebuilt binaries and `cargo install agenttender` arrive with the first tagged release — see the [roadmap](docs/ROADMAP.md).
+
 ## A Concrete Day One
 
 ```bash
@@ -138,24 +149,11 @@ tender wait   dev --timeout 600
 
 Every command above also works remotely with `--host user@box`.
 
-## Design Direction
-
-Tender has one lifecycle model and multiple access paths.
-
-- local execution calls Tender core directly
-- remote execution should be the same semantic contract over SSH, not a separate system
-- pipe `start --stdin` + `exec` is the default agent lane for persistent shells
-- PTY support is secondary and should stay a distinct execution lane from structured non-PTY `exec`
-
-That makes Tender a good foundation for:
-
-- agent supervisors
-- hook-driven tooling
-- remote orchestration
-- higher-level frontends that need durable execution, logs, and control without owning process lifecycle themselves
-
 ## Docs
 
-- Architecture overview: [docs/architecture/README.md](docs/architecture/README.md)
-- Design spec: [docs/plans/specs/tender-agent-process-sitter.md](docs/plans/specs/tender-agent-process-sitter.md)
-- Planning index: [docs/plans/README.md](docs/plans/README.md)
+- [Documentation index](docs/README.md) — start here
+- [Roadmap](docs/ROADMAP.md) — Now / Next / Later
+- [Architecture](docs/architecture/README.md) — how it works
+- [Analytics recipes](docs/analytics-recipes.md) — query the event log with DuckDB
+- [Design principles](docs/design-principles.md) — layering and invariants
+- [Planning archive](docs/plans/README.md) — internal plan/spec ledger

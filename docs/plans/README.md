@@ -1,5 +1,10 @@
 # Tender Plans
 
+> **Internal planning archive.** This is the working plan/spec ledger — active
+> queue, backlog, completed history, and long-lived design specs. For a short
+> public view of direction see [../ROADMAP.md](../ROADMAP.md); for what Tender is,
+> start at the [project README](../../README.md).
+
 Spec: [tender-agent-process-sitter.md](specs/tender-agent-process-sitter.md)
 
 Convention: see [CONVENTIONS.md](CONVENTIONS.md)
