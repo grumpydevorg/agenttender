@@ -629,11 +629,10 @@ impl Commands {
         }
     }
 
-    /// Reconstruct CLI args for the local-only verbs (run/wrap/prune), for the
-    /// pre-filled `ssh <host> 'tender …'` fallback printed when `--host`
-    /// is rejected. Reconstructed from clap-parsed state — never raw
-    /// argv, which would corrupt child args after `--`. Returns `None`
-    /// for every other command (those keep the generic rejection).
+    /// Reconstruct CLI args for local-only commands that can offer a pre-filled
+    /// `ssh <host> 'tender …'` fallback when `--host` is rejected. Reconstructed
+    /// from clap-parsed state — never raw argv, which would corrupt child args
+    /// after `--`. Returns `None` for commands that keep the generic rejection.
     fn local_fallback_args(&self) -> Option<Vec<String>> {
         match self {
             Commands::Run {
@@ -912,8 +911,8 @@ fn main() {
             eprintln!(
                 "command '{cmd_name}' is not supported over SSH (--host).\n\
                  Supported remote commands: {}.\n\
-                 Local-only commands (run, wrap, prune) rely on local FIFO,\n\
-                 process context, or filesystem state that cannot tunnel through ssh -T.",
+                 Some local-only commands rely on local FIFO, process context,\n\
+                 or filesystem state that cannot tunnel through ssh -T.",
                 tender::ssh::REMOTE_COMMANDS.join(", ")
             );
             std::process::exit(1);

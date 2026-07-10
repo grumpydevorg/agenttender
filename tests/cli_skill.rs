@@ -28,7 +28,9 @@ fn skill_print_emits_frontmatter_and_bootstrap_rules() {
         // the three bootstrap rules
         .stdout(predicate::str::contains("takes argv, not a shell string"))
         .stdout(predicate::str::contains("exit_code"))
-        .stdout(predicate::str::contains("one in-flight `exec` per session"));
+        .stdout(predicate::str::contains("one in-flight `exec` per session"))
+        .stdout(predicate::str::contains("tender guide powershell"))
+        .stdout(predicate::str::contains("tender guide boundary"));
 }
 
 #[test]

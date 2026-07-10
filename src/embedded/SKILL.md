@@ -20,4 +20,6 @@ tender guide exec
 tender guide remote
 tender guide python
 tender guide duckdb
+tender guide powershell
+tender guide boundary
 ```
