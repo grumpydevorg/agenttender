@@ -38,7 +38,11 @@ impl From<CliExecTarget> for tender::model::spec::ExecTarget {
 }
 
 #[derive(Parser)]
-#[command(name = "tender", about = "Agent process sitter")]
+#[command(
+    name = "tender",
+    about = "Agent process sitter",
+    version = env!("CARGO_PKG_VERSION")
+)]
 struct Cli {
     /// Route command through SSH to a remote host (e.g. user@box).
     ///

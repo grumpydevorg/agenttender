@@ -12,6 +12,18 @@ use predicates::prelude::*;
 use tempfile::TempDir;
 
 #[test]
+fn version_reports_package_version() {
+    let root = TempDir::new().unwrap();
+    let expected = format!("tender {}\n", env!("CARGO_PKG_VERSION"));
+
+    tender(&root)
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::eq(expected));
+}
+
+#[test]
 fn guide_prints_the_whole_guide() {
     let root = TempDir::new().unwrap();
 
