@@ -1,6 +1,7 @@
 mod harness;
 
 use assert_cmd::Command;
+use harness::DeadlineAssertExt;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
@@ -107,8 +108,7 @@ fn run_foreground_overrides_detach_directive() {
     // Without --foreground, the directive causes detach (JSON output).
     tender(&root)
         .args(["run", script.to_str().unwrap()])
-        .timeout(std::time::Duration::from_secs(5))
-        .assert()
+        .assert_within_deadline()
         .success()
         .stdout(predicate::str::contains("\"status\": \"Running\""));
 
@@ -127,8 +127,7 @@ fn run_detach_returns_immediately_with_json() {
 
     tender(&root)
         .args(["run", "--detach", script.to_str().unwrap()])
-        .timeout(std::time::Duration::from_secs(5))
-        .assert()
+        .assert_within_deadline()
         .success()
         .stdout(predicate::str::contains("\"status\": \"Running\""));
 }
@@ -144,8 +143,7 @@ fn run_session_name_from_filename() {
 
     tender(&root)
         .args(["run", script.to_str().unwrap()])
-        .timeout(std::time::Duration::from_secs(5))
-        .assert()
+        .assert_within_deadline()
         .success()
         .stdout(predicate::str::contains("\"session\": \"my-build\""));
 }
@@ -161,8 +159,7 @@ fn run_session_directive_overrides_filename() {
 
     tender(&root)
         .args(["run", script.to_str().unwrap()])
-        .timeout(std::time::Duration::from_secs(5))
-        .assert()
+        .assert_within_deadline()
         .success()
         .stdout(predicate::str::contains("\"session\": \"custom-name\""));
 }
@@ -178,8 +175,7 @@ fn run_directives_map_to_launch_spec() {
 
     tender(&root)
         .args(["run", script.to_str().unwrap()])
-        .timeout(std::time::Duration::from_secs(5))
-        .assert()
+        .assert_within_deadline()
         .success()
         .stdout(predicate::str::contains("\"session\": \"my-session\""))
         .stdout(predicate::str::contains("\"timeout_s\": 999"))
@@ -204,8 +200,7 @@ fn run_cli_flags_override_directives() {
             "42",
             script.to_str().unwrap(),
         ])
-        .timeout(std::time::Duration::from_secs(5))
-        .assert()
+        .assert_within_deadline()
         .success()
         .stdout(predicate::str::contains("\"namespace\": \"cli-ns\""))
         .stdout(predicate::str::contains("\"timeout_s\": 42"));
@@ -341,8 +336,7 @@ fn run_session_rejects_exec() {
 
     tender(&root)
         .args(["run", "--stdin", script.to_str().unwrap()])
-        .timeout(std::time::Duration::from_secs(5))
-        .assert()
+        .assert_within_deadline()
         .success();
 
     harness::wait_running(&root, "server");
@@ -354,6 +348,48 @@ fn run_session_rejects_exec() {
         .stderr(predicate::str::contains("no exec target"));
 
     let _ = tender(&root).args(["kill", "server", "--force"]).assert();
+}
+
+// ── Harness deadline diagnostics ────────────────────────────────────────
+
+// A foreground run blocks until its child finishes. With a deliberately tiny
+// deadline the shared harness helper must KILL the command and panic with an
+// EXPLICIT timeout that names the command and the deadline — not surface the
+// killed process's empty output + exit 1 as an opaque assertion failure (the
+// Windows-CI flake that motivated the shared deadline helper).
+#[test]
+fn harness_deadline_reports_timeout_with_command_and_deadline() {
+    let root = TempDir::new().unwrap();
+    let script = write_py_script(root.path(), "hang.py", "import time; time.sleep(2)");
+    let script_str = script.to_str().unwrap().to_owned();
+
+    // Silence the default panic hook so the intentional panic doesn't clutter
+    // test output; restore it afterwards.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut cmd = tender(&root);
+        cmd.args(["run", "--foreground", &script_str]);
+        harness::assert_within(&mut cmd, std::time::Duration::from_millis(500));
+    }));
+    std::panic::set_hook(prev_hook);
+
+    let payload =
+        result.expect_err("command outlived the deadline; expected a HARNESS TIMEOUT panic");
+    let msg = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        msg.contains("HARNESS TIMEOUT"),
+        "must flag a harness timeout: {msg}"
+    );
+    assert!(
+        msg.contains("run"),
+        "must name the command that was killed: {msg}"
+    );
+    assert!(msg.contains("0.5s"), "must report the deadline: {msg}");
 }
 
 // ── Bash-specific (Unix only) ───────────────────────────────────────────
