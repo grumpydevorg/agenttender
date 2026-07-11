@@ -494,16 +494,20 @@ mod tests {
         let seen = Arc::new(AtomicBool::new(false));
         let seen_for_stop = Arc::clone(&seen);
         let path_clone = path.clone();
+        let temp_path = dir.path().join("delayed.log.tmp");
 
         let creator = thread::spawn(move || {
             thread::sleep(Duration::from_millis(300));
-            let mut f = std::fs::File::create(&path_clone).unwrap();
-            writeln!(
-                f,
-                "{}",
-                serde_json::json!({"ts":1000000.0,"tag":"O","content":"delayed line"})
-            )
-            .unwrap();
+            {
+                let mut f = std::fs::File::create(&temp_path).unwrap();
+                writeln!(
+                    f,
+                    "{}",
+                    serde_json::json!({"ts":1000000.0,"tag":"O","content":"delayed line"})
+                )
+                .unwrap();
+            }
+            std::fs::rename(temp_path, path_clone).unwrap();
         });
 
         let query = LogQuery {
