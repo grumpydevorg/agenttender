@@ -31,9 +31,22 @@ text below:
   (annotation-overflow stderr noise) was reduced, not deleted**: that
   warning still ships, so removing it belongs to
   `exec-annotation-ergonomics`, not here.
-- **Windows remote `exec` is untested on real hardware.** The frame
-  transport is platform-neutral and POSIX-verified; a `win11-vm` smoke
-  would close it.
+- **Windows remote `exec` was validated on a real Windows guest.** On
+  2026-07-10 the released Tender 0.2.0 **x64** binary — running under x64
+  emulation on an **ARM Windows guest** (a Parallels VM on Apple Silicon:
+  genuine Windows behaviour, but a VM, not bare metal) — served as the remote
+  end of a `--host` session over SSH. Verified there:
+  - **framed remote `exec` over SSH** — the payload rides the stdin frame, not
+    a reconstructed shell command line;
+  - **PowerShell state persistence** across frames and **structured output**
+    (e.g. `ConvertTo-Json`) surviving intact;
+  - **simple `start`/`kill` smoke tests** passed with simple arguments.
+
+  This is *not* a claim that general `--host` framing was complete — only
+  `exec` was framed at this point; the other operations remained the P1–P3
+  transport work. The first attempt failed on **stale remote-binary version
+  skew** (the remote `tender` predated `--frame-from-stdin`); installing 0.2.0
+  on the guest closed it.
 - The `--host` clap help string was corrected in this reconciliation
   (it still listed `exec` as local-only).
 
