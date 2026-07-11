@@ -1,9 +1,67 @@
 #[allow(unused_imports)]
 use assert_cmd::Command;
+use assert_cmd::assert::{Assert, OutputAssertExt};
 #[allow(unused_imports)]
 use std::path::Path;
+use std::time::{Duration, Instant};
 #[allow(unused_imports)]
 use tempfile::TempDir;
+
+/// Hang-detector deadline for a single `tender` CLI invocation in tests.
+///
+/// This is NOT a performance assertion. A normal detached start completes in
+/// ~20 ms (warm) to ~570 ms (cold); this bound exists only to fail a genuine
+/// hang (deadlock) rather than let it stall CI forever. It is deliberately
+/// generous: the old hard-coded 5 s per-command deadline false-fired on a
+/// loaded Windows CI runner — `assert_cmd` killed the still-starting `tender`
+/// process, which surfaced as exit 1 with empty output. 30 s keeps substantial
+/// headroom over observed individual starts while still surfacing a true hang
+/// promptly. Fixed and shared — raise this one value only if a real environment
+/// proves it insufficient.
+#[allow(dead_code)]
+pub const CMD_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Extension trait so call sites read `cmd.args(..).assert_within_deadline()` —
+/// a drop-in for the fluent `.assert()` that runs the command under the shared
+/// [`CMD_DEADLINE`] hang detector with explicit timeout diagnostics.
+#[allow(dead_code)]
+pub trait DeadlineAssertExt {
+    /// Assert the command under the shared [`CMD_DEADLINE`] hang detector.
+    fn assert_within_deadline(&mut self) -> Assert;
+}
+
+impl DeadlineAssertExt for Command {
+    fn assert_within_deadline(&mut self) -> Assert {
+        assert_within(self, CMD_DEADLINE)
+    }
+}
+
+/// Like [`assert_within_deadline`] but with an explicit deadline (used by the
+/// deadline's own regression test). If the invocation returns at or beyond
+/// `deadline`, this panics with an explicit message naming the command and the
+/// deadline. `assert_cmd` normally enforces that bound by killing an overrun,
+/// but the diagnostic intentionally states only the wall-clock fact we can
+/// observe rather than inferring how the process ended.
+#[allow(dead_code)]
+pub fn assert_within(cmd: &mut Command, deadline: Duration) -> Assert {
+    let desc = format!("{cmd:?}");
+    let start = Instant::now();
+    let outcome = cmd.timeout(deadline).output();
+    let elapsed = start.elapsed();
+    if elapsed >= deadline {
+        panic!(
+            "HARNESS TIMEOUT: command exceeded the {:.1}s harness deadline; the invocation \
+             returned after {:.1}s.\n  command: {desc}\n  This is the harness hang-detector \
+             firing — on a loaded runner it may mean the process was starved, not a product failure. \
+             Raise harness::CMD_DEADLINE only after ruling out a real hang.",
+            deadline.as_secs_f64(),
+            elapsed.as_secs_f64(),
+        );
+    }
+    outcome
+        .expect("failed to launch command (non-timeout spawn error)")
+        .assert()
+}
 
 /// Create a `tender` command rooted in a temp HOME.
 #[allow(dead_code)]
