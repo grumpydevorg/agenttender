@@ -39,7 +39,7 @@ jobs:
       # broken install step would turn analytics coverage falsely green.
       TENDER_REQUIRE_DUCKDB_TESTS: "1"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Rust
         run: rustup update stable --no-self-update
       - name: Install DuckDB CLI (Unix)
@@ -70,7 +70,7 @@ jobs:
     name: lint (ubuntu)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Rust + components
         run: rustup update stable --no-self-update && rustup component add rustfmt clippy
       - name: Format
@@ -84,7 +84,7 @@ jobs:
     name: doc (ubuntu)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Rust
         run: rustup update stable --no-self-update
       # Any rustdoc warning -- broken intra-doc link, bad HTML, unresolved
