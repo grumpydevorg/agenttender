@@ -1,3 +1,12 @@
+//! Process-supervision backends — one [`Platform`] trait with a Unix and a
+//! Windows implementation, selected at compile time as [`Current`].
+//!
+//! The trait hides every raw OS handle (PIDs, fds, Windows `HANDLE`s) behind
+//! opaque associated types, so callers supervise children — spawn, contain,
+//! observe, tree-kill, handshake readiness — without `cfg`-branching. Process
+//! *observation* is the typed [`ProcessStatus`], never a boolean; lifecycle
+//! *state* is owned by the sidecar, not decided here.
+
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;

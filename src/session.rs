@@ -1,3 +1,10 @@
+//! The on-disk session directory — Tender's durable record.
+//!
+//! A session lives at `~/.tender/sessions/<namespace>/<session>/`, holding the
+//! [`Meta`] authority file and the append-only
+//! `output.log`. This module creates, resolves, and lists those directories;
+//! it does not own the lifecycle — that is the [`sidecar`](crate::sidecar).
+
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
