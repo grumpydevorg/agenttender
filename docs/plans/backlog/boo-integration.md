@@ -5,7 +5,6 @@ links:
   - ../specs/ecosystem-landscape.md
   - ../specs/tender-as-block-runtime.md
   - ./pty-automation.md
-  - ./egui-block-terminal.md
   - ../completed/2026-07-08-remote-exec-host-parity.md
 ---
 

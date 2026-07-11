@@ -11,7 +11,7 @@ Design spec only. Not scheduled. Not blocking.
 Build the control protocol when either:
 
 - a feature needs portable correlated request/response over a boundary that files cannot serve cleanly, or
-- remote exec / remote coordinated control becomes important enough to justify collapsing multiple local coordination paths into one sidecar API.
+- a required remote control flow cannot be represented cleanly as a one-shot typed Tender CLI frame over SSH stdio.
 
 Do not build it because the file-based IPC pattern count reaches some threshold. The decision is about boundary-crossing demand, not pattern proliferation.
 
@@ -168,7 +168,7 @@ Annotation noise and breadcrumbs are log-side concerns. If `exec_begin` migrates
 
 Re-evaluate this spec when:
 
-- remote `exec` demand is concrete and the `ssh host 'tender exec ...'` workaround is demonstrably insufficient
+- a required remote flow needs long-lived or correlated sidecar interaction that the typed remote CLI frame cannot serve
 - a new feature proposal requires correlated request/response that file IPC cannot cleanly serve
 - the file-based IPC surface has grown beyond "files + framed FIFO" into a pattern that resists local reasoning
 
