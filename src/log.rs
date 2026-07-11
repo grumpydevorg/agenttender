@@ -251,6 +251,40 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    struct SignallingWriter {
+        bytes: Vec<u8>,
+        needle: &'static [u8],
+        seen: Arc<AtomicBool>,
+    }
+
+    impl SignallingWriter {
+        fn new(needle: &'static [u8], seen: Arc<AtomicBool>) -> Self {
+            Self {
+                bytes: Vec::new(),
+                needle,
+                seen,
+            }
+        }
+    }
+
+    impl std::io::Write for SignallingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            if self
+                .bytes
+                .windows(self.needle.len())
+                .any(|window| window == self.needle)
+            {
+                self.seen.store(true, Ordering::Release);
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     fn write_test_log(dir: &std::path::Path) -> std::path::PathBuf {
         let path = dir.join("output.log");
         let mut f = std::fs::File::create(&path).unwrap();
@@ -417,29 +451,15 @@ mod tests {
             .unwrap();
         }
 
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_clone = Arc::clone(&stop);
+        let seen = Arc::new(AtomicBool::new(false));
+        let seen_for_stop = Arc::clone(&seen);
         let path_clone = path.clone();
 
-        let handle = thread::spawn(move || {
-            let mut buf = Vec::new();
-            let query = LogQuery {
-                tail: Some(100),
-                ..Default::default()
-            };
-            follow_log(&path_clone, &query, &mut buf, || {
-                stop_clone.load(Ordering::Relaxed)
-            })
-            .unwrap();
-            String::from_utf8(buf).unwrap()
-        });
-
-        thread::sleep(Duration::from_millis(250));
-
-        {
+        let appender = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(250));
             let mut f = std::fs::OpenOptions::new()
                 .append(true)
-                .open(&path)
+                .open(&path_clone)
                 .unwrap();
             writeln!(
                 f,
@@ -447,12 +467,21 @@ mod tests {
                 serde_json::json!({"ts":1000001.0,"tag":"O","content":"appended line"})
             )
             .unwrap();
-        }
+        });
 
-        thread::sleep(Duration::from_millis(350));
-        stop.store(true, Ordering::Relaxed);
+        let query = LogQuery {
+            tail: Some(100),
+            ..Default::default()
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut writer = SignallingWriter::new(b"appended line", seen);
+        follow_log(&path, &query, &mut writer, || {
+            seen_for_stop.load(Ordering::Acquire) || std::time::Instant::now() >= deadline
+        })
+        .unwrap();
+        appender.join().unwrap();
 
-        let output = handle.join().unwrap();
+        let output = String::from_utf8(writer.bytes).unwrap();
         assert!(output.contains("initial line"));
         assert!(output.contains("appended line"));
     }
@@ -462,38 +491,38 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("delayed.log");
 
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_clone = Arc::clone(&stop);
+        let seen = Arc::new(AtomicBool::new(false));
+        let seen_for_stop = Arc::clone(&seen);
         let path_clone = path.clone();
+        let temp_path = dir.path().join("delayed.log.tmp");
 
-        let handle = thread::spawn(move || {
-            let mut buf = Vec::new();
-            let query = LogQuery {
-                tail: Some(100),
-                ..Default::default()
-            };
-            follow_log(&path_clone, &query, &mut buf, || {
-                stop_clone.load(Ordering::Relaxed)
-            })
-            .unwrap();
-            String::from_utf8(buf).unwrap()
+        let creator = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            {
+                let mut f = std::fs::File::create(&temp_path).unwrap();
+                writeln!(
+                    f,
+                    "{}",
+                    serde_json::json!({"ts":1000000.0,"tag":"O","content":"delayed line"})
+                )
+                .unwrap();
+            }
+            std::fs::rename(temp_path, path_clone).unwrap();
         });
 
-        thread::sleep(Duration::from_millis(300));
-        {
-            let mut f = std::fs::File::create(&path).unwrap();
-            writeln!(
-                f,
-                "{}",
-                serde_json::json!({"ts":1000000.0,"tag":"O","content":"delayed line"})
-            )
-            .unwrap();
-        }
+        let query = LogQuery {
+            tail: Some(100),
+            ..Default::default()
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut writer = SignallingWriter::new(b"delayed line", seen);
+        follow_log(&path, &query, &mut writer, || {
+            seen_for_stop.load(Ordering::Acquire) || std::time::Instant::now() >= deadline
+        })
+        .unwrap();
+        creator.join().unwrap();
 
-        thread::sleep(Duration::from_millis(350));
-        stop.store(true, Ordering::Relaxed);
-
-        let output = handle.join().unwrap();
+        let output = String::from_utf8(writer.bytes).unwrap();
         assert!(output.contains("delayed line"));
     }
 
