@@ -13,6 +13,9 @@ flowchart TD
     Session --> Meta["meta.json\nDurable run snapshot"]
     Session --> Lock["lock\nSession ownership"]
     Session --> Log["output.log\nJSONL stdout/stderr/annotations"]
+    Session --> Events["events/<segment>.jsonl\nDurable lifecycle/provenance history"]
+    Session --> EventBlobs["events/blobs/<sha256>\nDurable spilled event payloads"]
+    Session --> EventLock["events/append.lock\nTransient append lock"]
 
     Session --> Launch["launch_spec.json\nTransient pre-sidecar handoff"]
     Session --> Generation["generation\nTransient replace hint"]
@@ -20,7 +23,7 @@ flowchart TD
 
     Session --> Stdin["stdin.pipe\nConditional: --stdin"]
     Session --> ExecLock["exec.lock\nConditional: exec serialization"]
-    Session --> ExecResults["exec-results/<token>.json\nConditional: PythonRepl exec"]
+    Session --> ExecResults["exec-results/<token>.json\nConditional: PythonRepl + PowerShell exec"]
 
     Session --> KillReq["kill_request / kill_request.tmp\nTransient control file"]
     Session --> KillForced["kill_forced / kill_acted\nTransient kill classification"]
@@ -29,12 +32,14 @@ flowchart TD
     Session --> CaptureErr["capture_errors.log\nBest-effort diagnostics"]
 ```
 
-This split follows Theme 4: Durable Truth, Derived Views; see [../design-principles.md](../design-principles.md). `meta.json` and `output.log` are the durable truth; `status`, `list`, `log`, `watch`, and any future `graph`/`check` commands are projections over them, not new state.
+This split follows Theme 4: Durable Truth, Derived Views; see [../design-principles.md](../design-principles.md). `meta.json` is the current run snapshot, `output.log` is the child-output record, and `events/*.jsonl` is lifecycle/provenance history. `status`, `list`, `log`, `watch`, `events`, `query`, and any future `graph`/`check` commands project those authorities rather than creating new state.
 
 Durable by design:
 
 - `meta.json`
 - `output.log`
+- `events/*.jsonl`
+- `events/blobs/*`
 - `callbacks/<run_id>.json`
 
 Transient / control-plane artifacts:
@@ -49,6 +54,7 @@ Transient / control-plane artifacts:
 - `exec-results/*`
 - `stdin.pipe`
 - `a.sock.path`
+- `events/append.lock`
 
 Session directory rules:
 
@@ -57,6 +63,8 @@ Session directory rules:
   - `O` for stdout / PTY merged output
   - `E` for stderr on pipe sessions
   - `A` for annotations written by `wrap` and `exec`
+- `events/*.jsonl` is segmented, append-only lifecycle/provenance history;
+  oversized event payloads spill into content-addressed `events/blobs/`.
 - PTY attach uses a Unix socket stored in the system temp directory, with `a.sock.path` as the breadcrumb back to the real socket path.
 
 What this diagram omits:

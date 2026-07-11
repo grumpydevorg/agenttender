@@ -6,7 +6,10 @@
 //! sidecar PID and writes it to the file path given as the fourth argv.
 //!
 //! Usage:
-//!   test_breakaway_parent <tender_bin> <home_dir> <session> <sidecar_pid_out_path>
+//! ```text
+//! test_breakaway_parent <tender_bin> <home_dir> <session> <sidecar_pid_out_path>
+//! ```
+//!
 //! Env:
 //!   TEST_JOB_NAME — name of the Job Object created by the parent test
 #[cfg(windows)]

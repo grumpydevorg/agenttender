@@ -1,9 +1,11 @@
 //! Test fixture: portable helpers for integration tests.
 //!
 //! Subcommands:
-//!   touch <path>              — create an empty file at <path>
-//!   echo-env <path>           — write "$TENDER_SESSION $TENDER_NAMESPACE $TENDER_EXIT_REASON" to <path>
-//!   print-cwd                 — print the current working directory to stdout
+//! ```text
+//! touch <path>      — create an empty file at <path>
+//! echo-env <path>   — write "$TENDER_SESSION $TENDER_NAMESPACE $TENDER_EXIT_REASON" to <path>
+//! print-cwd         — print the current working directory to stdout
+//! ```
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

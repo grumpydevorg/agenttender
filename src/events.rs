@@ -393,7 +393,7 @@ pub fn lifecycle_kind(status: &RunStatus) -> Kind {
 /// the `run.starting` / `run.started` events only (the launch events). This is
 /// a copy *derived from* `LaunchSpec.boundary`; historical analytics read it,
 /// or join other events to the launch event on `run_id`. Terminal events do not
-/// re-carry it (docs/plans/active/01_boundary-metadata.md).
+/// re-carry it (docs/plans/completed/2026-07-10-boundary-metadata.md).
 #[must_use]
 pub fn lifecycle_data(
     status: &RunStatus,

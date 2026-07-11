@@ -50,8 +50,8 @@ Every durable fact should have one owner and one write path.
 Current examples:
 
 - The sidecar is the normal writer of lifecycle state in [`03-run-lifecycle.md`](architecture/03-run-lifecycle.md).
-- The CLI only writes lifecycle state in one reconciliation case: `SidecarLost`.
-- The PTY lease design moved toward a single `PtyStateStore` typed write path specifically to delete ad-hoc `meta.json` mutation from multiple call sites.
+- CLI reconciliation is the sole lifecycle-writing exception: it either heals from the sidecar's terminal event or infers `SidecarLost`, recording provenance.
+- PTY control writes go through a single typed path: the sidecar reads `Meta`, applies `set_pty_control`, then writes atomically — deleting ad-hoc `meta.json` mutation from multiple call sites.
 
 Use in review:
 
@@ -78,8 +78,10 @@ Tender should persist authoritative facts and derive views from them. It should 
 
 Current examples:
 
-- `meta.json` and `output.log` are the durable session record.
-- `status`, `list`, `log`, and `watch` are projections over that durable state.
+- `meta.json` is the current run snapshot, `output.log` is the child-output
+  record, and the segmented event log is lifecycle/provenance history.
+- `status`, `list`, `log`, `watch`, `events`, and `query` are projections over
+  those durable authorities.
 - Any future `graph` or `check` command should remain a projection over session dirs, not add a second store.
 
 Use in review:
@@ -111,9 +113,9 @@ Current examples:
 - Direct: the sidecar writes a terminal state after observing child exit.
 - Inferred: `SidecarLost` is concluded by reconciliation from released lock plus missing terminal state.
 
-Current gap:
+Shipped:
 
-- Tender currently surfaces inferred lifecycle conclusions as if they were directly observed.
+- `transition_provenance` distinguishes direct from inferred transitions and records the evidence for each; older metadata may omit it.
 
 Use in review:
 
