@@ -1,3 +1,12 @@
+//! The per-session sidecar — the lifecycle authority.
+//!
+//! Spawned detached by `start`, the sidecar holds the session lock, spawns the
+//! supervised child via the [`platform`](crate::platform) backend, writes run
+//! [`state`](crate::model::state) transitions into
+//! [`Meta`], captures the child's output into the
+//! append-only log, watches for kill requests, and classifies the exit. The
+//! CLI only ever *asks*; the sidecar *decides*.
+
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::{BufRead, BufReader, Read, Write};

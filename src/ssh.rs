@@ -1,3 +1,12 @@
+//! Remote transport — a thin SSH wrapper, not a second lifecycle model.
+//!
+//! `--host` forwards an allowlisted subset of commands ([`REMOTE_COMMANDS`]) to
+//! a remote `tender`, which runs the *same* local lifecycle on the far side.
+//! Ordinary commands are POSIX-shell-quoted into an `ssh -T` argv; `exec`
+//! instead rides the [`exec_frame`](crate::exec_frame) over SSH stdin so no
+//! user value ever reaches the remote argv. Destinations are validated
+//! ([`validate_destination`]) to fail closed against option-shaped hosts.
+
 use std::io;
 use std::process::{Command, Stdio};
 
@@ -67,7 +76,10 @@ pub fn validate_destination(host: &str) -> Result<(), SshError> {
 /// shell-quoted using `shell_words::quote()` (POSIX quoting).
 ///
 /// The resulting local argv is:
-///   ssh -T -o ConnectTimeout=10 <host> tender 'arg1' 'arg2' ...
+///
+/// ```text
+/// ssh -T -o ConnectTimeout=10 <host> tender 'arg1' 'arg2' ...
+/// ```
 ///
 /// SSH concatenates "tender", "'arg1'", "'arg2'" with spaces and sends
 /// the result to the remote login shell, which re-splits it into argv.
