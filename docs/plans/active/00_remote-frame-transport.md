@@ -187,6 +187,45 @@ only if *local* correlated IPC genuinely needs it — this is not that.
 7. Add native Windows x64 + ARM64 CI, including real cmd.exe and PowerShell
    OpenSSH tests.
 
+## Phase 1 build pins (the dispatch refactor)
+
+Constraints the P1 slice — typed `RemoteOperation` IR + shared `dispatch`, no SSH
+change — must satisfy. These sharpen, not replace, the sequence and security
+tests above.
+
+- **Golden tests before the refactor.** Capture cross-platform golden
+  local-dispatch behaviour *first*, so "byte-compatible" is a checked assertion,
+  not an aspiration. The refactor lands green against a pre-existing net.
+- **Lossless locally, UTF-8 only at the frame.** `PathBuf` / `OsString` values
+  (notably `cwd`) stay lossless on the local `TryFrom<Commands>` path; non-UTF-8
+  rejection happens *only* when building the remote frame — never on local
+  dispatch.
+- **`after` is unresolved on the wire.** `StartRequest.after` carries raw,
+  unresolved session-name strings; `(session, run_id)` `DependencyBinding`
+  resolution happens on the *target* host after decode. The DTO is
+  pre-resolution and is **not** the same type as the post-resolution `LaunchSpec`.
+- **Versioning lives on the envelope, not the DTOs.** `RemoteOperation` /
+  `StartRequest` are unversioned domain types; a single outer
+  `RemoteFrame { v, operation }` owns wire-versioning, with `operation`
+  flattened on the wire to preserve the documented `{ "v", "op", "params" }`
+  shape. (The shipped `ExecRequestFrame`'s inner `v` is the compat exception,
+  not the pattern.)
+- **No secret leakage via `Debug`.** DTOs/envelopes carrying user payloads (env
+  values, argv, stdin / `push` bytes) get no raw derived `Debug`. Use a manual
+  redacted implementation, or field wrapper types whose own `Debug` redacts;
+  error/log rendering uses `Display`, which must not print those values.
+- **Local-only commands are unrepresentable.** `run` / `wrap` / `prune` /
+  `query` / `guide` / `skill` / `emit` / `events` cannot be constructed as a
+  `RemoteOperation` (`TryFrom<Commands>` returns `Err`) — replacing the runtime
+  `REMOTE_COMMANDS` string allowlist and the `unreachable!` in `remote_args`.
+- **Completeness test spans the whole round-trip.** One test drives all 15
+  `start` fields through `Commands → StartRequest → JSON → decode → dispatch` and
+  asserts every field survives (the completeness test already pinned in step 1).
+- **Fake-SSH harness lands before any op migrates onto SSH.** The portable Rust
+  `ssh` shim (replacing the Unix-only shell fake) must exist before P2/P3 move an
+  operation onto the frame, so the byte-compatibility net runs on all four lanes.
+  It need *not* block the pure P1 dispatch refactor.
+
 ## Required security tests
 
 - Every remote op emits the identical constant SSH argv — mirror the shipped
