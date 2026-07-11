@@ -48,7 +48,7 @@ struct Cli {
     ///
     /// Supported remotely: start, status, list, log, push, kill, wait,
     /// watch, attach, and exec (the payload rides the frame transport,
-    /// not a shell). Local-only: run, wrap, prune, query.
+    /// not a shell). Every other command is local-only.
     // allow_hyphen_values so an option-shaped destination (`-oProxyCommand=…`)
     // is captured as the value and rejected by our own validate_destination
     // (clear error, exit 2) rather than mis-parsed by clap as a flag.

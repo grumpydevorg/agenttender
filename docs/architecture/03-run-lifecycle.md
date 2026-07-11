@@ -1,6 +1,6 @@
 # Run Lifecycle
 
-Tender models supervised runs, not raw processes. The sidecar is the normal writer of lifecycle state. The CLI only writes lifecycle state in one reconciliation case: `SidecarLost`.
+Tender models supervised runs, not raw processes. The sidecar is the normal writer of lifecycle state. The CLI writes lifecycle state only during reconciliation, in two cases: it infers `SidecarLost` (lock released with no terminal state), or it *heals* a terminal state (`Exited*` / `SpawnFailed` / `DependencyFailed`) by replaying the sidecar's own event-log record when the sidecar died in the WAL crash window before persisting `meta.json`.
 
 ```mermaid
 stateDiagram-v2
@@ -37,9 +37,9 @@ This ownership boundary follows Theme 2: One Authority Per Fact; see [../design-
   - `Starting -> SpawnFailed`
   - `Starting -> DependencyFailed`
   - `Running -> Exited* / Killed* / TimedOut`
-- `SidecarLost` is the only reconciliation write performed outside the sidecar:
-  - `status`
-  - foreground `run`
+- Reconciliation is the only lifecycle write performed outside the sidecar. It runs in `status`, `wait`, and foreground `run`, and writes in two cases:
+  - `SidecarLost` — the lock is released with no terminal state (inferred provenance)
+  - a *healed* terminal state — replayed from the sidecar's own event-log record after a WAL-window crash (the sidecar's original observation and provenance are preserved, not re-derived)
 
 Important implementation detail:
 

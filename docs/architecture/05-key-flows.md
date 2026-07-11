@@ -56,8 +56,8 @@ sequenceDiagram
 
 Notes:
 
-- shell and PowerShell sessions use sentinel lines in `output.log`
-- Python REPL uses `exec-results/<token>.json`
+- POSIX shell and DuckDB sessions signal completion with sentinel lines in `output.log` (DuckDB additionally drains trailing stderr)
+- PowerShell and Python REPL sessions write a side-channel result file, `exec-results/<token>.json`
 - timed-out exec holds `exec.lock` until the shell/repl finishes its frame, so a second exec cannot interleave into a busy session
 
 ## `kill`
