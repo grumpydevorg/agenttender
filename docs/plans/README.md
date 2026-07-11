@@ -28,8 +28,6 @@ the live distinction is keep-ready vs deferred-until-a-consumer.
 |----|------|---------------|
 | agent-hook-routing | `agent-hook-routing.md` | Lane B/D — small docs/glue; ready (replaces the cut skill-agent + hermes cards) |
 | boo-integration | `boo-integration.md` | Lane D — first slice ready; strategic path-5 deferred |
-| egui-block-terminal | `egui-block-terminal.md` | Lane B — unblocked; large, external libghostty risk |
-| tender-completer | `tender-completer.md` | Lane B — deferred behind egui (needs a UI consumer) |
 | content-addressable-storage | `content-addressable-storage.md` | Lane C — deferred; blob primitive already absorbed into event-protocol, rest is consumer-gated |
 | pty-automation | `pty-automation.md` | Lane A — deferred hardening (PTY input-lease); gated on real contention. Screen automation is Boo's, not this. |
 

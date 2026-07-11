@@ -7,7 +7,7 @@ is under [plans/completed/](plans/completed/).
 ## Now
 
 - Remote frame transport — make `--host` genuinely cross-platform and close the Windows `--host` command-injection gap by sending every remote op as a typed frame ([plan](plans/active/00_remote-frame-transport.md))
-- Native Windows CI (x64 + ARM64) so Windows regressions are gated
+- Shipped: native Windows CI (x64 + ARM64) gates Windows regressions
 - Shipped: crate `agenttender` + binary `tender` on crates.io, attested multi-platform releases
 
 ## Next
@@ -18,13 +18,12 @@ is under [plans/completed/](plans/completed/).
 
 ## Later
 
-- Egui / block terminal
 - Content-addressable bundle / provenance work
-- Tender completer
 - PTY input-lease hardening, if real contention appears
 
 ## Not In Core
 
 - Terminal renderer / screen scraping — Boo territory
+- Block-terminal UI, completion, and shell-vs-AI routing — downstream consumer policy
 - Workflow scheduler / agent brain
 - Container / Kubernetes lifecycle management

@@ -194,17 +194,17 @@ This keeps Tender's vocabulary (`session`, `event`, `annotation`, `lifecycle`) d
 
 Ordered by leverage-to-effort. Each is or becomes its own backlog/active item.
 
-1. **Complete in-flight Phase 2A.3 PowerShell exec work.** Foundation. No change in scope.
-2. **`--namespace` semantic completion** (`tender start --namespace …`, `tender exec --namespace …`, `tender list --namespace …`, `tender watch --namespace`). Already partly shipped; finish the surface. Namespace is the correlation key for everything downstream.
+1. **Phase 2A.3 PowerShell exec work** — shipped (see `completed/2026-05-10-powershell-exec-framing.md` + `completed/2026-05-10-powershell-exec-side-channel.md`). Foundation.
+2. **`--namespace` semantic completion** — shipped across the command surface (`start`/`exec`/`list`/`watch`/`log`/… all accept `--namespace`; see `src/main.rs`). Namespace is the correlation key for everything downstream.
 3. **`tender emit` primitive** — shipped 2026-07-07 (PR #4) as event protocol slice 1; see `completed/2026-07-07-event-emit-primitive.md`. Shipped shape follows [event-protocol.md](event-protocol.md) (`tender emit`, envelope `v:1`, no stdin daemon), not the sketch that stood here.
-4. **`tender watch --namespace --json` NDJSON multiplexed event stream.** Documented and stabilised. This is the consumer-facing protocol. Specify event shape and ordering guarantees.
+4. **Multiplexed NDJSON event stream** — superseded and shipped as `tender events --follow` with namespace/session filters, cursors, ordering guarantees, and optional merged logs; `watch` remains the frozen compatibility projection (see [event-protocol.md](event-protocol.md) §5).
 5. **`on_exit` callback delivery** finished (already partly designed — see [slice2-on-exit](../completed/2026-03-28-slice2-on-exit.md) — but lifecycle-hook callbacks emit through the event stream now, not as a separate channel).
-6. **Tag v0.3.0, ship Homebrew formula.** Production readiness milestone for downstream consumers.
-7. **`tender block get <id>` read API** (optional naming aside: `tender event get` if we keep "block" out of CLI). Lets consumers ask Tender for one record by ID, not just subscribe.
-8. **`tender-shell` adapter crate** (separate workspace member, depends on libghostty, layer 5). Parses OSC 133 from PTY output of supervised shells; emits per-command sub-events via the new event protocol. Optional. Only build when there's demand for the Warp-style block-terminal UI.
-9. **Warp-style terminal UI on Ghostty** — a separate project entirely. Not Tender's code, not Tender's responsibility. Reference implementation to validate the protocol.
+6. **Distribution** — shipped as `agenttender` on crates.io (v0.2.0 → v0.2.1) with attested SLSA build-provenance binaries on GitHub Releases, not the originally-sketched v0.3.0 tag + Homebrew formula.
+7. **Single-record lookup** — superseded by the shipped read surfaces: `tender query` can select an exact event or block ID, while `tender events` handles scoped replay. No new `block get` vocabulary is needed.
+8. **OSC-133 / VT adapter** — downstream consumer work. If a named UI project needs it, that project owns the adapter and libghostty dependency; it is not a Tender workspace item.
+9. **Warp-style terminal UI** — downstream consumer work. Not Tender's code or responsibility; build it in its own repository if a concrete product exists.
 
-Items 1–6 are clean additive work in Tender itself. Item 7 is small. Item 8 is a new crate; isolates libghostty's footprint. Item 9 is downstream.
+Items 1–7 are resolved by shipped work or the superseding event/query surfaces. Items 8 and 9 are downstream consumer work, not Tender backlog.
 
 ## Open Questions
 

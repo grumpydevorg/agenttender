@@ -219,4 +219,4 @@ range).
 - [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md) — produces the JSONL this queries.
 - [boundary-metadata](2026-07-10-boundary-metadata.md) — adds boundary columns, making "hosts vs containers" a GROUP BY.
 - [content-addressable-storage](../backlog/content-addressable-storage.md) — `data_ref` blob metadata is queryable/joinable if that lands.
-- [egui-block-terminal](../backlog/egui-block-terminal.md) — a GUI's ad-hoc charts run the same DuckDB queries.
+- Downstream GUI consumers can run ad-hoc charts through the same DuckDB view.

@@ -32,8 +32,10 @@ maintained.
 
 ## Scope
 
-Add one section to `using-tender` (`.claude/skills/using-tender/SKILL.md`),
-using the **shipped** protocol names/schema only:
+Add a `tender guide` topic (a heading in `docs/guide.md`, surfaced by `tender guide <topic>`) —
+the `using-tender` skill is now a thin router to `tender guide`, not a content home, so guide
+topics are where prose lives (the boo section landed there the same way). Use the **shipped**
+protocol names/schema only:
 
 1. **The pattern.** A hook fires → the agent runs `tender emit` (standalone
    event) or `tender wrap --event hook.<name>` (dual-writes the authoritative
@@ -69,7 +71,7 @@ using the **shipped** protocol names/schema only:
 
 ## Acceptance criteria
 
-- `using-tender` gains a concise "publishing agent hooks into the event stream" section using only shipped verbs/fields.
+- `tender guide` gains a concise "publishing agent hooks into the event stream" topic (in `docs/guide.md`) using only shipped verbs/fields; the `using-tender` skill routes agents to it.
 - Exactly one worked Hermes recipe, with hook names verified against current Hermes docs.
 - The Boo/Ghostty/UI-as-consumer boundary is stated (not implied as core).
 - No stale envelope language (`tender event emit`, `parent_block_id`, ULID, daemon, `schema_version`).

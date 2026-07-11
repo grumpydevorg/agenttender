@@ -5,7 +5,6 @@ links:
   - ./tender-as-block-runtime.md
   - ./tender-agent-process-sitter.md
   - ../backlog/boo-integration.md
-  - ../backlog/egui-block-terminal.md
 ---
 
 # Ecosystem Landscape & Lanes — where this all sits
@@ -23,8 +22,8 @@ blocked by it).
 | Process supervision, durable transcripts, structured exec results, deps/hooks, remote, Windows | **tender** (shipped) | files-as-truth, sidecar-per-session, no daemon |
 | Live TUI screen state for agents (send/peek/wait, rendered screen) | **boo** (coder/boo, shipped) | in-memory only, no exit codes, no events, POSIX-only — see [boo-integration](../backlog/boo-integration.md) |
 | Embeddable VT/grid engine | **libghostty-vt** (ghostty-org/ghostty) | real and good; main-branch-only, unstable C API; third-party Rust crate exists (`libghostty-vt` on crates.io) |
-| Block-style terminal UX | Warp (closed), planned tender-blocks-egui | consumer of tender's protocol, never core |
-| Structured event protocol between supervision and presentation | **nobody yet** | this is tender's block-runtime ambition — still the real gap |
+| Block-style terminal UX | Warp (closed); any future Tender consumer is downstream | consumer policy, never Tender core |
+| Structured event protocol between supervision and presentation | **tender** (shipped) | daemonless event log, replay/follow/cursors, and DuckDB analytics |
 
 boo is the closest neighbour and confirms rather than refutes the gap: it is
 well-engineered screen-state-as-truth with **no** structured events, exit
@@ -74,20 +73,19 @@ another lane** except where a dependency is stated explicitly.
 
 ### Lane A — core sitter (this repo, the active queue)
 
-The process sitter tender already is. Near-term queue:
-remote-exec-host-parity; a **daemonless** event-emit primitive (rescoped per
-finding 2 above); doc-index hygiene. Cheap boo-inspired wins live here too:
-`unread`/bell turn signals in status/watch, detached terminal-query
-answering for PTY sessions.
+The process sitter tender already is. The active queue is the typed remote-frame
+transport that makes general `--host` cross-platform. Remote exec parity, the
+daemonless event protocol, native Windows CI, and documentation enforcement
+have shipped; completed plans retain their implementation history.
 
-### Lane B — satellites (orthogonal; separate projects or workspace members)
+### Lane B — downstream consumers (orthogonal; separate projects)
 
 Consumers of tender's surface. None of these may gate Lane A, and Lane A
-must not grow features that exist only for them:
-`egui-block-terminal`, the `tender-shell` OSC-133 adapter,
-`tender-completer`, and `agent-hook-routing`. Their plan docs stay in backlog/
-but carry this lane label. The egui plan's hard dependency on CAS is dropped
-(its first slice never uses it — confirmed finding).
+must not grow features that exist only for them. Block-terminal UI, OSC-133
+adapters, completion, and shell-vs-AI routing belong in the repository of a
+named consumer once one exists; they are not Tender backlog. Tender may retain
+small interoperability docs such as `agent-hook-routing`, but not downstream
+product plans.
 
 _(Groomed 2026-07-09: `hermes-block-runtime-integration` and
 `skill-agent-block-runtime` were collapsed into the single small
