@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{tender, wait_running, wait_terminal};
+use harness::{DeadlineAssertExt, tender, wait_running, wait_terminal};
 use predicates::prelude::*;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -139,10 +139,13 @@ fn push_fails_promptly_when_session_dies() {
         .success();
     wait_terminal(&root, "push-die");
 
-    let start = std::time::Instant::now();
-    let output = tender_with_stdin(&root, &["push", "push-die"], b"hello\n");
-    assert!(!output.status.success());
-    assert!(start.elapsed().as_secs() < 5);
+    // push to a dead session must fail promptly, not hang on the dead stdin
+    // pipe; the hang detector bounds it and `.failure()` proves the result.
+    tender(&root)
+        .args(["push", "push-die"])
+        .write_stdin(b"hello\n".to_vec())
+        .assert_within_deadline()
+        .failure();
 }
 
 #[test]

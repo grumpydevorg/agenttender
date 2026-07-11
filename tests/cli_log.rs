@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{tender, wait_terminal};
+use harness::{DeadlineAssertExt, tender, wait_terminal};
 use predicates::prelude::*;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -169,15 +169,12 @@ fn log_follow_stops_on_terminal_session() {
         .success();
     wait_terminal(&root, "log-follow");
 
-    let start = std::time::Instant::now();
+    // `--follow` on an already-terminal session must stop rather than block
+    // forever; the hang detector guards that, and the stdout assertion proves
+    // the tail content was emitted.
     tender(&root)
         .args(["log", "--follow", "--tail", "10", "log-follow"])
-        .assert()
+        .assert_within_deadline()
         .success()
         .stdout(predicate::str::contains("follow me"));
-
-    assert!(
-        start.elapsed().as_secs() < 5,
-        "follow on terminal session blocked too long"
-    );
 }
