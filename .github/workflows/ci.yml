@@ -79,3 +79,18 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Package (locked)
         run: cargo package --locked --allow-dirty
+
+  doc:
+    name: doc (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup update stable --no-self-update
+      # Any rustdoc warning -- broken intra-doc link, bad HTML, unresolved
+      # reference -- fails the build. deny(rustdoc::broken_intra_doc_links) in
+      # lib.rs catches the same class locally; this makes it a required gate.
+      - name: Rustdoc (deny warnings)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --locked --no-deps

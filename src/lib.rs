@@ -52,6 +52,11 @@
 //! - [Design principles](https://github.com/grumpydevorg/agenttender/blob/main/docs/design-principles.md)
 //! - [Transport boundaries](https://github.com/grumpydevorg/agenttender/blob/main/docs/architecture/06-transport-boundaries.md)
 
+// The crate doc and module summaries above lean on intra-doc links; a broken one
+// is a silent documentation regression. Deny them so a bad link fails the build
+// locally too — not only under the `doc` CI job's RUSTDOCFLAGS=-D warnings.
+#![deny(rustdoc::broken_intra_doc_links)]
+
 pub mod annotation;
 pub mod attach_proto;
 pub mod directive;

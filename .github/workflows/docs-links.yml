@@ -1,0 +1,62 @@
+name: docs-links
+
+# Markdown link hygiene, split by determinism:
+#
+#   * Repository-internal links resolve against files in the checkout. They are
+#     deterministic, so a broken one is a real regression and BLOCKS the PR
+#     (`local links`, offline).
+#   * External URLs depend on the network and third-party uptime. A 503 from
+#     someone else's server is not our regression, so they are checked on a
+#     schedule instead of on the PR (`external links`) and never block a merge.
+#
+# lychee (the checker) and lychee-action are both pinned so a new upstream
+# release cannot silently change what passes.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly external-link sweep, Mondays 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: docs-links-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  local-links:
+    name: local links
+    # Runs on PRs, pushes, and manual dispatch -- never on the scheduled sweep.
+    # No `paths:` filter on purpose: a required check gated by paths deadlocks
+    # PRs that touch no markdown.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check repository-internal links (offline)
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          # --offline skips every http(s) URL and checks only local file links.
+          # --exclude-path target drops any build-output copy of the docs (the
+          # glob would otherwise pick up target/package/... on a dirty tree).
+          args: "--offline --no-progress --exclude-path target './**/*.md'"
+          lycheeVersion: v0.24.2
+          fail: true
+
+  external-links:
+    name: external links
+    # Scheduled + manual only: keeps flaky third-party hosts out of the PR gate.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check external URLs
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          # Only http(s) links; local links are covered by `local links` above.
+          args: "--no-progress --scheme http --scheme https --exclude-path target './**/*.md'"
+          lycheeVersion: v0.24.2
+          fail: true
+          failIfEmpty: false
