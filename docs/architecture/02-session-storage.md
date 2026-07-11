@@ -20,7 +20,7 @@ flowchart TD
 
     Session --> Stdin["stdin.pipe\nConditional: --stdin"]
     Session --> ExecLock["exec.lock\nConditional: exec serialization"]
-    Session --> ExecResults["exec-results/<token>.json\nConditional: PythonRepl exec"]
+    Session --> ExecResults["exec-results/<token>.json\nConditional: PythonRepl + PowerShell exec"]
 
     Session --> KillReq["kill_request / kill_request.tmp\nTransient control file"]
     Session --> KillForced["kill_forced / kill_acted\nTransient kill classification"]

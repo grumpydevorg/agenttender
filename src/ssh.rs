@@ -28,10 +28,11 @@ pub enum SshError {
 ///
 /// `exec` is deliberately absent: it is remote-capable, but travels via
 /// the frame transport (`exec_ssh_frame`) — the request rides the SSH
-/// stdin channel as one JSON frame, never the remote argv. Local-only
-/// commands (`run`, `wrap`, `prune`) are rejected when `--host` is set:
-/// `wrap` relies on local process context, `run` reads a local script
-/// file, `prune` walks the local session root.
+/// stdin channel as one JSON frame, never the remote argv. Every command
+/// not in this list (and not `exec`) is local-only when `--host` is set —
+/// e.g. `run`, `wrap`, `prune`, `query`, `guide`, `skill`, `emit`,
+/// `events`. Of these, `wrap` relies on local process context, `run`
+/// reads a local script file, and `prune` walks the local session root.
 pub const REMOTE_COMMANDS: &[&str] = &[
     "start", "status", "list", "log", "push", "kill", "wait", "watch", "attach",
 ];

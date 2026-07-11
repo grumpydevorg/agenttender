@@ -3,7 +3,7 @@
 //! Tender *describes* boundaries (host, container, VM, pod); it never manages
 //! them. The boundary is authoritative in `LaunchSpec` / `meta.json`; lifecycle
 //! events carry a denormalized immutable snapshot for historical analytics
-//! (see docs/plans/active/01_boundary-metadata.md).
+//! (see docs/plans/completed/2026-07-10-boundary-metadata.md).
 
 use std::fmt;
 use std::str::FromStr;

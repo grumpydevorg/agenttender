@@ -65,7 +65,7 @@ Current remote-command scope:
 This split follows Theme 5: Separate Control Plane From Work Plane; see [../design-principles.md](../design-principles.md).
 
 - supported over `--host`: `start`, `status`, `list`, `log`, `push`, `kill`, `wait`, `watch`, `attach`, `exec`
-- local-only: `run`, `wrap`, `prune`
+- local-only: `run`, `wrap`, `prune`, `query`, `guide`, `skill`, `emit`, `events` (everything not in the remote list above)
 
 How `exec` goes remote: the whole exec request is serialized as one JSON frame and streamed to a remote `tender exec --frame-from-stdin` over the ssh stdin channel. The shared-filesystem IPC that exec needs — the session's FIFO, `exec.lock`, `output.log` scan, and side-channel result files (`exec-results/<token>.json` for Python REPL) — all runs locally on the *remote* host exactly as it would for a local exec; only the request frame and the JSON result envelope cross the ssh boundary. That is a one-shot request/response, so no second lifecycle protocol is needed. (The earlier design treated `exec` as local-only for the IPC reasons above; the frame transport resolved it — see the remote-exec-host-parity plan.)
 

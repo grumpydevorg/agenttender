@@ -156,8 +156,6 @@ pub trait Platform {
     ///
     /// Does not reap the child. Callers must still call `child_wait`
     /// or `child_try_wait` afterward.
-    ///
-    /// Note: the Windows backend does not yet implement this contract.
     fn kill_child(handle: &Self::ChildKillHandle, force: bool) -> io::Result<()>;
 
     /// Kill an orphaned process by persisted identity (no live handle).
