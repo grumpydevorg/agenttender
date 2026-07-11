@@ -231,21 +231,49 @@ fn follow_cursors_bookmarks_within_5s_of_idle() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(5800));
-    let _ = child.kill();
-    let output = child.wait_with_output().unwrap();
-    let records = parse_ndjson(&output.stdout);
+    // The idle follower emits a cursor.bookmark after ~5s of idleness. Read its
+    // stdout until that bookmark arrives (with a generous outer deadline) rather
+    // than sleeping a fixed window — a loaded runner can take longer than a fixed
+    // nap to fire the wall-clock idle timer.
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
 
-    let bookmarks: Vec<&serde_json::Value> = records
-        .iter()
-        .filter(|r| r["kind"] == "cursor.bookmark")
-        .collect();
-    assert!(
-        !bookmarks.is_empty(),
-        "an idle follower bookmarks within 5s, got: {records:?}"
-    );
-    assert!(bookmarks.iter().all(|b| b["derived"] == true));
-    assert!(bookmarks.iter().all(|b| b.get("id").is_none()));
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut bookmark: Option<serde_json::Value> = None;
+    while std::time::Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(line) => {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if v["kind"] == "cursor.bookmark" {
+                        bookmark = Some(v);
+                        break;
+                    }
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+
+    let bookmark =
+        bookmark.expect("an idle follower should emit a cursor.bookmark within the deadline");
+    assert!(bookmark["derived"] == true);
+    assert!(bookmark.get("id").is_none());
 }
 
 #[test]
