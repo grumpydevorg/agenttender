@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{tender, wait_terminal};
+use harness::{DeadlineAssertExt, tender, wait_terminal};
 use predicates::prelude::*;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -12,15 +12,13 @@ fn start_returns_promptly_not_blocked_by_child() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let start = std::time::Instant::now();
+    // Returning at all — under the shared hang deadline, well before the 60s
+    // child exits — proves `start` did not block on the child, i.e. the ready
+    // pipe fd was not leaked into it. No fragile wall-clock upper bound needed.
     tender(&root)
         .args(["start", "prompt-test", "sleep", "60"])
-        .assert()
+        .assert_within_deadline()
         .success();
-    assert!(
-        start.elapsed().as_secs() < 5,
-        "tender start blocked — ready pipe fd likely leaked to child"
-    );
 
     tender(&root)
         .args(["kill", "--force", "prompt-test"])

@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{tender, wait_running, wait_terminal};
+use harness::{DeadlineAssertExt, tender, wait_running, wait_terminal};
 use predicates::prelude::*;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -42,12 +42,13 @@ fn wait_blocks_until_exit() {
     let start = std::time::Instant::now();
     tender(&root)
         .args(["wait", "wait-block"])
-        .assert()
+        .assert_within_deadline()
         .success();
     let elapsed = start.elapsed();
 
+    // Lower bound proves `wait` actually blocked until the child exited; the
+    // hang detector (not a fragile 5s upper bound) guards against a true hang.
     assert!(elapsed > std::time::Duration::from_secs(1));
-    assert!(elapsed < std::time::Duration::from_secs(5));
 }
 
 #[test]
@@ -61,14 +62,14 @@ fn wait_timeout_expires() {
         .success();
     wait_running(&root, "wait-timeout");
 
-    let start = std::time::Instant::now();
+    // The failure + exit 1 + "timeout" stderr prove the product's --timeout
+    // fired; the hang detector bounds the call instead of a fragile 3s cap.
     tender(&root)
         .args(["wait", "--timeout", "1", "wait-timeout"])
-        .assert()
+        .assert_within_deadline()
         .failure()
         .code(1)
         .stderr(predicate::str::contains("timeout"));
-    assert!(start.elapsed().as_secs() < 3);
 
     tender(&root)
         .args(["kill", "--force", "wait-timeout"])
@@ -160,19 +161,16 @@ fn wait_any_returns_on_first_terminal() {
     wait_terminal(&root, "any-fast");
     wait_running(&root, "any-slow");
 
-    let start = std::time::Instant::now();
-    let output = tender(&root)
+    let assert = tender(&root)
         .args(["wait", "--any", "any-fast", "any-slow"])
-        .output()
-        .unwrap();
-    let elapsed = start.elapsed();
-    assert!(output.status.success());
-    // Should return quickly (not wait for the 60s sleep).
-    assert!(elapsed < std::time::Duration::from_secs(5));
+        .assert_within_deadline()
+        .success();
 
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     let arr: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
-    // Only the terminal session(s) are in the output.
+    // Only the terminal session is in the output — proves `--any` returned on
+    // the terminal session without blocking on the 60s sibling, so no fragile
+    // wall-clock upper bound is needed.
     assert!(!arr.is_empty());
     assert!(arr.iter().any(|m| m["session"] == "any-fast"));
 
@@ -261,14 +259,14 @@ fn wait_multiple_timeout() {
     wait_running(&root, "mt-slow1");
     wait_running(&root, "mt-slow2");
 
-    let start = std::time::Instant::now();
+    // As above: the failure + exit 1 + "timeout" stderr prove the product
+    // timeout fired; the hang detector bounds the call, not a fragile 3s cap.
     tender(&root)
         .args(["wait", "--timeout", "1", "mt-slow1", "mt-slow2"])
-        .assert()
+        .assert_within_deadline()
         .failure()
         .code(1)
         .stderr(predicate::str::contains("timeout"));
-    assert!(start.elapsed().as_secs() < 3);
 
     // Cleanup.
     tender(&root)

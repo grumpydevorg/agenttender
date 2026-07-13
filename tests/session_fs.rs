@@ -268,16 +268,30 @@ fn lock_exclusivity_across_processes() {
     let mut child = Command::new("perl")
         .arg("-e")
         .arg(format!(
-            "use Fcntl qw(:flock); open(my $fh, '>', '{}') or die; flock($fh, LOCK_EX) or die; sleep 10;",
+            "use Fcntl qw(:flock); $| = 1; open(my $fh, '>', '{}') or die; \
+             flock($fh, LOCK_EX) or die; print \"R\"; sleep 10;",
             lock_path.display()
         ))
+        .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
 
-    // Give subprocess time to acquire lock
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Wait for perl to signal it holds the lock (a readiness byte on stdout)
+    // instead of sleeping a fixed window — a slow subprocess launch must not
+    // race our try_acquire.
+    let mut ready = [0u8; 1];
+    {
+        use std::io::Read;
+        child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_exact(&mut ready)
+            .expect("perl should emit its readiness byte after acquiring the lock");
+    }
+    assert_eq!(&ready, b"R");
 
-    // Our try_acquire should fail
+    // Our try_acquire should now fail — perl holds the exclusive lock.
     let err = LockGuard::try_acquire(&session).unwrap_err();
     assert!(matches!(err, SessionError::Locked(_)));
 
