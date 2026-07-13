@@ -1,6 +1,8 @@
 mod harness;
 
 use harness::{tender, wait_terminal};
+// Command/Stdio remain only for the cfg(unix) SIGTERM test below.
+#[cfg(unix)]
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -504,22 +506,14 @@ fn wrap_annotation_visible_in_watch() {
     create_running_session(&root, "wrap-watch", "default");
     let run_id = read_run_id(&root, "default", "wrap-watch");
 
-    let bin = assert_cmd::cargo::cargo_bin("tender");
-    let mut watch_child = Command::new(bin)
-        .args([
-            "watch",
-            "--namespace",
-            "default",
-            "--annotations",
-            "--from-now",
-        ])
-        .env("HOME", root.path())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn tender watch");
-
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // Wait for the watcher's baseline before mutating, then read until the exact
+    // annotation surfaces — replaces the fixed 300 ms baseline + 1 s delivery
+    // sleeps with the ReadyFollower handshake.
+    let follower = harness::ReadyFollower::spawn(
+        &root,
+        "watch",
+        &["--namespace", "default", "--annotations", "--from-now"],
+    );
 
     let out = tender(&root)
         .env("TENDER_RUN_ID", &run_id)
@@ -539,26 +533,14 @@ fn wrap_annotation_visible_in_watch() {
         .unwrap();
     assert!(out.status.success());
 
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    let _ = watch_child.kill();
-    let output = watch_child.wait_with_output().unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    let saw_annotation = stdout.lines().any(|line| {
-        serde_json::from_str::<serde_json::Value>(line)
-            .map(|event| {
-                event["kind"] == "annotation"
-                    && event["session"] == "wrap-watch"
-                    && event["source"] == "cmux.claude-hook"
-                    && event["name"] == "annotation.pre-tool-use"
-                    && event["data"]["event"] == "pre-tool-use"
-            })
-            .unwrap_or(false)
+    follower.read_until(std::time::Duration::from_secs(10), |event| {
+        event["kind"] == "annotation"
+            && event["session"] == "wrap-watch"
+            && event["source"] == "cmux.claude-hook"
+            && event["name"] == "annotation.pre-tool-use"
+            && event["data"]["event"] == "pre-tool-use"
     });
-    assert!(
-        saw_annotation,
-        "watch --annotations should emit the wrap annotation, got:\n{stdout}"
-    );
+    follower.stop();
 
     tender(&root)
         .args(["kill", "--force", "wrap-watch"])
