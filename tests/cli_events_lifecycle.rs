@@ -211,19 +211,18 @@ fn crash_before_terminal_event_leaves_neither() {
         .assert()
         .success();
 
-    // Sidecar aborts before the terminal event: meta stays Running and the
-    // log has no terminal record. Poll briefly for the child to exit.
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    // No sleep: acquiring the session lock proves the aborted sidecar is gone, and
+    // the guard is held while we read the log, so we cannot observe a transient
+    // finalization window. Construction already proves Running + Unlocked;
+    // re-asserting the status here would merely duplicate the constructor's
+    // invariant.
+    let _orphan = harness::wait_orphaned_running(&root, "s1");
 
     let events = read_events(&root, "s1");
     assert!(
         !kinds(&events).iter().any(|k| k == "run.exited"),
         "no terminal event was appended"
     );
-    let meta_path = root.path().join(".tender/sessions/default/s1/meta.json");
-    let meta: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
-    assert_eq!(meta["status"], "Running");
 }
 
 /// An unwritable event log must not eat the terminal record: the append

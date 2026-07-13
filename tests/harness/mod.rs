@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 #[allow(unused_imports)]
 use tempfile::TempDir;
 use tender::model::ids::{Namespace, SessionName};
+use tender::model::meta::Meta;
+use tender::model::state::RunStatus;
 use tender::session::{self, LockGuard, SessionRoot};
 
 /// Hang-detector deadline for a single `tender` CLI invocation in tests.
@@ -259,6 +261,78 @@ pub fn wait_terminal_quiescent(root: &TempDir, session_name: &str) -> QuiescentT
         assert!(
             Instant::now() < deadline,
             "timed out waiting for terminal session {session_name} to become quiescent"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Proof that a session is the residue of an intentionally-crashed sidecar:
+/// `Running + Unlocked`. The sidecar is gone (its lock was acquired) and the
+/// metadata it left behind is still non-terminal `Running`.
+///
+/// Construction is private: callers can only obtain this through
+/// [`wait_orphaned_running`], which acquires the session lock — proving the
+/// aborted sidecar exited — and then verifies the status. Both fields are
+/// retained to make the proof-carrying state explicit even though the caller
+/// needs neither; holding the guard keeps a new sidecar from taking the session
+/// while the caller inspects meta and events.
+#[allow(dead_code)]
+pub struct OrphanedRunning {
+    _meta: Meta,
+    _lock: LockGuard,
+}
+
+/// Wait until an intentionally-crashed sidecar's residue is observable —
+/// acquiring the session lock is the proof of death, so no fixed sleep.
+///
+/// Only lock *contention* is retried (the sidecar has not exited yet). Every
+/// other condition fails immediately, so a real defect surfaces as a clear
+/// message rather than a timeout: a missing or unreadable session, any non-
+/// contention lock error, or a terminal status once the lock is held —
+/// terminal-plus-acquired-lock is a stable contradiction for this injected crash
+/// point, not a transient state worth polling further.
+#[allow(dead_code)]
+pub fn wait_orphaned_running(root: &TempDir, session_name: &str) -> OrphanedRunning {
+    let session_root = SessionRoot::new(root.path().join(".tender/sessions"));
+    let namespace = Namespace::new("default").expect("default namespace is valid");
+    let session_name = SessionName::new(session_name).expect("test session name is valid");
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    loop {
+        // `start` has returned, so the session directory and meta must exist:
+        // anything else is a defect, not a state to wait out.
+        let session_dir = match session::open(&session_root, &namespace, &session_name) {
+            Ok(Some(dir)) => dir,
+            Ok(None) => panic!("crashed session {session_name} does not exist"),
+            Err(error) => panic!("failed to open crashed session {session_name}: {error}"),
+        };
+
+        match LockGuard::try_acquire(&session_dir) {
+            Ok(lock) => {
+                // The lock is ours, so the aborted sidecar is gone. What it left
+                // behind must still be Running: a terminal status here means the
+                // crash did not abort before finalization.
+                let meta = session::read_meta(&session_dir)
+                    .expect("crashed session must have readable meta");
+                assert!(
+                    matches!(meta.status(), RunStatus::Running { .. }),
+                    "invariant violation: sidecar lock released but status is {:?}, expected \
+                     Running — the injected crash did not leave a Running + Unlocked orphan",
+                    meta.status()
+                );
+                return OrphanedRunning {
+                    _meta: meta,
+                    _lock: lock,
+                };
+            }
+            // The only retryable condition: the sidecar has not exited yet.
+            Err(session::SessionError::Locked(_)) => {}
+            Err(error) => panic!("failed to acquire crashed session lock: {error}"),
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the crashed sidecar to release the lock on {session_name}"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
