@@ -5,10 +5,21 @@ mod harness;
 use harness::tender;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
+use tender::attach_proto::{MSG_DATA, MSG_DETACH, MSG_RESIZE, read_msg, resize_payload};
 
 static SERIAL: Mutex<()> = Mutex::new(());
+
+/// Frame and send one attach message (`[type][u32 len][payload]`).
+fn write_msg(stream: &mut UnixStream, msg_type: u8, payload: &[u8]) {
+    stream.write_all(&[msg_type]).unwrap();
+    stream
+        .write_all(&(payload.len() as u32).to_be_bytes())
+        .unwrap();
+    stream.write_all(payload).unwrap();
+    stream.flush().unwrap();
+}
 
 #[test]
 fn start_pty_flag_sets_io_mode() {
@@ -193,20 +204,23 @@ fn push_to_pty_session_delivers_input() {
         .output()
         .unwrap();
 
-    // Give cat time to echo through PTY
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    // Check log for the pushed content
-    let output = tender(&root)
-        .args(["log", "pty-push", "--raw"])
-        .output()
-        .unwrap();
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("hello-from-push"),
-        "push input should appear in PTY log: {stdout}"
-    );
+    // Poll the log until the pushed input echoes through the PTY (no fixed sleep).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let output = tender(&root)
+            .args(["log", "pty-push", "--raw"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains("hello-from-push") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "push input never appeared in PTY log: {stdout}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 
     tender(&root).args(["kill", "pty-push"]).output().ok();
 }
@@ -231,7 +245,8 @@ fn exec_python_pty() {
         .assert()
         .success();
     harness::wait_running(&root, "py-pty");
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    // No sleep: exec buffers the frame and waits for the result file, so the
+    // REPL not being input-ready yet is a delay, not a lost command (PR #55).
 
     let output = tender(&root)
         .args([
@@ -423,12 +438,13 @@ fn attach_contention_rejected() {
 }
 
 #[test]
-fn resize_message_accepted() {
+fn resize_reaches_child_pty() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
+    // An interactive shell so we can query the child's terminal size post-resize.
     tender(&root)
-        .args(["start", "pty-resize", "--pty", "--stdin", "--", "cat"])
+        .args(["start", "pty-resize", "--pty", "--stdin", "--", "sh"])
         .output()
         .unwrap();
     harness::wait_running(&root, "pty-resize");
@@ -437,46 +453,81 @@ fn resize_message_accepted() {
     let mut stream = attach_as_human(&sock_path);
     wait_for_pty_control(&root, "pty-resize", "HumanControl");
 
-    // Send a resize message (40 rows, 120 cols)
-    let rows: u16 = 40;
-    let cols: u16 = 120;
-    let mut payload = [0u8; 4];
-    payload[0..2].copy_from_slice(&rows.to_be_bytes());
-    payload[2..4].copy_from_slice(&cols.to_be_bytes());
+    // Collect child output (MSG_DATA) on a reader thread so the observation below
+    // is deadline-bounded, not a blocking framed read.
+    let seen = Arc::new(Mutex::new(String::new()));
+    let reader = {
+        let mut r = stream.try_clone().unwrap();
+        let seen = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            while let Ok((msg_type, payload)) = read_msg(&mut r) {
+                if msg_type == MSG_DATA {
+                    seen.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push_str(&String::from_utf8_lossy(&payload));
+                }
+            }
+        })
+    };
 
-    // Wire format: 1 byte type + 4 byte length + payload
-    let msg_type: u8 = 0x02; // MSG_RESIZE
-    let len: u32 = 4;
-    stream.write_all(&[msg_type]).unwrap();
-    stream.write_all(&len.to_be_bytes()).unwrap();
-    stream.write_all(&payload).unwrap();
-    stream.flush().unwrap();
+    // 1) Resize to 40x120. 2) On the SAME ordered socket, ask the child its
+    // terminal size. The listener processes messages sequentially, so `stty size`
+    // runs only after apply_pty_resize returns — child-reported "40 120" proves
+    // the resize actually reached the child's PTY, not merely that it parsed.
+    //
+    // The sentinel is split as `__RESIZE""_DONE__` to make it a *causal*
+    // completion token: the shell's echo of the input line cannot contain the
+    // bare `__RESIZE_DONE__` (the quotes are only stripped when the command
+    // runs), so that token can appear only in the command's output — strictly
+    // after `stty size` has printed the dimensions.
+    write_msg(&mut stream, MSG_RESIZE, &resize_payload(40, 120));
+    write_msg(
+        &mut stream,
+        MSG_DATA,
+        b"stty size; echo __RESIZE\"\"_DONE__\n",
+    );
 
-    // Give the sidecar time to process the resize
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Observe by *returning a result*, not asserting — so a timeout cannot bypass
+    // the detach/join/kill cleanup below and leak the PTY session. Require BOTH
+    // the child-observed dimensions (load-bearing) and the completion token
+    // (proves `stty size` finished, so the dimensions are settled, not mid-write).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let observed: Result<(), String> = loop {
+        let out = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if out.contains("40 120") && out.contains("__RESIZE_DONE__") {
+            break Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            break Err(format!(
+                "child never reported the resized dimensions + completion token; got: {out:?}"
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
 
-    // If the resize crashed the sidecar, the session would no longer be Running.
-    // Verify the session is still alive and under human control.
-    let output = tender(&root)
+    // Secondary safety snapshot, taken while still under human control.
+    let status = tender(&root)
         .args(["status", "pty-resize"])
         .output()
         .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let meta: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(
-        meta["status"], "Running",
-        "session should still be running after resize"
-    );
-    assert_eq!(meta["pty"]["control"], "HumanControl");
+    let meta: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&status.stdout)).unwrap();
 
-    // Verify the resize was actually applied by checking the PTY's window size.
-    // We can read it via stty on the child side, but that requires a shell.
-    // Instead, open a fresh PTY master fd check — we trust the ioctl works if
-    // the session survives. The unit-level assertion is that the ioctl doesn't
-    // crash and the session stays Running.
-
+    // Deterministic cleanup that runs regardless of the observation outcome:
+    // MSG_DETACH makes the listener close the connection, so the reader receives
+    // EOF and joins without depending on the kill; then the shell is reaped.
+    write_msg(&mut stream, MSG_DETACH, &[]);
     drop(stream);
-    tender(&root).args(["kill", "pty-resize"]).output().ok();
+    let _ = reader.join();
+    tender(&root)
+        .args(["kill", "pty-resize", "--force"])
+        .assert()
+        .success();
+
+    // Assert only after cleanup has run.
+    observed.expect("resize observation");
+    assert_eq!(meta["status"], "Running", "session should still be running");
+    assert_eq!(meta["pty"]["control"], "HumanControl");
 }
 
 // --- Slice 3: pty.control_changed events (plan scope 6) ---
