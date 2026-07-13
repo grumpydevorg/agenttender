@@ -95,7 +95,8 @@ Raw bindings, typed scanned dependencies, and an exhaustive first-scan outcome:
 /// continued polling; failure is not one of them (see FirstScanOutcome).
 enum ScannedDependency {
     Pending(DependencyBinding),   // bound generation not yet terminal
-    Latched(DependencyBinding),   // bound generation observed satisfied — final
+    Latched,                      // observed satisfied — final; binding not retained,
+                                  // as a latched dependency is never re-examined
 }
 
 /// Constructible ONLY by `first_dependency_scan`. Its existence is the proof
