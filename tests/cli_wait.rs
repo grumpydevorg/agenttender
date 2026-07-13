@@ -334,8 +334,8 @@ fn wait_killed_during_dep_wait_exits_137() {
         .assert()
         .success();
 
-    // Give the sidecar time to enter dependency wait.
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // No sleep: start returning proves the first scan completed. The kill
+    // request written now persists on disk until the poll loop consumes it.
 
     // Kill the waiting session.
     tender(&root)
