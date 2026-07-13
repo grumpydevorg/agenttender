@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{DeadlineAssertExt, tender, wait_terminal};
+use harness::{DeadlineAssertExt, tender, wait_terminal, wait_terminal_quiescent};
 use predicates::prelude::*;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -169,17 +169,5 @@ fn lock_released_after_sidecar_exits() {
         .args(["start", "lock-test", "echo", "hi"])
         .assert()
         .success();
-    wait_terminal(&root, "lock-test");
-
-    #[cfg(unix)]
-    {
-        let lock_path = root.path().join(".tender/sessions/default/lock-test/lock");
-        if lock_path.exists() {
-            use std::fs::File;
-            use std::os::unix::io::AsRawFd;
-            let file = File::open(&lock_path).unwrap();
-            let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-            assert_eq!(ret, 0, "lock should be released after sidecar exits");
-        }
-    }
+    let _terminal = wait_terminal_quiescent(&root, "lock-test");
 }

@@ -142,14 +142,6 @@ fn exec_argv(session: &str, cmd: Vec<String>) -> Vec<String> {
     args
 }
 
-/// Sleep long enough after start for the freshly-spawned REPL to accept a
-/// frame: a POSIX shell is ready in ~300ms; the PowerShell REPL needs the same
-/// ~800ms the exec_powershell_* tests use.
-fn settle_after_start() {
-    let ms = if cfg!(windows) { 800 } else { 300 };
-    std::thread::sleep(std::time::Duration::from_millis(ms));
-}
-
 /// exec fails if session doesn't exist.
 #[test]
 fn exec_session_not_found() {
@@ -191,9 +183,6 @@ fn exec_basic_command() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-
-    // Give the REPL time to initialize
-    settle_after_start();
 
     // Exec a command
     let output = harness::tender(&root)
@@ -255,7 +244,6 @@ fn exec_nonzero_exit() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    settle_after_start();
 
     let output = harness::tender(&root)
         .args(exec_argv("shell", native_failure()))
@@ -290,7 +278,6 @@ fn exec_cwd_persists() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    settle_after_start();
 
     // A test-chosen directory (distinct from HOME) so the assertion is exact
     // rather than a fuzzy "tmp" substring. Canonicalize both sides to absorb
@@ -341,7 +328,6 @@ fn exec_writes_annotation() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    settle_after_start();
 
     harness::tender(&root)
         .args(exec_argv("shell", native_echo("annotated")))
@@ -382,7 +368,6 @@ fn exec_oversized_output_is_quiet_and_leaves_breadcrumb() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    settle_after_start();
 
     // Both streams multi-KB so even the field-truncated annotation overflows
     // the cap (MAX_LINE 4096 / MAX_FIELD_BYTES 3000), forcing the breadcrumb.
@@ -455,7 +440,6 @@ fn exec_timeout() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    settle_after_start();
 
     let mut args = vec![
         "exec".to_string(),
@@ -495,7 +479,6 @@ fn exec_concurrent_busy() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    settle_after_start();
 
     // Start a long exec in the background (holds the exec lock while it sleeps)
     let mut long_exec = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
@@ -506,8 +489,9 @@ fn exec_concurrent_busy() {
         .spawn()
         .unwrap();
 
-    // Give it time to acquire the lock
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // exec.started is appended only after the background command owns the
+    // exec lock, so it is the observable precondition for the busy probe.
+    harness::wait_event_kind(&root, "shell", "exec.started");
 
     // Second exec should fail with busy
     harness::tender(&root)
@@ -544,7 +528,6 @@ fn exec_explicit_posix_target() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let output = harness::tender(&root)
         .args(["exec", "shell", "--", "echo", "explicit"])
@@ -599,7 +582,6 @@ fn exec_infers_posix_from_bash() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let output = harness::tender(&root)
         .args(["exec", "shell", "--", "echo", "inferred"])
@@ -688,7 +670,6 @@ fn exec_python_repl_basic() {
         .assert()
         .success();
     harness::wait_running(&root, "py");
-    std::thread::sleep(std::time::Duration::from_millis(500));
 
     let output = harness::tender(&root)
         .args([
@@ -737,7 +718,6 @@ fn exec_python_repl_exception() {
         .assert()
         .success();
     harness::wait_running(&root, "py");
-    std::thread::sleep(std::time::Duration::from_millis(500));
 
     let output = harness::tender(&root)
         .args([
@@ -773,7 +753,6 @@ fn exec_python_repl_cwd() {
         .assert()
         .success();
     harness::wait_running(&root, "py");
-    std::thread::sleep(std::time::Duration::from_millis(500));
 
     let tmp = std::env::temp_dir();
     let tmp_str = tmp.to_str().expect("temp dir should be valid UTF-8");
@@ -851,7 +830,6 @@ fn exec_infers_duckdb() {
         .assert()
         .success();
     harness::wait_running(&root, "db");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     // Verify the session was created with DuckDb exec target
     let status_output = harness::tender(&root)
@@ -891,7 +869,6 @@ fn exec_duckdb_basic_select() {
         .assert()
         .success();
     harness::wait_running(&root, "db");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let output = harness::tender(&root)
         .args([
@@ -956,7 +933,6 @@ fn exec_duckdb_sql_error() {
         .assert()
         .success();
     harness::wait_running(&root, "db");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     // Invalid SQL — error goes to stderr, sentinel still fires, exit_code = 1.
     let output = harness::tender(&root)
@@ -1042,7 +1018,6 @@ fn exec_duckdb_multi_statement() {
         .assert()
         .success();
     harness::wait_running(&root, "db");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let output = harness::tender(&root)
         .args([
@@ -1102,7 +1077,6 @@ fn exec_duckdb_explicit_target() {
         .assert()
         .success();
     harness::wait_running(&root, "db");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let output = harness::tender(&root)
         .args([
@@ -1152,7 +1126,6 @@ fn exec_duckdb_mixed_success_reports_error() {
         .assert()
         .success();
     harness::wait_running(&root, "db");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let output = harness::tender(&root)
         .args([
@@ -1241,7 +1214,6 @@ fn exec_duckdb_path_with_spaces() {
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let mut exec_cmd = assert_cmd::Command::cargo_bin("tender").unwrap();
     exec_cmd.env("HOME", &spaced_dir);
@@ -1320,7 +1292,6 @@ fn exec_powershell_clean_stdout() {
         .assert()
         .success();
     harness::wait_running(&root, "ps");
-    std::thread::sleep(std::time::Duration::from_millis(800));
 
     let output = harness::tender(&root)
         .args(["exec", "ps", "--timeout", "15", "--", "echo hello-world"])
@@ -1366,7 +1337,6 @@ fn exec_powershell_arbitrary_expression() {
         .assert()
         .success();
     harness::wait_running(&root, "ps");
-    std::thread::sleep(std::time::Duration::from_millis(800));
 
     let output = harness::tender(&root)
         .args(["exec", "ps", "--timeout", "15", "--", "$x = 1; $x + 1"])
@@ -1399,7 +1369,6 @@ fn exec_powershell_pipeline() {
         .assert()
         .success();
     harness::wait_running(&root, "ps");
-    std::thread::sleep(std::time::Duration::from_millis(800));
 
     let output = harness::tender(&root)
         .args([
@@ -1445,7 +1414,6 @@ fn exec_powershell_state_persists_across_calls() {
         .assert()
         .success();
     harness::wait_running(&root, "ps");
-    std::thread::sleep(std::time::Duration::from_millis(800));
 
     // Set a variable
     harness::tender(&root)
@@ -1499,7 +1467,6 @@ fn exec_powershell_stderr_separated() {
         .assert()
         .success();
     harness::wait_running(&root, "ps");
-    std::thread::sleep(std::time::Duration::from_millis(800));
 
     let output = harness::tender(&root)
         .args(["exec", "ps", "--timeout", "15", "--", "Write-Error 'oops'"])
@@ -1536,7 +1503,6 @@ fn exec_powershell_cwd_after() {
         .assert()
         .success();
     harness::wait_running(&root, "ps");
-    std::thread::sleep(std::time::Duration::from_millis(800));
 
     // Change directory to C:\
     let output = harness::tender(&root)
@@ -1572,7 +1538,6 @@ fn exec_python_result_file_cleaned() {
         .assert()
         .success();
     harness::wait_running(&root, "py");
-    std::thread::sleep(std::time::Duration::from_millis(500));
 
     harness::tender(&root)
         .args([
@@ -1615,7 +1580,6 @@ fn exec_emits_started_and_result_events() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    settle_after_start();
 
     let echo_cmd = native_echo("event brigade");
     let output = harness::tender(&root)
@@ -1714,7 +1678,6 @@ fn exec_events_inherit_parent_from_env_chain() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    settle_after_start();
 
     let outer = uuid::Uuid::now_v7().to_string();
     harness::tender(&root)
@@ -1752,7 +1715,6 @@ fn exec_aline_links_event_id_and_block_id() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    settle_after_start();
 
     harness::tender(&root)
         .args(exec_argv("shell", native_echo("linked")))
@@ -1795,7 +1757,6 @@ fn exec_timeout_still_emits_result_event() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    settle_after_start();
 
     let mut args = vec![
         "exec".to_string(),
@@ -1835,7 +1796,6 @@ fn exec_event_append_is_best_effort() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let events_dir = root.path().join(".tender/sessions/default/shell/events");
     std::fs::set_permissions(&events_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -1872,7 +1832,6 @@ fn exec_payload_sees_block_id_env() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let output = harness::tender(&root)
         .args(["exec", "shell", "--", "printenv", "TENDER_BLOCK_ID"])
@@ -1905,7 +1864,6 @@ fn exec_frame_from_stdin_runs_payload() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    settle_after_start();
 
     let frame = serde_json::json!({
         "v": 1,
@@ -1954,7 +1912,6 @@ fn exec_frame_payload_survives_quoting_torture() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     // printf's FORMAT string interprets \n (the payload arg does not),
     // giving a trailing newline without a newline byte in argv — a
@@ -1997,7 +1954,6 @@ fn exec_frame_timeout_exits_124() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    settle_after_start();
 
     let frame = serde_json::json!({
         "v": 1,

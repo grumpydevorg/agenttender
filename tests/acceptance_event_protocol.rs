@@ -267,7 +267,6 @@ fn exec_payload_emit_chains_and_env_unsets() {
         .assert()
         .success();
     wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let bin = assert_cmd::cargo::cargo_bin("tender");
     tender(&root)
@@ -343,7 +342,6 @@ fn exec_one_mib_stdout_spills_with_structured_preview() {
         .assert()
         .success();
     wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let output = tender(&root)
         .args([

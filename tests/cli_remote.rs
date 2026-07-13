@@ -790,7 +790,6 @@ fn host_exec_frame_end_to_end() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let tmp = fake_ssh_frame_shim();
     let output = harness::tender(&root)
@@ -828,7 +827,6 @@ fn host_exec_inner_exit_code_propagates() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let tmp = fake_ssh_frame_shim();
     let output = harness::tender(&root)
@@ -859,7 +857,6 @@ fn host_exec_timeout_propagates() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let tmp = fake_ssh_frame_shim();
     let output = harness::tender(&root)
@@ -904,7 +901,6 @@ fn host_exec_torture_payload_matches_local() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     // %s\n in printf's FORMAT: trailing newline without a newline byte
     // in argv (a newline-less payload trips the pre-existing sentinel
@@ -993,7 +989,6 @@ fn host_exec_frame_stdin_passes_through() {
         .assert()
         .success();
     harness::wait_running(&root, "shell");
-    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let tmp = fake_ssh_frame_shim();
     let frame = r#"{"v":1,"session":"shell","cmd":["echo","piped frame"]}"#;

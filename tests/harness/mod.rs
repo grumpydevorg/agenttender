@@ -149,6 +149,25 @@ pub fn read_events(root: &TempDir, session: &str) -> Vec<serde_json::Value> {
     events
 }
 
+/// Wait for a session event of `kind`, returning the observed record.
+#[allow(dead_code)]
+pub fn wait_event_kind(root: &TempDir, session: &str, kind: &str) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(event) = read_events(root, session)
+            .into_iter()
+            .find(|event| event["kind"] == kind)
+        {
+            return event;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for event kind {kind} in {session}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Wait for meta.json to show Running state on disk.
 #[allow(dead_code)]
 pub fn wait_running(root: &TempDir, session: &str) {
