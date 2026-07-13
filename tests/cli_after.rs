@@ -78,8 +78,8 @@ fn after_idempotent_on_running() {
         .assert()
         .success();
 
-    // Give sidecar time to enter wait loop
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // No sleep: start returning proves the first scan completed — job2's metadata
+    // is Starting and the sidecar holds the session lock.
 
     // Second start with identical args: should succeed (idempotent)
     harness::tender(&root)
@@ -113,8 +113,8 @@ fn after_idempotent_on_starting() {
         .assert()
         .success();
 
-    // Give sidecar time to enter wait loop
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // No sleep: start returning proves the first scan completed — job2's metadata
+    // is Starting and the sidecar holds the session lock.
 
     // Second start with identical args: should succeed (idempotent)
     harness::tender(&root)
@@ -148,8 +148,8 @@ fn kill_during_dependency_wait() {
         .assert()
         .success();
 
-    // Give sidecar time to enter wait loop
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // No sleep: start returning proves the first scan completed. A kill request
+    // written now persists on disk until the poll loop consumes it.
 
     // Kill job2
     harness::tender(&root)
@@ -187,6 +187,37 @@ fn after_dependency_exits_nonzero() {
     let meta = harness::wait_terminal(&root, "job2");
     assert_eq!(meta["status"].as_str(), Some("DependencyFailed"));
     assert_eq!(meta["dep_reason"].as_str(), Some("Failed"));
+}
+
+/// First-scan barrier: when a dependency is already terminally failed at the
+/// first scan, `tender start` returns the truthful DependencyFailed snapshot
+/// (not an optimistic Starting one) — and remains a successful command.
+#[test]
+fn start_after_already_failed_dep_returns_dependency_failed_snapshot() {
+    let _lock = lock();
+    let root = tempfile::TempDir::new().unwrap();
+
+    harness::tender(&root)
+        .args(["start", "job1", "--", "false"])
+        .assert()
+        .success();
+    harness::wait_terminal(&root, "job1");
+
+    let out = harness::tender(&root)
+        .args(["start", "job2", "--after", "job1", "--", "true"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "start remains a successful command even when the dependency already failed"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        snapshot["status"].as_str(),
+        Some("DependencyFailed"),
+        "the returned snapshot must reflect the first-scan outcome, not optimistic Starting"
+    );
+    assert_eq!(snapshot["dep_reason"].as_str(), Some("Failed"));
 }
 
 /// --any-exit: dependency exits non-zero → job2 runs anyway.
@@ -336,9 +367,8 @@ fn after_idempotent_different_deps_conflicts() {
         .assert()
         .success();
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    // Different dep → conflict
+    // Different dep → conflict. start returned ⇒ first scan completed, job2's
+    // metadata is Starting, and the sidecar holds the session lock.
     harness::tender(&root)
         .args(["start", "job2", "--after", "job3", "--", "sleep", "30"])
         .assert()
@@ -427,8 +457,8 @@ fn kill_force_during_dependency_wait() {
         .assert()
         .success();
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
+    // start returned ⇒ first scan completed; a kill request written now persists
+    // on disk until the poll loop consumes it.
     harness::tender(&root)
         .args(["kill", "job2", "--force"])
         .assert()
@@ -470,8 +500,9 @@ fn after_satisfied_dep_not_invalidated_by_replace() {
         .assert()
         .success();
 
-    // Give sidecar time to latch job1 as satisfied
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    // start returning proves the first scan ran: job1 (already terminal) is
+    // latched at its bound run_id. No sleep — the replace below is deterministically
+    // ordered after the latch.
 
     // Replace job1 — this would fail the waiter without latching
     harness::tender(&root)

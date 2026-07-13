@@ -24,7 +24,7 @@ use crate::model::event::{Kind, Uuid7};
 use crate::model::ids::{EpochTimestamp, Generation, Namespace, RunId, SessionName, Source};
 use crate::model::meta::Meta;
 use crate::model::pty::{PtyControl, PtyMeta};
-use crate::model::spec::{IoMode, LaunchSpec, StdinMode};
+use crate::model::spec::{DependencyBinding, IoMode, LaunchSpec, StdinMode};
 use crate::model::state::ExitReason;
 use crate::platform::{Current, Platform};
 use crate::session::{self, LockGuard, SessionDir, SessionRoot};
@@ -220,123 +220,263 @@ enum DepWaitOutcome {
     KilledForced(String),
 }
 
-/// Poll dependency meta.json files until all reach terminal state.
-/// Satisfied deps are latched — once a dep reaches a satisfying terminal state,
-/// it is not re-polled. This prevents a later replace or prune from
-/// retroactively un-satisfying an already-observed success.
-fn wait_for_dependencies(
+/// A `--after` dependency after the first scan. Only `Pending` and `Latched`
+/// coexist with continued polling; failure/timeout/kill are phase-terminal
+/// ([`FirstScanOutcome::Terminal`]) and are never represented here.
+enum ScannedDependency {
+    Pending(DependencyBinding),
+    /// Satisfied at its bound run_id and never re-examined — the binding is not
+    /// retained because a latched dependency is never inspected again.
+    Latched,
+}
+
+/// The dependency set produced by [`first_dependency_scan`]. Its private field
+/// makes that scan the only producer, so accepting a `ScannedDependencies` (as
+/// [`poll_dependencies`] does) is a static proof that a first scan has run.
+struct ScannedDependencies(Vec<ScannedDependency>);
+
+/// Exhaustive outcome of the first complete dependency scan.
+enum FirstScanOutcome {
+    /// Every dependency already satisfied — spawn immediately.
+    ReadyToSpawn,
+    /// Some pending, none failed — publish `Starting` and enter the poll loop.
+    Waiting(ScannedDependencies),
+    /// The scan produced, or was pre-empted by, a phase-terminal outcome.
+    Terminal {
+        reason: DepFailReason,
+        warning: String,
+    },
+}
+
+/// What `run_inner` does after the single post-scan readiness publication.
+enum DepAction {
+    Spawn,
+    Wait(ScannedDependencies),
+    ReturnTerminal,
+}
+
+/// Result of one dependency-scan iteration over the not-yet-latched set.
+enum ScanStep {
+    AllLatched,
+    StillPending,
+    Terminal(DepFailReason, String),
+}
+
+/// One dependency-scan iteration: honour a targeted kill request, then the
+/// timeout, then inspect every not-yet-latched dependency — latching a
+/// newly-satisfied one, or reporting the first phase-terminal condition. Shared
+/// by the first scan and the poll loop so their evaluation is identical.
+fn scan_iteration(
+    scanned: &mut ScannedDependencies,
+    session_root: &SessionRoot,
+    namespace: &Namespace,
+    kill_request_path: &Path,
+    run_id_str: &str,
+    deadline: Option<std::time::Instant>,
+    after_any_exit: bool,
+) -> ScanStep {
+    // A kill request targeted at this run pre-empts the wait.
+    if kill_request_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(kill_request_path) {
+            if let Ok(req) = serde_json::from_str::<serde_json::Value>(&content) {
+                if req["run_id"].as_str() == Some(run_id_str) {
+                    let _ = std::fs::remove_file(kill_request_path);
+                    let force = req["force"].as_bool().unwrap_or(false);
+                    return if force {
+                        ScanStep::Terminal(
+                            DepFailReason::KilledForced,
+                            "force-killed during dependency wait".into(),
+                        )
+                    } else {
+                        ScanStep::Terminal(
+                            DepFailReason::Killed,
+                            "killed during dependency wait".into(),
+                        )
+                    };
+                }
+            }
+        }
+        // Wrong run_id or malformed — remove and ignore.
+        let _ = std::fs::remove_file(kill_request_path);
+    }
+
+    if let Some(dl) = deadline {
+        if std::time::Instant::now() >= dl {
+            return ScanStep::Terminal(
+                DepFailReason::TimedOut,
+                "timeout expired during dependency wait".into(),
+            );
+        }
+    }
+
+    let mut all_latched = true;
+    for slot in scanned.0.iter_mut() {
+        let ScannedDependency::Pending(binding) = slot else {
+            continue; // already latched — never re-polled
+        };
+
+        let dep_session = match session::open(session_root, namespace, &binding.session) {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                return ScanStep::Terminal(
+                    DepFailReason::Failed,
+                    format!("dependency session not found: {}", binding.session),
+                );
+            }
+            Err(e) => {
+                return ScanStep::Terminal(
+                    DepFailReason::Failed,
+                    format!("failed to open dependency {}: {e}", binding.session),
+                );
+            }
+        };
+        let dep_meta = match session::read_meta(&dep_session) {
+            Ok(m) => m,
+            Err(e) => {
+                return ScanStep::Terminal(
+                    DepFailReason::Failed,
+                    format!("failed to read dependency {}: {e}", binding.session),
+                );
+            }
+        };
+
+        // Bound to run_id: replacing a still-pending dependency invalidates it.
+        if dep_meta.run_id() != binding.run_id {
+            return ScanStep::Terminal(
+                DepFailReason::Failed,
+                format!(
+                    "dependency {} was replaced (bound run_id {}, found {})",
+                    binding.session,
+                    binding.run_id,
+                    dep_meta.run_id()
+                ),
+            );
+        }
+
+        if dep_meta.status().is_terminal() {
+            if !after_any_exit {
+                use crate::model::state::{ExitReason as ER, RunStatus};
+                match dep_meta.status() {
+                    RunStatus::Exited {
+                        how: ER::ExitedOk, ..
+                    } => {} // satisfied
+                    _ => {
+                        return ScanStep::Terminal(
+                            DepFailReason::Failed,
+                            format!(
+                                "dependency {} exited with non-success state",
+                                binding.session
+                            ),
+                        );
+                    }
+                }
+            }
+            *slot = ScannedDependency::Latched;
+        } else {
+            all_latched = false;
+        }
+    }
+
+    if all_latched {
+        ScanStep::AllLatched
+    } else {
+        ScanStep::StillPending
+    }
+}
+
+/// The first complete dependency scan — run once, before readiness is signalled.
+/// Every already-satisfied dependency is latched to its observed run_id.
+fn first_dependency_scan(
     session_root: &SessionRoot,
     namespace: &Namespace,
     spec: &LaunchSpec,
-    timeout_s: Option<u64>,
+    deadline: Option<std::time::Instant>,
     session_dir: &Path,
     run_id: &RunId,
-) -> DepWaitOutcome {
-    let deadline = timeout_s.map(|t| std::time::Instant::now() + std::time::Duration::from_secs(t));
+) -> FirstScanOutcome {
     let kill_request_path = session_dir.join("kill_request");
     let run_id_str = run_id.to_string();
+    let mut scanned = ScannedDependencies(
+        spec.after
+            .iter()
+            .cloned()
+            .map(ScannedDependency::Pending)
+            .collect(),
+    );
+    match scan_iteration(
+        &mut scanned,
+        session_root,
+        namespace,
+        &kill_request_path,
+        &run_id_str,
+        deadline,
+        spec.after_any_exit,
+    ) {
+        ScanStep::AllLatched => FirstScanOutcome::ReadyToSpawn,
+        ScanStep::StillPending => FirstScanOutcome::Waiting(scanned),
+        ScanStep::Terminal(reason, warning) => FirstScanOutcome::Terminal { reason, warning },
+    }
+}
 
-    // Latch: once a dep is satisfied, skip it on subsequent polls.
-    let mut satisfied = vec![false; spec.after.len()];
-
+/// Continue polling an already-scanned dependency set until it resolves. Taking
+/// a `ScannedDependencies` (only [`first_dependency_scan`] can build one) makes
+/// polling uninspected dependencies unrepresentable.
+fn poll_dependencies(
+    mut scanned: ScannedDependencies,
+    session_root: &SessionRoot,
+    namespace: &Namespace,
+    deadline: Option<std::time::Instant>,
+    session_dir: &Path,
+    run_id: &RunId,
+    after_any_exit: bool,
+) -> DepWaitOutcome {
+    let kill_request_path = session_dir.join("kill_request");
+    let run_id_str = run_id.to_string();
     loop {
-        // Check kill request first
-        if kill_request_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&kill_request_path) {
-                if let Ok(req) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if req["run_id"].as_str() == Some(run_id_str.as_str()) {
-                        let _ = std::fs::remove_file(&kill_request_path);
-                        let force = req["force"].as_bool().unwrap_or(false);
-                        return if force {
-                            DepWaitOutcome::KilledForced(
-                                "force-killed during dependency wait".into(),
-                            )
-                        } else {
-                            DepWaitOutcome::Killed("killed during dependency wait".into())
-                        };
-                    }
-                }
-            }
-            // Wrong run_id or malformed — remove and ignore
-            let _ = std::fs::remove_file(&kill_request_path);
-        }
-
-        // Check timeout
-        if let Some(dl) = deadline {
-            if std::time::Instant::now() >= dl {
-                return DepWaitOutcome::TimedOut("timeout expired during dependency wait".into());
-            }
-        }
-
-        // Poll unsatisfied dependencies
-        let mut all_satisfied = true;
-        for (i, dep) in spec.after.iter().enumerate() {
-            if satisfied[i] {
-                continue; // Already latched as satisfied
-            }
-
-            let dep_session = match session::open(session_root, namespace, &dep.session) {
-                Ok(Some(s)) => s,
-                Ok(None) => {
-                    return DepWaitOutcome::Failed(format!(
-                        "dependency session not found: {}",
-                        dep.session
-                    ));
-                }
-                Err(e) => {
-                    return DepWaitOutcome::Failed(format!(
-                        "failed to open dependency {}: {e}",
-                        dep.session
-                    ));
-                }
-            };
-
-            let dep_meta = match session::read_meta(&dep_session) {
-                Ok(m) => m,
-                Err(e) => {
-                    return DepWaitOutcome::Failed(format!(
-                        "failed to read dependency {}: {e}",
-                        dep.session
-                    ));
-                }
-            };
-
-            // Check run_id — reject if dependency was replaced
-            if dep_meta.run_id() != dep.run_id {
-                return DepWaitOutcome::Failed(format!(
-                    "dependency {} was replaced (bound run_id {}, found {})",
-                    dep.session,
-                    dep.run_id,
-                    dep_meta.run_id()
-                ));
-            }
-
-            if dep_meta.status().is_terminal() {
-                if !spec.after_any_exit {
-                    use crate::model::state::{ExitReason as ER, RunStatus};
-                    match dep_meta.status() {
-                        RunStatus::Exited {
-                            how: ER::ExitedOk, ..
-                        } => {} // satisfied
-                        _ => {
-                            return DepWaitOutcome::Failed(format!(
-                                "dependency {} exited with non-success state",
-                                dep.session
-                            ));
-                        }
-                    }
-                }
-                satisfied[i] = true; // Latch: don't re-poll this dep
-            } else {
-                all_satisfied = false;
-            }
-        }
-
-        if all_satisfied {
-            return DepWaitOutcome::Satisfied;
-        }
-
         std::thread::sleep(std::time::Duration::from_millis(500));
+        match scan_iteration(
+            &mut scanned,
+            session_root,
+            namespace,
+            &kill_request_path,
+            &run_id_str,
+            deadline,
+            after_any_exit,
+        ) {
+            ScanStep::AllLatched => return DepWaitOutcome::Satisfied,
+            ScanStep::StillPending => continue,
+            ScanStep::Terminal(reason, msg) => {
+                return match reason {
+                    DepFailReason::Failed => DepWaitOutcome::Failed(msg),
+                    DepFailReason::TimedOut => DepWaitOutcome::TimedOut(msg),
+                    DepFailReason::Killed => DepWaitOutcome::Killed(msg),
+                    DepFailReason::KilledForced => DepWaitOutcome::KilledForced(msg),
+                };
+            }
+        }
+    }
+}
+
+/// Prepare the single readiness publication. Leaves `meta` as `Starting` for
+/// `ReadyToSpawn`/`Waiting`; for `Terminal`, transitions, emits, and persists
+/// `DependencyFailed` before returning, so the snapshot signalled next is
+/// truthful. Takes `session` because the terminal arm writes meta to disk.
+fn apply_first_scan_outcome(
+    session: &SessionDir,
+    meta: &mut Meta,
+    lifecycle: &mut LifecycleEvents,
+    outcome: FirstScanOutcome,
+) -> anyhow::Result<DepAction> {
+    match outcome {
+        FirstScanOutcome::ReadyToSpawn => Ok(DepAction::Spawn),
+        FirstScanOutcome::Waiting(scanned) => Ok(DepAction::Wait(scanned)),
+        FirstScanOutcome::Terminal { reason, warning } => {
+            meta.add_warning(warning);
+            meta.transition_dependency_failed(EpochTimestamp::now(), reason)?;
+            lifecycle.emit(meta, true);
+            session::write_meta_atomic(session, meta)?;
+            Ok(DepAction::ReturnTerminal)
+        }
     }
 }
 
@@ -589,50 +729,86 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     // --- Wait for --after dependencies ---
     let has_deps = !meta.launch_spec().after.is_empty();
     if has_deps {
-        // Signal readiness BEFORE waiting — CLI unblocks, status shows Starting.
+        // Persist Starting so the session is observable on disk during the scan.
         session::write_meta_atomic(&session, &meta)?;
-        signal_meta_snapshot(ready, &meta)?;
 
-        match wait_for_dependencies(
+        // One deadline for the whole wait, fixed before the first scan so that
+        // splitting scan-from-poll cannot silently extend the timeout.
+        let deadline = meta
+            .launch_spec()
+            .timeout_s
+            .map(|t| std::time::Instant::now() + std::time::Duration::from_secs(t));
+        let after_any_exit = meta.launch_spec().after_any_exit;
+
+        // Readiness fires only AFTER the first complete scan, through one funnel.
+        // So `start` returning proves every dependency was inspected once (and
+        // already-satisfied ones latched), or a terminal condition was persisted
+        // and signalled first.
+        let outcome = first_dependency_scan(
             &session_root,
             &namespace,
             meta.launch_spec(),
-            meta.launch_spec().timeout_s,
+            deadline,
             session_dir,
             &run_id,
-        ) {
-            DepWaitOutcome::Satisfied => {} // proceed to spawn
-            DepWaitOutcome::Failed(msg) => {
-                meta.add_warning(msg);
-                meta.transition_dependency_failed(EpochTimestamp::now(), DepFailReason::Failed)?;
-                lifecycle.emit(&mut meta, true);
-                session::write_meta_atomic(&session, &meta)?;
-                return Ok(());
-            }
-            DepWaitOutcome::TimedOut(msg) => {
-                meta.add_warning(msg);
-                meta.transition_dependency_failed(EpochTimestamp::now(), DepFailReason::TimedOut)?;
-                lifecycle.emit(&mut meta, true);
-                session::write_meta_atomic(&session, &meta)?;
-                return Ok(());
-            }
-            DepWaitOutcome::Killed(msg) => {
-                meta.add_warning(msg);
-                meta.transition_dependency_failed(EpochTimestamp::now(), DepFailReason::Killed)?;
-                lifecycle.emit(&mut meta, true);
-                session::write_meta_atomic(&session, &meta)?;
-                return Ok(());
-            }
-            DepWaitOutcome::KilledForced(msg) => {
-                meta.add_warning(msg);
-                meta.transition_dependency_failed(
-                    EpochTimestamp::now(),
-                    DepFailReason::KilledForced,
-                )?;
-                lifecycle.emit(&mut meta, true);
-                session::write_meta_atomic(&session, &meta)?;
-                return Ok(());
-            }
+        );
+        let action = apply_first_scan_outcome(&session, &mut meta, &mut lifecycle, outcome)?;
+        signal_meta_snapshot(ready, &meta)?;
+
+        match action {
+            DepAction::Spawn => {} // every dependency already satisfied — proceed
+            DepAction::ReturnTerminal => return Ok(()),
+            DepAction::Wait(scanned) => match poll_dependencies(
+                scanned,
+                &session_root,
+                &namespace,
+                deadline,
+                session_dir,
+                &run_id,
+                after_any_exit,
+            ) {
+                DepWaitOutcome::Satisfied => {} // proceed to spawn
+                DepWaitOutcome::Failed(msg) => {
+                    meta.add_warning(msg);
+                    meta.transition_dependency_failed(
+                        EpochTimestamp::now(),
+                        DepFailReason::Failed,
+                    )?;
+                    lifecycle.emit(&mut meta, true);
+                    session::write_meta_atomic(&session, &meta)?;
+                    return Ok(());
+                }
+                DepWaitOutcome::TimedOut(msg) => {
+                    meta.add_warning(msg);
+                    meta.transition_dependency_failed(
+                        EpochTimestamp::now(),
+                        DepFailReason::TimedOut,
+                    )?;
+                    lifecycle.emit(&mut meta, true);
+                    session::write_meta_atomic(&session, &meta)?;
+                    return Ok(());
+                }
+                DepWaitOutcome::Killed(msg) => {
+                    meta.add_warning(msg);
+                    meta.transition_dependency_failed(
+                        EpochTimestamp::now(),
+                        DepFailReason::Killed,
+                    )?;
+                    lifecycle.emit(&mut meta, true);
+                    session::write_meta_atomic(&session, &meta)?;
+                    return Ok(());
+                }
+                DepWaitOutcome::KilledForced(msg) => {
+                    meta.add_warning(msg);
+                    meta.transition_dependency_failed(
+                        EpochTimestamp::now(),
+                        DepFailReason::KilledForced,
+                    )?;
+                    lifecycle.emit(&mut meta, true);
+                    session::write_meta_atomic(&session, &meta)?;
+                    return Ok(());
+                }
+            },
         }
     }
 
