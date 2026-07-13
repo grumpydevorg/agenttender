@@ -558,6 +558,17 @@ fn wrap_forwards_sigterm_and_writes_annotation() {
     create_running_session(&root, "wrap-sigterm", "default");
     let run_id = read_run_id(&root, "default", "wrap-sigterm");
 
+    // The shell installs its TERM trap and *then* publishes an out-of-band
+    // ready-file, so the file's existence proves a SIGTERM sent from now on will
+    // be caught. It cannot signal readiness on stdout: `wrap` read_to_end's the
+    // child's output and only replays it after the child exits, so a READY line
+    // would not be observable until the very exit we are trying to trigger.
+    let ready = root.path().join("sigterm-trap-ready");
+    let script = format!(
+        "trap 'exit 0' TERM; : > '{}'; while :; do sleep 1; done",
+        ready.display()
+    );
+
     let bin = assert_cmd::cargo::cargo_bin("tender");
     let mut wrap_child = Command::new(bin)
         .env("HOME", root.path())
@@ -573,14 +584,16 @@ fn wrap_forwards_sigterm_and_writes_annotation() {
             "--",
             "sh",
             "-c",
-            "trap 'exit 0' TERM; while :; do sleep 1; done",
+            script.as_str(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn tender wrap");
 
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // No sleep: the trap is proven installed once the ready-file appears.
+    harness::wait_ready_file(&ready, std::time::Duration::from_secs(10));
+
     unsafe {
         libc::kill(wrap_child.id() as i32, libc::SIGTERM);
     }

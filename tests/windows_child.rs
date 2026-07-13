@@ -1,7 +1,7 @@
 #![cfg(windows)]
 
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use tender::platform::Platform;
 use tender::platform::windows::WindowsPlatform;
 
@@ -170,8 +170,27 @@ fn windows_kill_graceful_cooperative() {
     let mut child = WindowsPlatform::spawn_child(&argv, false, None, &BTreeMap::new())
         .expect("spawn_child should succeed");
 
-    // Give the helper a moment to install its console control handler.
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // The helper prints READY once its console control handler is installed, so a
+    // CTRL_BREAK sent after this line is guaranteed to be caught — replacing a
+    // fixed sleep. Read it on a thread with a deadline so a silent helper fails
+    // fast with a clear message instead of hanging on a blocking read.
+    let stdout = WindowsPlatform::child_stdout(&mut child).expect("stdout should be available");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    // The responder exits(1) if SetConsoleCtrlHandler fails, so READY is only ever
+    // published by a process whose handler is genuinely installed.
+    let ready = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("ctrl_break_responder never printed READY (control handler not installed?)");
+    assert_eq!(
+        ready.trim(),
+        "READY",
+        "expected exactly READY from ctrl_break_responder, got: {ready:?}"
+    );
 
     let handle = WindowsPlatform::child_kill_handle(&child);
 
