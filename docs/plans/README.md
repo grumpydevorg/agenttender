@@ -18,6 +18,7 @@ pty-session-mode) have shipped, so nothing is dependency-blocked.
 | ID | File | Depends On |
 |----|------|------------|
 | remote-frame-transport | `00_remote-frame-transport.md` | — |
+| polling-consolidation | `01_polling-consolidation.md` | — |
 
 ## backlog/ — Future Work
 
