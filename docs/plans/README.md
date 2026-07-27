@@ -30,6 +30,8 @@ the live distinction is keep-ready vs deferred-until-a-consumer.
 | agent-hook-routing | `agent-hook-routing.md` | Lane B/D — small docs/glue; ready (replaces the cut skill-agent + hermes cards) |
 | boo-integration | `boo-integration.md` | Lane D — first slice ready; strategic path-5 deferred |
 | content-addressable-storage | `content-addressable-storage.md` | Lane C — deferred; blob primitive already absorbed into event-protocol, rest is consumer-gated |
+| log-delimiter-cr-framing | `log-delimiter-cr-framing.md` | Lane A — ready; `\r` progress meters are invisible in pipe mode until exit (measured). Typed `LogDelimiter` on LaunchSpec, `terminator` provenance on `LogLine`, bounded records in every mode, and collapse as a derived view — historical surfaces collapse, live followers cannot. |
+| partial-line-telemetry | `partial-line-telemetry.md` | Lane A — ready; makes a silent session explain itself (`pending_partial_bytes`, `last_record_age_s`). Split from log-delimiter-cr-framing; the open question is sidecar→CLI IPC, not the counter. |
 | pty-automation | `pty-automation.md` | Lane A — deferred hardening (PTY input-lease); gated on real contention. Screen automation is Boo's, not this. |
 
 ## completed/
