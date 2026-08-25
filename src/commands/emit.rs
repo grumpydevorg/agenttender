@@ -103,30 +103,34 @@ fn emit_inner(opts: &EmitOptions) -> Result<(), EmitFailure> {
     let Some(dir) = session_dir else {
         // Orphan emitter (spec §7): a pruned/replaced session known from the
         // environment still has a fully-addressed event — preserve it.
-        if from_env && let Some(run_id) = env_run_id {
-            let draft = EventDraft {
-                id: None,
-                kind,
-                namespace,
-                session: session_name,
-                run_id,
-                generation: env_generation,
-                source,
-                block_id,
-                parent_id,
-                data,
-                preview: None,
-            };
-            let event = events::stamp_orphan_event(draft);
-            let tender_root = root
-                .path()
-                .parent()
-                .map(std::path::Path::to_path_buf)
-                .ok_or_else(|| fail(1, "session root has no parent"))?;
-            events::append_lost_found(&tender_root, &event)
-                .map_err(|e| fail(1, format!("lost+found append failed: {e}")))?;
-            eprintln!("tender emit: session dir gone; event preserved in lost+found");
-            return Ok(());
+        // Nested rather than a let-chain, to hold the advertised 1.85 MSRV
+        // (let-chains are stable from 1.88).
+        if from_env {
+            if let Some(run_id) = env_run_id {
+                let draft = EventDraft {
+                    id: None,
+                    kind,
+                    namespace,
+                    session: session_name,
+                    run_id,
+                    generation: env_generation,
+                    source,
+                    block_id,
+                    parent_id,
+                    data,
+                    preview: None,
+                };
+                let event = events::stamp_orphan_event(draft);
+                let tender_root = root
+                    .path()
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+                    .ok_or_else(|| fail(1, "session root has no parent"))?;
+                events::append_lost_found(&tender_root, &event)
+                    .map_err(|e| fail(1, format!("lost+found append failed: {e}")))?;
+                eprintln!("tender emit: session dir gone; event preserved in lost+found");
+                return Ok(());
+            }
         }
         return Err(fail(
             5,

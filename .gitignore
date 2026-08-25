@@ -1,2 +1,6 @@
 /target
 *.proptest-regressions
+
+# devenv / direnv working state (see devenv.nix)
+.devenv/
+.direnv/

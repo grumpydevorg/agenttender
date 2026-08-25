@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://devenv.sh/devenv.schema.json
+inputs:
+  nixpkgs:
+    url: github:NixOS/nixpkgs/nixpkgs-unstable
+  # `languages.rust.channel` requires this input; devenv errors without it.
+  # The `overlays` entry is what puts `pkgs.rust-bin` in scope, which the
+  # commented exception blocks in devenv.nix need.
+  rust-overlay:
+    url: github:oxalica/rust-overlay
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
+    overlays:
+      - default

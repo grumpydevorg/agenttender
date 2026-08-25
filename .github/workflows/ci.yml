@@ -80,6 +80,28 @@ jobs:
       - name: Package (locked)
         run: cargo package --locked --allow-dirty
 
+  # The crate advertises `rust-version = "1.85"` in Cargo.toml and
+  # `cargo install agenttender` is a documented path, so that is a published
+  # contract. Nothing verified it until this job: the code used let-chains,
+  # stable only from 1.88, so the advertised minimum could not build the crate
+  # at all. A promise nothing executes is not a promise.
+  msrv:
+    name: msrv (1.85.0, ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # rust-toolchain.toml pins the build toolchain for every other lane.
+      # `+1.85.0` overrides it here, which is the point: this lane must use the
+      # advertised minimum, not the version everything else builds with.
+      - name: Install Rust 1.85.0
+        run: rustup toolchain install 1.85.0 --profile minimal --no-self-update
+      # `check --all-targets` type-checks tests and benches without running
+      # them. MSRV is a compile-time contract -- whether the crate BUILDS on the
+      # advertised minimum. Behaviour on that toolchain is not claimed, and the
+      # four-platform matrix above already runs the tests on the pinned one.
+      - name: Check on the advertised MSRV
+        run: cargo +1.85.0 check --locked --all-targets
+
   doc:
     name: doc (ubuntu)
     runs-on: ubuntu-latest
