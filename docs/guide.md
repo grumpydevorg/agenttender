@@ -215,7 +215,7 @@ nested-quoting layer to escape.
 > So today: **local Windows and remote `exec` are supported; general `--host`
 > command forwarding remains POSIX-shell-only** — do not point general `--host`
 > commands at a Windows host (cmd.exe / PowerShell) until the
-> [remote frame transport](plans/active/00_remote-frame-transport.md) lands.
+> [remote frame transport](plans/active/01_remote-frame-transport.md) lands.
 >
 > *(A 2026-07-10 ARM-Windows smoke ran `start`/`kill`/`exec` with simple
 > arguments — happy-path evidence that the mechanism runs, **not** proof of

@@ -79,7 +79,7 @@ together → crates.io after. Removes the visible-partial-release window.
 ## Phases 1–3 — General `--host` via the typed frame
 
 The transport work. Full design in
-[remote-frame-transport](../active/00_remote-frame-transport.md); summary:
+[remote-frame-transport](../active/01_remote-frame-transport.md); summary:
 
 - **P1** typed `RemoteOperation` IR (Clap `TryFrom` + JSON deserialize → one
   dispatch; **don't** serialize the Clap enum). `StartRequest` carries the FULL

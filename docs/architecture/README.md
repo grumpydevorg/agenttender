@@ -18,5 +18,5 @@ Read these in order:
 Scope notes:
 
 - These diagrams describe the current codebase, not the full roadmap.
-- The planned PTY lease/ownership extension is tracked separately in [../plans/backlog/pty-automation.md](../plans/backlog/pty-automation.md).
+- The planned remote-first PTY control, recording, and external screen extension are tracked in [cloud PTY control and replay](../plans/active/00_cloud-pty-control.md); the older [lease design](../plans/backlog/pty-automation.md) is preserved as history.
 - Remote execution is transport-only: the same local lifecycle model is invoked over SSH for the currently allowlisted commands.
