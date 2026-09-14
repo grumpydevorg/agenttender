@@ -2,7 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::ids::{EpochTimestamp, Generation, ProcessIdentity, RunId, SessionName};
 use super::provenance::TransitionProvenance;
-use super::pty::{PtyControl, PtyMeta};
+use super::pty::{PtyControl, PtyMeta, PtyRecording};
 use super::spec::LaunchSpec;
 use super::state::RunStatus;
 
@@ -133,6 +133,12 @@ impl Meta {
     pub fn set_pty_control(&mut self, control: PtyControl) {
         if let Some(ref mut p) = self.pty {
             p.control = control;
+        }
+    }
+
+    pub fn set_pty_recording(&mut self, recording: PtyRecording) {
+        if let Some(ref mut p) = self.pty {
+            p.recording = Some(recording);
         }
     }
 

@@ -8,8 +8,9 @@ Tender has two execution lanes:
 This file describes the current PTY implementation, including the parts of
 [cloud PTY control and replay](../plans/active/00_cloud-pty-control.md) that
 have shipped: sidecar-enforced input ownership with controller epochs, the
-attach handshake, takeover, bounded viewer delivery, and private peer-verified
-attach sockets. Recording and the screen extension are still planned there.
+attach handshake, takeover, bounded viewer delivery, private peer-verified
+attach sockets, and exact recording. Replay and the screen extension are still
+planned there.
 
 ```mermaid
 stateDiagram-v2
@@ -61,6 +62,22 @@ Current PTY rules:
   offers output to the attached viewer's bounded queue (8 MiB), drained by that
   viewer's own sender thread, so a viewer that stops reading is disconnected
   (releasing its control) instead of stalling capture and the child
+- the child starts at 24×80. Each run is recorded exactly
+  ([format](../plans/specs/pty-recording-format.md)) under
+  `<session>/recording/<run_id>/` (`0700` directories, `0600` segments): capture
+  offers every output chunk, and the input writer applies each resize while
+  holding the recorder's sequencer, so output that follows a new size is always
+  recorded after it. A size with a zero dimension is ignored. Sequencing never
+  waits for storage; one recorder thread appends, rotates at 64 MiB, publishes
+  segments atomically, and syncs at most a second apart and on close. Input is
+  not recorded
+- recording stops explicitly at the last completed append when the run reaches
+  1 GiB, storage fails, 16 MiB of output waits for storage, or storage is still
+  stalled at close; an append completing after the stop is cut back off. The
+  stop is reported off the capture and storage paths as `recording.stopped` and
+  in `meta.json` (`pty.recording.state: Stopped`, with the last recorded
+  sequence), the run ends with a warning, and the child and viewers keep
+  running
 
 PTY-specific I/O shape:
 
@@ -76,6 +93,9 @@ flowchart LR
     PTY --> Child["TTY-sensitive child"]
     Child --> PTY
     PTY --> Capture["capture thread"]
+    Capture --> Recorder["recorder (sequencer, segment writer)"]
+    Writer -- "applied resizes" --> Recorder
+    Recorder --> Segments["recording/run_id/seg-*.tndrrec"]
     Capture --> Log["output.log (tag O)"]
     Capture --> Attach
 ```
@@ -87,7 +107,11 @@ Important exception:
 
 Planned but not yet implemented (see the cloud PTY plan):
 
-- exact output recording and replay, including catch-up for a disconnected
-  viewer
+- replay and export of recordings, and catch-up for a disconnected viewer
+  (viewers are still fed before their records are appended, since they carry no
+  cursor yet)
+- recording policy at launch (`--record-input`, recording off), configurable
+  limits, store-wide retention and expiry, and a stopped-recording notice to
+  attached clients
 - runtime-directory and protected-temporary socket locations (only the
   persistent state root is implemented; other locations fail closed)

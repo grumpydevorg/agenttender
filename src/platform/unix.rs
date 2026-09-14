@@ -134,18 +134,26 @@ impl Platform for UnixPlatform {
         cwd: Option<&Path>,
         env: &BTreeMap<String, String>,
     ) -> io::Result<SupervisedChild> {
-        // 1. Create PTY pair
+        // 1. Create PTY pair at the initial size (a zero size breaks TUIs and
+        // cannot be recorded).
         let mut master_fd: libc::c_int = 0;
         let mut slave_fd: libc::c_int = 0;
+        let mut size = libc::winsize {
+            ws_row: super::INITIAL_PTY_ROWS,
+            ws_col: super::INITIAL_PTY_COLS,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
         // SAFETY: openpty writes valid fds into master_fd/slave_fd on success.
-        // Null pointers for name/termios/winsize are explicitly allowed.
+        // Null pointers for name/termios are explicitly allowed; `size` is a
+        // valid winsize that outlives the call.
         let ret = unsafe {
             libc::openpty(
                 &mut master_fd,
                 &mut slave_fd,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                std::ptr::null_mut(),
+                &mut size,
             )
         };
         if ret != 0 {

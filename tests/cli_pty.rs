@@ -1873,3 +1873,277 @@ fn an_old_runs_cleanup_cannot_remove_its_replacements_breadcrumb() {
         "the old run's cleanup removed the replacement's breadcrumb"
     );
 }
+
+// --- Cloud PTY control, slice 1: exact recording ---
+
+fn session_meta(root: &TempDir, session: &str) -> serde_json::Value {
+    let path = root
+        .path()
+        .join(format!(".tender/sessions/default/{session}/meta.json"));
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// The run's recording directory, as named by its metadata.
+fn recording_dir(root: &TempDir, session: &str) -> std::path::PathBuf {
+    let meta = session_meta(root, session);
+    let dir = meta["pty"]["recording"]["dir"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no recording in metadata: {meta}"));
+    assert_eq!(
+        dir,
+        format!("recording/{}", meta["run_id"].as_str().unwrap()),
+        "one directory per run"
+    );
+    root.path()
+        .join(format!(".tender/sessions/default/{session}"))
+        .join(dir)
+}
+
+fn decode_session_recording(root: &TempDir, session: &str) -> tender::recording::DecodedRecording {
+    let dir = recording_dir(root, session);
+    let files = tender::recorder::DirectoryStore::segments(&dir).unwrap();
+    let bytes: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
+    tender::recording::decode_recording(bytes.iter().map(Vec::as_slice)).expect("recording decodes")
+}
+
+fn recorded_output(records: &[tender::recording::Record]) -> Vec<u8> {
+    records
+        .iter()
+        .filter_map(|r| match &r.kind {
+            tender::recording::RecordKind::Output(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .copied()
+        .collect()
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+#[test]
+fn pty_output_is_recorded_exactly_with_the_initial_geometry() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+
+    // Escape sequences, bytes that are not UTF-8, and no trailing newline.
+    tender(&root)
+        .args([
+            "start",
+            "pty-rec",
+            "--pty",
+            "--",
+            "sh",
+            "-c",
+            "stty size; printf '\\033[31mred\\377\\376tail'",
+        ])
+        .output()
+        .unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-rec",
+    };
+    harness::wait_terminal(&root, "pty-rec");
+
+    let recording = decode_session_recording(&root, "pty-rec");
+    assert_eq!(
+        recorded_output(&recording.records),
+        b"24 80\r\n\x1b[31mred\xff\xfetail",
+        "the child starts at 24x80 and every output byte is recorded as written"
+    );
+    assert_eq!(recording.end, tender::recording::SegmentEnd::Clean);
+
+    let meta = session_meta(&root, "pty-rec");
+    let header = &recording.header;
+    assert_eq!(
+        header.run_id.as_uuid().to_string(),
+        meta["run_id"].as_str().unwrap()
+    );
+    assert_eq!((header.geometry.rows(), header.geometry.cols()), (24, 80));
+    assert!(!header.input_recorded, "input is not recorded by default");
+    let expected_term = std::env::var("TERM")
+        .ok()
+        .and_then(|t| tender::recording::TermName::new(t).ok())
+        .map(|t| t.as_str().to_owned())
+        .unwrap_or_default();
+    assert_eq!(header.term.as_str(), expected_term);
+
+    let last = recording.records.last().unwrap().sequence.get();
+    let state = &meta["pty"]["recording"];
+    assert_eq!(state["state"], "Complete", "{meta}");
+    assert_eq!(state["input_recorded"], false);
+    assert_eq!(state["last_recorded_sequence"], last);
+    assert_eq!(state["last_synced_sequence"], last);
+
+    let dir = recording_dir(&root, "pty-rec");
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(dir.parent().unwrap()), 0o700);
+    assert_eq!(mode(&dir), 0o700);
+}
+
+#[test]
+fn an_applied_resize_is_recorded_between_the_output_around_it() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let sock = start_cat(&root, "pty-rec-resize");
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-rec-resize",
+    };
+
+    let mut human = attach_as_human(&sock);
+    write_msg(&mut human, MSG_DATA, b"one\n");
+    wait_log_contains(&root, "pty-rec-resize", "one");
+    write_msg(&mut human, MSG_RESIZE, &resize_payload(30, 100));
+    write_msg(&mut human, MSG_DATA, b"two\n");
+    wait_log_contains(&root, "pty-rec-resize", "two");
+    write_msg(&mut human, MSG_DETACH, &[]);
+    drop(human);
+    tender(&root)
+        .args(["kill", "pty-rec-resize", "--force"])
+        .output()
+        .unwrap();
+    harness::wait_terminal(&root, "pty-rec-resize");
+
+    let recording = decode_session_recording(&root, "pty-rec-resize");
+    let resizes: Vec<usize> = recording
+        .records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.kind, tender::recording::RecordKind::Resize { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(resizes.len(), 1, "{:?}", recording.records);
+    let at = resizes[0];
+    assert_eq!(
+        recording.records[at].kind,
+        tender::recording::RecordKind::Resize {
+            geometry: tender::recording::Geometry::new(30, 100).unwrap(),
+            cause: tender::recording::ResizeCause::User,
+        }
+    );
+    let before = recorded_output(&recording.records[..at]);
+    let after = recorded_output(&recording.records[at + 1..]);
+    assert!(contains(&before, b"one"), "before: {before:?}");
+    assert!(!contains(&before, b"two"), "before: {before:?}");
+    assert!(contains(&after, b"two"), "after: {after:?}");
+}
+
+#[test]
+fn a_resize_with_a_zero_dimension_is_ignored() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    tender(&root)
+        .args(["start", "pty-zero-size", "--pty", "--stdin", "--", "sh"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-zero-size");
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-zero-size",
+    };
+    let sock = wait_for_attach_socket(&root, "pty-zero-size");
+
+    let mut human = attach_as_human(&sock);
+    write_msg(&mut human, MSG_RESIZE, &resize_payload(0, 100));
+    write_msg(&mut human, MSG_DATA, b"stty size\n");
+    wait_log_contains(&root, "pty-zero-size", "24 80");
+    write_msg(&mut human, MSG_DETACH, &[]);
+    drop(human);
+    tender(&root)
+        .args(["kill", "pty-zero-size", "--force"])
+        .output()
+        .unwrap();
+    harness::wait_terminal(&root, "pty-zero-size");
+
+    let recording = decode_session_recording(&root, "pty-zero-size");
+    assert!(
+        !recording
+            .records
+            .iter()
+            .any(|r| matches!(r.kind, tender::recording::RecordKind::Resize { .. })),
+        "{:?}",
+        recording.records
+    );
+}
+
+#[test]
+fn a_recording_size_limit_stops_recording_but_not_the_session() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    tender(&root)
+        .env("TENDER_TEST_RECORDING_MAX_BYTES", "2048")
+        .args(["start", "pty-rec-limit", "--pty", "--stdin", "--", "cat"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-rec-limit");
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-rec-limit",
+    };
+
+    let line = format!("{}\n", "x".repeat(59));
+    push(&root, "pty-rec-limit", line.repeat(50).as_bytes());
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let meta = loop {
+        let meta = session_meta(&root, "pty-rec-limit");
+        if meta["pty"]["recording"]["state"] == "Stopped" {
+            break meta;
+        }
+        assert!(Instant::now() < deadline, "recording never stopped: {meta}");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(meta["status"], "Running", "the session keeps running");
+    assert_eq!(meta["pty"]["recording"]["reason"], "size_limit");
+    let last = meta["pty"]["recording"]["last_recorded_sequence"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the stop names the recorded prefix: {meta}"));
+
+    // The event precedes the metadata flip.
+    let events = harness::read_events(&root, "pty-rec-limit");
+    let event = events
+        .iter()
+        .find(|e| e["kind"] == "recording.stopped")
+        .expect("recording.stopped is logged before status shows it");
+    assert_eq!(
+        event["data"],
+        serde_json::json!({"last_recorded_sequence": last, "reason": "size_limit"})
+    );
+
+    // Capture continues past the unrecorded suffix.
+    push(&root, "pty-rec-limit", b"after-stop\n");
+    wait_log_contains(&root, "pty-rec-limit", "after-stop");
+
+    tender(&root)
+        .args(["kill", "pty-rec-limit", "--force"])
+        .output()
+        .unwrap();
+    let meta = harness::wait_terminal(&root, "pty-rec-limit");
+    assert_eq!(meta["pty"]["recording"]["state"], "Stopped", "{meta}");
+    assert_eq!(meta["pty"]["recording"]["last_recorded_sequence"], last);
+    assert!(
+        meta["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("recording stopped")),
+        "{meta}"
+    );
+
+    let recording = decode_session_recording(&root, "pty-rec-limit");
+    assert_eq!(recording.records.last().unwrap().sequence.get(), last);
+    assert!(!contains(
+        &recorded_output(&recording.records),
+        b"after-stop"
+    ));
+    let dir = recording_dir(&root, "pty-rec-limit");
+    let total: u64 = tender::recorder::DirectoryStore::segments(&dir)
+        .unwrap()
+        .iter()
+        .map(|f| std::fs::metadata(f).unwrap().len())
+        .sum();
+    assert!(total <= 2048, "{total} bytes recorded");
+}

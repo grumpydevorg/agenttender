@@ -172,6 +172,13 @@ knowing:
   once every byte has been written to it. It fails, reporting how many bytes
   were written, if another client holds the terminal or takes it over mid-push;
   a second concurrent push is refused rather than interleaved.
+- A PTY session starts at 24×80 and records its exact output and every applied
+  window size under `recording/<run_id>/` in the session directory (typed input
+  is not recorded). `tender status` shows the recording under `pty.recording`.
+  If recording has to stop (size limit, disk failure, or storage falling behind),
+  the session keeps running: status shows `Stopped` with the last recorded
+  sequence, a `recording.stopped` event is logged, and the run ends with a
+  warning that later output was not recorded.
 
 ## Observe long-running work
 

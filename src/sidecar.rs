@@ -23,10 +23,11 @@ use crate::model::dep_fail::DepFailReason;
 use crate::model::event::{Kind, Uuid7};
 use crate::model::ids::{EpochTimestamp, Generation, Namespace, RunId, SessionName, Source};
 use crate::model::meta::Meta;
-use crate::model::pty::{PtyControl, PtyMeta};
+use crate::model::pty::{PtyControl, PtyMeta, PtyRecording, RecordingState, RecordingStopReason};
 use crate::model::spec::{DependencyBinding, IoMode, LaunchSpec, StdinMode};
 use crate::model::state::ExitReason;
 use crate::platform::{Current, Platform};
+use crate::recorder::{Recorder, RecorderLimits, RecorderSummary, RecorderThread, StopReason};
 use crate::session::{self, LockGuard, SessionDir, SessionRoot};
 
 /// Type alias for the platform's ReadyWriter to avoid verbose turbofish.
@@ -1106,6 +1107,23 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     // --- Attach sink for PTY tee ---
     let attach_sink: AttachSink = Arc::new(Mutex::new(None));
 
+    // --- Exact recording of PTY output and applied geometry ---
+    let recording = is_pty.then(|| {
+        start_pty_recording(
+            session_dir,
+            run_id,
+            &effective_env,
+            LifecycleEvents::with_fresh_writer(
+                session_dir,
+                &namespace,
+                &session_name,
+                run_id,
+                generation,
+            ),
+        )
+    });
+    let recorder = recording.as_ref().map(|r| r.thread.recorder());
+
     // --- Stdin forwarding (conditional) ---
     let stdin_errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -1133,7 +1151,11 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
         Some(PtyInput {
             writer: crate::pty_input::InputWriter::spawn(
                 run_id,
-                UnixPtyInput { writer, resize },
+                UnixPtyInput {
+                    writer,
+                    resize,
+                    recorder: recorder.clone(),
+                },
                 hooks,
             ),
             registry,
@@ -1171,7 +1193,20 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
         meta.set_pty(PtyMeta::new());
     }
     lifecycle.emit(&mut meta, false);
-    session::write_meta_atomic(&session, &meta)?;
+    {
+        // A recording that already stopped has reported, or will report under
+        // this lock after this write: either way meta.json ends up Stopped.
+        let _serialized = self::lock(&META_WRITE);
+        if let (Some(run), Some(recorder)) = (&recording, &recorder) {
+            let state = recorder
+                .stopped()
+                .map_or(RecordingState::Recording, |stopped| {
+                    stopped_state(stopped, None)
+                });
+            meta.set_pty_recording(run.meta(state));
+        }
+        session::write_meta_atomic(&session, &meta)?;
+    }
     if !has_deps {
         signal_meta_snapshot(ready, &meta)?;
     }
@@ -1196,10 +1231,24 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
 
     // --- Supervise ---
     let exit_reason = if is_pty {
-        supervise(&session, &mut child, Some(&attach_sink))?
+        supervise(&session, &mut child, Some(&attach_sink), recorder.as_ref())?
     } else {
-        supervise(&session, &mut child, None)?
+        supervise(&session, &mut child, None, None)?
     };
+
+    // Capture has drained the PTY: close the recording at what it holds.
+    if let Some(run) = recording {
+        let dir = run.dir.clone();
+        let (state, warning) = finished_recording(run.thread.finish());
+        meta.set_pty_recording(PtyRecording {
+            dir,
+            input_recorded: false,
+            state,
+        });
+        if let Some(warning) = warning {
+            meta.add_warning(warning);
+        }
+    }
 
     // --- Cancel timeout + collect warnings + determine exit reason ---
     timeout_cancel.store(true, Ordering::Relaxed);
@@ -1257,7 +1306,10 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     test_abort_point("before_terminal_event");
     lifecycle.emit(&mut meta, true);
     test_abort_point("before_terminal_meta");
-    session::write_meta_atomic(&session, &meta)?;
+    {
+        let _serialized = self::lock(&META_WRITE);
+        session::write_meta_atomic(&session, &meta)?;
+    }
 
     // Retire this run's attach endpoint while still holding the session lock: a
     // replacement cannot start until the lock is released, so it cannot publish
@@ -1409,6 +1461,7 @@ fn supervise(
     session: &SessionDir,
     child: &mut <Current as Platform>::SupervisedChild,
     attach_sink: Option<&AttachSink>,
+    recorder: Option<&Recorder>,
 ) -> anyhow::Result<ExitReason> {
     let log_path = session.path().join("output.log");
     let log_file = OpenOptions::new()
@@ -1424,7 +1477,7 @@ fn supervise(
     let log_ref = &log;
     let (stdout_result, stderr_result) = std::thread::scope(|scope| {
         let stdout_handle = if let Some(sink) = attach_sink {
-            scope.spawn(move || capture_stream_with_tee(stdout, 'O', log_ref, sink))
+            scope.spawn(move || capture_stream_with_tee(stdout, 'O', log_ref, sink, recorder))
         } else {
             scope.spawn(move || capture_stream(stdout, 'O', log_ref))
         };
@@ -1498,13 +1551,14 @@ fn capture_stream(
     Ok(())
 }
 
-/// Read raw bytes from a stream, write to log, and tee to the attach sink.
-/// Used for PTY sessions where a human may be attached.
+/// Read raw bytes from a stream, record them, write them to the log, and tee
+/// them to the attach sink. Used for PTY sessions where a human may be attached.
 fn capture_stream_with_tee(
     mut stream: Box<dyn std::io::Read + Send>,
     tag: char,
     log: &Mutex<File>,
     attach_sink: &AttachSink,
+    recorder: Option<&Recorder>,
 ) -> Result<(), String> {
     let mut buf = [0u8; 4096];
     loop {
@@ -1513,6 +1567,11 @@ fn capture_stream_with_tee(
             Ok(n) => n,
             Err(_) => break,
         };
+
+        // Record first: sequencing never waits for storage.
+        if let Some(recorder) = recorder {
+            recorder.output(&buf[..n]);
+        }
 
         // Write to log (best-effort chunk-based transcript)
         {
@@ -1543,12 +1602,13 @@ fn capture_stream_with_tee(
     Ok(())
 }
 
-/// The PTY input the single writer drives: the master's write half plus a dup
-/// used for window-size changes.
+/// The PTY input the single writer drives: the master's write half, a dup used
+/// for window-size changes, and the recorder that records applied sizes.
 #[cfg(unix)]
 struct UnixPtyInput {
     writer: crate::platform::unix::PtyWriter,
     resize: Option<File>,
+    recorder: Option<Recorder>,
 }
 
 #[cfg(unix)]
@@ -1564,10 +1624,21 @@ impl crate::pty_input::WritablePty for UnixPtyInput {
         self.writer.wait_writable(timeout)
     }
 
+    /// A size with a zero dimension is ignored: it cannot be recorded, and no
+    /// terminal program can draw into it.
     fn resize(&self, rows: u16, cols: u16) {
-        if let Some(fd) = &self.resize {
-            apply_pty_resize(fd, rows, cols);
-        }
+        let (Some(fd), Some(geometry)) =
+            (&self.resize, crate::recording::Geometry::new(rows, cols))
+        else {
+            return;
+        };
+        let apply = || apply_pty_resize(fd, rows, cols);
+        let _ = match &self.recorder {
+            Some(recorder) => {
+                recorder.resize_applied(geometry, crate::recording::ResizeCause::User, apply)
+            }
+            None => apply(),
+        };
     }
 }
 
@@ -2081,7 +2152,7 @@ fn handle_attach_connection(
 }
 
 #[cfg(unix)]
-fn apply_pty_resize(fd: &std::fs::File, rows: u16, cols: u16) {
+fn apply_pty_resize(fd: &std::fs::File, rows: u16, cols: u16) -> io::Result<()> {
     use std::os::unix::io::AsRawFd;
     let ws = libc::winsize {
         ws_row: rows,
@@ -2091,19 +2162,31 @@ fn apply_pty_resize(fd: &std::fs::File, rows: u16, cols: u16) {
     };
     // SAFETY: fd is a valid PTY master fd. TIOCSWINSZ with a valid winsize
     // pointer is safe on any terminal fd.
-    unsafe {
-        libc::ioctl(fd.as_raw_fd(), libc::TIOCSWINSZ, &ws);
+    if unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCSWINSZ, &ws) } == -1 {
+        return Err(io::Error::last_os_error());
     }
+    Ok(())
 }
 
-/// Best-effort: flip the PTY control state in the session's `meta.json` through
-/// a typed `Meta` round-trip (read → `set_pty_control` → write). Keeps meta.json
-/// a valid typed `Meta` — consistent with how the sidecar serializes meta
-/// everywhere else — instead of hand-patching an untyped JSON value with a raw
-/// string. Persistence is the same best-effort tmp+rename the attach path has
-/// always used (no fsync): a control flip must not block the attach thread, and
-/// the durable lifecycle writes go through `write_meta_atomic` elsewhere.
+/// Serializes the sidecar's `meta.json` writes once helper threads can patch it:
+/// the patches below, and the main thread's Running and terminal writes, which
+/// fold in the recording state they read under this lock.
+static META_WRITE: Mutex<()> = Mutex::new(());
+
+/// Best-effort: flip the PTY control state in the session's `meta.json`.
 fn set_pty_control_on_disk(session_dir: &Path, control: PtyControl) {
+    patch_meta_on_disk(session_dir, |meta| meta.set_pty_control(control));
+}
+
+/// Best-effort: patch the session's `meta.json` through a typed `Meta`
+/// round-trip (read → `patch` → write). Keeps meta.json a valid typed `Meta` —
+/// consistent with how the sidecar serializes meta everywhere else — instead of
+/// hand-patching an untyped JSON value. Persistence is the same best-effort
+/// tmp+rename the attach path has always used (no fsync): a patch must not block
+/// the thread making it for long, and the durable lifecycle writes go through
+/// `write_meta_atomic` elsewhere.
+fn patch_meta_on_disk(session_dir: &Path, patch: impl FnOnce(&mut Meta)) {
+    let _serialized = lock(&META_WRITE);
     let meta_path = session_dir.join("meta.json");
     let Ok(content) = std::fs::read_to_string(&meta_path) else {
         return;
@@ -2111,7 +2194,7 @@ fn set_pty_control_on_disk(session_dir: &Path, control: PtyControl) {
     let Ok(mut meta) = serde_json::from_str::<Meta>(&content) else {
         return;
     };
-    meta.set_pty_control(control);
+    patch(&mut meta);
     let Ok(json) = serde_json::to_string_pretty(&meta) else {
         return;
     };
@@ -2119,6 +2202,143 @@ fn set_pty_control_on_disk(session_dir: &Path, control: PtyControl) {
     if std::fs::write(&tmp, json).is_ok() {
         let _ = std::fs::rename(&tmp, &meta_path);
     }
+}
+
+/// A PTY run's recording: the recorder and where its segments live.
+struct PtyRecordingRun {
+    thread: RecorderThread,
+    /// Relative to the session directory.
+    dir: String,
+}
+
+impl PtyRecordingRun {
+    fn meta(&self, state: RecordingState) -> PtyRecording {
+        PtyRecording {
+            dir: self.dir.clone(),
+            input_recorded: false,
+            state,
+        }
+    }
+}
+
+/// Start recording a PTY run: output and applied geometry, not input. The child
+/// starts at the platform's initial PTY size, under its `TERM` (recorded empty if
+/// unset or not recordable). A stop is appended as a `recording.stopped` event,
+/// then written to `meta.json`.
+fn start_pty_recording(
+    session_dir: &Path,
+    run_id: RunId,
+    child_env: &std::collections::BTreeMap<String, String>,
+    mut facts: LifecycleEvents,
+) -> PtyRecordingRun {
+    use crate::recording::{Geometry, SegmentHeader, Sequence, TermName};
+
+    let dir = format!("recording/{run_id}");
+    let term = child_env
+        .get("TERM")
+        .cloned()
+        .or_else(|| std::env::var("TERM").ok())
+        .and_then(|term| TermName::new(term).ok())
+        .unwrap_or_else(|| TermName::new("").expect("an empty TERM is recordable"));
+    let origin_unix_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+    let header = SegmentHeader {
+        run_id,
+        segment_index: 0,
+        first_sequence: Sequence::FIRST,
+        origin_unix_ns,
+        geometry: Geometry::new(
+            crate::platform::INITIAL_PTY_ROWS,
+            crate::platform::INITIAL_PTY_COLS,
+        )
+        .expect("the initial PTY size is nonzero"),
+        input_recorded: false,
+        term,
+    };
+
+    let store = crate::recorder::DirectoryStore::new(session_dir.join(&dir));
+    let report_dir = session_dir.to_path_buf();
+    let thread = RecorderThread::start(header, store, recorder_limits(), move |stopped| {
+        let mut data = serde_json::json!({
+            "last_recorded_sequence": stopped.last_recorded.map(Sequence::get),
+            "reason": stopped.reason.as_str(),
+        });
+        if let StopReason::WriteFailed(kind) = stopped.reason {
+            data["error"] = serde_json::Value::String(format!("{kind:?}"));
+        }
+        facts.append_fact("recording.stopped", data);
+        let state = stopped_state(stopped, None);
+        patch_meta_on_disk(&report_dir, |meta| {
+            if let Some(mut recording) = meta.pty().and_then(|p| p.recording.clone()) {
+                recording.state = state;
+                meta.set_pty_recording(recording);
+            }
+        });
+    });
+    PtyRecordingRun { thread, dir }
+}
+
+/// Recording limits. Debug builds accept `TENDER_TEST_RECORDING_MAX_BYTES` so
+/// tests can reach the size limit; release sidecars ignore it.
+fn recorder_limits() -> RecorderLimits {
+    let mut limits = RecorderLimits::default();
+    if cfg!(debug_assertions) {
+        if let Some(max) = std::env::var("TENDER_TEST_RECORDING_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            limits.max_bytes = max;
+        }
+    }
+    limits
+}
+
+fn stopped_state(
+    stopped: crate::recorder::Stopped,
+    last_synced: Option<crate::recording::Sequence>,
+) -> RecordingState {
+    let (reason, error) = match stopped.reason {
+        StopReason::SizeLimit => (RecordingStopReason::SizeLimit, None),
+        StopReason::WriteFailed(kind) => {
+            (RecordingStopReason::WriteFailed, Some(format!("{kind:?}")))
+        }
+        StopReason::BacklogFull => (RecordingStopReason::BacklogFull, None),
+        StopReason::Stalled => (RecordingStopReason::Stalled, None),
+    };
+    RecordingState::Stopped {
+        last_recorded_sequence: stopped.last_recorded.map(crate::recording::Sequence::get),
+        last_synced_sequence: last_synced.map(crate::recording::Sequence::get),
+        reason,
+        error,
+    }
+}
+
+/// The recording's final state, and a run warning if it stopped early.
+fn finished_recording(summary: RecorderSummary) -> (RecordingState, Option<String>) {
+    let Some(stopped) = summary.stopped else {
+        return (
+            RecordingState::Complete {
+                last_recorded_sequence: summary.last_recorded.map(crate::recording::Sequence::get),
+                last_synced_sequence: summary.last_synced.map(crate::recording::Sequence::get),
+            },
+            None,
+        );
+    };
+    let at = stopped.last_recorded.map_or_else(
+        || "before its first record".to_owned(),
+        |s| format!("at sequence {}", s.get()),
+    );
+    let cause = match stopped.reason {
+        StopReason::WriteFailed(kind) => format!("write_failed: {kind:?}"),
+        reason => reason.as_str().to_owned(),
+    };
+    (
+        stopped_state(stopped, summary.last_synced),
+        Some(format!(
+            "recording stopped {at} ({cause}); later output was not recorded"
+        )),
+    )
 }
 
 #[cfg(test)]

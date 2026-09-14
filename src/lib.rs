@@ -43,6 +43,8 @@
 //!   state root.
 //! - [`pty_input`] — the sidecar's single PTY input writer and its control
 //!   queue (claim, takeover, release).
+//! - [`recorder`] — the sidecar's exact PTY recorder (sequencing, rotation,
+//!   explicit stop).
 //! - [`recording`] — the exact PTY recording codec (versioned binary segments).
 //! - [`ssh`] — the remote transport wrapper and its command allowlist.
 //! - [`reconcile`] — reconciling recorded state against observed OS reality.
@@ -78,6 +80,7 @@ pub mod platform;
 pub mod pty_input;
 pub mod ready_file;
 pub mod reconcile;
+pub mod recorder;
 pub mod recording;
 pub mod session;
 pub mod sidecar;
