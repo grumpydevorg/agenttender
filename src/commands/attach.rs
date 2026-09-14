@@ -1,15 +1,16 @@
-#[cfg(unix)]
-use std::io::{Read, Write};
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
-
+use tender::attach_escape::EscapeMode;
 use tender::attach_proto;
 use tender::model::ids::{Namespace, SessionName};
 use tender::model::pty::PtyControl;
 use tender::model::state::RunStatus;
 use tender::session::{self, SessionRoot};
 
-pub fn cmd_attach(name: &str, namespace: &Namespace, takeover: bool) -> anyhow::Result<()> {
+pub fn cmd_attach(
+    name: &str,
+    namespace: &Namespace,
+    takeover: bool,
+    escape: EscapeMode,
+) -> anyhow::Result<()> {
     let session_name = SessionName::new(name)?;
     let root = SessionRoot::default_path()?;
 
@@ -42,25 +43,25 @@ pub fn cmd_attach(name: &str, namespace: &Namespace, takeover: bool) -> anyhow::
             anyhow::bail!("attach requires an interactive terminal on stdin");
         }
 
-        let mut stream = UnixStream::connect(&sock_path)?;
+        let mut stream = std::os::unix::net::UnixStream::connect(&sock_path)?;
         // Keystrokes go only to a listener run by this same user: a spoofed
         // socket owned by someone else is refused before the hello.
         tender::attach_socket::verify_peer(&stream)
             .map_err(|e| anyhow::anyhow!("refusing attach socket {}: {e}", sock_path.display()))?;
         handshake(&mut stream, takeover)?;
-        relay(stream)
+        unix_relay::relay(stream, escape)
     }
 
     #[cfg(not(unix))]
     {
-        let _ = (sock_path, takeover);
+        let _ = (sock_path, takeover, escape);
         anyhow::bail!("attach is only supported on Unix");
     }
 }
 
 /// Send the v1 hello and require the sidecar's acceptance.
 #[cfg(unix)]
-fn handshake(stream: &mut UnixStream, takeover: bool) -> anyhow::Result<()> {
+fn handshake(stream: &mut std::os::unix::net::UnixStream, takeover: bool) -> anyhow::Result<()> {
     let mode = if takeover {
         attach_proto::MODE_TAKEOVER
     } else {
@@ -86,32 +87,284 @@ fn handshake(stream: &mut UnixStream, takeover: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Relay the terminal until detach, disconnect, or retirement.
+/// The interactive relay between the user's terminal and the session.
+///
+/// Three independent paths, so no blocked one can delay a detach:
+///
+/// - the **main thread** polls the keyboard, recognizes the escape, watches for
+///   terminal size changes, and only ever queues messages;
+/// - a **sender thread** writes queued messages to the session, controls
+///   (resize, detach) before keystrokes; if the session stops accepting input,
+///   only this thread waits;
+/// - a **reader thread** writes session output to the terminal; if the terminal
+///   stops reading, only this thread waits.
+///
+/// Leaving never joins a blocked thread: the socket is shut down, the terminal
+/// is restored (without waiting for pending output to drain), and the process
+/// exits.
 #[cfg(unix)]
-fn relay(stream: UnixStream) -> anyhow::Result<()> {
-    use std::sync::Arc;
+mod unix_relay {
+    use std::collections::VecDeque;
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+    use std::time::{Duration, Instant};
 
-    let mut read_stream = stream.try_clone()?;
-    let mut write_stream = stream;
-    let closed = Arc::new(AtomicBool::new(false));
-    let retired = Arc::new(AtomicBool::new(false));
+    use tender::attach_escape::{Escape, EscapeMode, EscapeParser};
+    use tender::attach_proto;
 
-    let orig = enter_raw_mode()?;
+    /// Keystrokes that may wait for a session that is not accepting input.
+    /// Beyond this, further keystrokes are dropped (and reported) rather than
+    /// buffered without bound; the escape is still recognized.
+    const OUTBOX_DATA_LIMIT: usize = 1 << 20;
+    /// How often the keyboard and terminal size are checked.
+    const POLL: Duration = Duration::from_millis(100);
+    /// How long a detach waits for the detach message to be sent.
+    const DETACH_GRACE: Duration = Duration::from_millis(200);
 
-    if let Some((rows, cols)) = terminal_size() {
-        let payload = attach_proto::resize_payload(rows, cols);
-        let _ = attach_proto::write_msg(&mut write_stream, attach_proto::MSG_RESIZE, &payload);
+    pub fn relay(stream: UnixStream, escape: EscapeMode) -> anyhow::Result<()> {
+        let shutdown = stream.try_clone()?;
+        let reader_stream = stream.try_clone()?;
+        let closed = Arc::new(AtomicBool::new(false));
+        let retired = Arc::new(AtomicBool::new(false));
+        let outbox = Arc::new(Outbox::default());
+
+        // Restores the terminal on every way out of this function, panics
+        // included.
+        let terminal = RawTerminal::enter()?;
+
+        spawn_sender(stream, Arc::clone(&outbox), Arc::clone(&closed));
+        spawn_reader(reader_stream, Arc::clone(&closed), Arc::clone(&retired));
+
+        let mut size = terminal_size();
+        if let Some((rows, cols)) = size {
+            outbox.push_control(
+                attach_proto::MSG_RESIZE,
+                attach_proto::resize_payload(rows, cols).to_vec(),
+            );
+        }
+
+        let mut parser = EscapeParser::new(escape);
+        let mut stdin = std::io::stdin().lock();
+        let mut buf = [0u8; 4096];
+        let mut dropped = 0usize;
+        let ending = loop {
+            if closed.load(Ordering::SeqCst) {
+                break Ending::SessionClosed;
+            }
+            let now = terminal_size();
+            if now.is_some() && now != size {
+                size = now;
+                if let Some((rows, cols)) = now {
+                    outbox.push_control(
+                        attach_proto::MSG_RESIZE,
+                        attach_proto::resize_payload(rows, cols).to_vec(),
+                    );
+                }
+            }
+            if !stdin_readable(POLL) {
+                continue;
+            }
+            let n = match stdin.read(&mut buf) {
+                Ok(0) => break Ending::KeyboardClosed,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break Ending::KeyboardClosed,
+            };
+            let mut forward = Vec::new();
+            let decision = parser.feed(&buf[..n], &mut forward);
+            if !forward.is_empty() {
+                let len = forward.len();
+                if !outbox.push_data(forward) {
+                    dropped += len;
+                }
+            }
+            if decision == Escape::Detach {
+                break Ending::Detached;
+            }
+        };
+
+        if ending == Ending::Detached {
+            outbox.push_control(attach_proto::MSG_DETACH, Vec::new());
+            outbox.wait_controls_sent(DETACH_GRACE);
+        }
+        // Unblocks the sender and reader on the socket; the session treats a
+        // closed connection as a detach.
+        let _ = shutdown.shutdown(std::net::Shutdown::Both);
+        outbox.close();
+        drop(terminal);
+
+        // Only report once the terminal is restored, and never after a user
+        // detach, whose terminal may be the thing that is blocked.
+        if ending != Ending::Detached {
+            if retired.load(Ordering::SeqCst) {
+                eprintln!("tender: another client took over this session");
+            }
+            if dropped > 0 {
+                eprintln!(
+                    "tender: {dropped} typed bytes were dropped while the session was not accepting input"
+                );
+            }
+        }
+        Ok(())
     }
 
-    // Reader thread: socket -> stdout, until the sidecar closes the connection.
-    let reader_handle = {
-        let closed = Arc::clone(&closed);
-        let retired = Arc::clone(&retired);
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Ending {
+        Detached,
+        SessionClosed,
+        KeyboardClosed,
+    }
+
+    /// Raw mode for the user's terminal, restored on drop.
+    struct RawTerminal {
+        original: libc::termios,
+    }
+
+    impl RawTerminal {
+        fn enter() -> anyhow::Result<Self> {
+            use std::os::unix::io::AsRawFd;
+            let fd = std::io::stdin().as_raw_fd();
+            // SAFETY: termios is plain old data; tcgetattr fills it completely.
+            let mut original: libc::termios = unsafe { std::mem::zeroed() };
+            // SAFETY: `fd` is this process's stdin; `original` is a valid out-pointer.
+            if unsafe { libc::tcgetattr(fd, &mut original) } != 0 {
+                anyhow::bail!("failed to get terminal attributes");
+            }
+            let mut raw = original;
+            // SAFETY: `raw` is a valid termios.
+            unsafe { libc::cfmakeraw(&mut raw) };
+            // SAFETY: `fd` is stdin; `raw` is a valid termios.
+            if unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &raw) } != 0 {
+                anyhow::bail!("failed to set raw mode");
+            }
+            Ok(Self { original })
+        }
+    }
+
+    impl Drop for RawTerminal {
+        fn drop(&mut self) {
+            use std::os::unix::io::AsRawFd;
+            let fd = std::io::stdin().as_raw_fd();
+            // Restore at once, then discard unread typed-ahead input. Not
+            // TCSAFLUSH/TCSADRAIN: those also wait for pending output to drain,
+            // which never happens if the terminal has stopped reading. The input
+            // flush must come after: re-entering canonical mode makes the BSD
+            // tty driver set PENDIN, and flushing input is what clears it.
+            // SAFETY: `fd` is stdin; `original` came from tcgetattr on this fd;
+            // tcflush takes a queue selector.
+            unsafe {
+                libc::tcsetattr(fd, libc::TCSANOW, &self.original);
+                libc::tcflush(fd, libc::TCIFLUSH);
+            }
+        }
+    }
+
+    /// Messages waiting for the sender thread; controls go first.
+    #[derive(Default)]
+    struct Outbox {
+        state: Mutex<OutboxState>,
+        changed: Condvar,
+    }
+
+    #[derive(Default)]
+    struct OutboxState {
+        controls: VecDeque<(u8, Vec<u8>)>,
+        data: VecDeque<Vec<u8>>,
+        data_bytes: usize,
+        sending_control: bool,
+        closed: bool,
+    }
+
+    impl Outbox {
+        fn lock(&self) -> MutexGuard<'_, OutboxState> {
+            self.state.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        fn push_control(&self, msg_type: u8, payload: Vec<u8>) {
+            self.lock().controls.push_back((msg_type, payload));
+            self.changed.notify_all();
+        }
+
+        /// Queue keystrokes; `false` if dropped because the backlog is full.
+        fn push_data(&self, bytes: Vec<u8>) -> bool {
+            let mut state = self.lock();
+            if state.data_bytes + bytes.len() > OUTBOX_DATA_LIMIT {
+                return false;
+            }
+            state.data_bytes += bytes.len();
+            state.data.push_back(bytes);
+            drop(state);
+            self.changed.notify_all();
+            true
+        }
+
+        /// The next message to send, controls first; `None` once closed.
+        fn next(&self) -> Option<(u8, Vec<u8>)> {
+            let mut state = self.lock();
+            loop {
+                if state.closed {
+                    return None;
+                }
+                if let Some(control) = state.controls.pop_front() {
+                    state.sending_control = true;
+                    return Some(control);
+                }
+                if let Some(data) = state.data.pop_front() {
+                    state.data_bytes -= data.len();
+                    return Some((attach_proto::MSG_DATA, data));
+                }
+                state = self.changed.wait(state).unwrap_or_else(|e| e.into_inner());
+            }
+        }
+
+        fn sent(&self) {
+            self.lock().sending_control = false;
+            self.changed.notify_all();
+        }
+
+        /// Wait up to `grace` for queued controls to be written.
+        fn wait_controls_sent(&self, grace: Duration) {
+            let deadline = Instant::now() + grace;
+            let mut state = self.lock();
+            while !state.closed && (!state.controls.is_empty() || state.sending_control) {
+                let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                    return;
+                };
+                state = self
+                    .changed
+                    .wait_timeout(state, left)
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+            }
+        }
+
+        fn close(&self) {
+            self.lock().closed = true;
+            self.changed.notify_all();
+        }
+    }
+
+    fn spawn_sender(mut stream: UnixStream, outbox: Arc<Outbox>, closed: Arc<AtomicBool>) {
+        std::thread::spawn(move || {
+            while let Some((msg_type, payload)) = outbox.next() {
+                let written = attach_proto::write_msg(&mut stream, msg_type, &payload);
+                outbox.sent();
+                if written.is_err() {
+                    closed.store(true, Ordering::SeqCst);
+                    outbox.close();
+                    return;
+                }
+            }
+        });
+    }
+
+    fn spawn_reader(mut stream: UnixStream, closed: Arc<AtomicBool>, retired: Arc<AtomicBool>) {
         std::thread::spawn(move || {
             let mut stdout = std::io::stdout().lock();
             loop {
-                match attach_proto::read_msg(&mut read_stream) {
+                match attach_proto::read_msg(&mut stream) {
                     Ok((attach_proto::MSG_DATA, payload)) => {
                         if stdout.write_all(&payload).is_err() || stdout.flush().is_err() {
                             break;
@@ -123,83 +376,30 @@ fn relay(stream: UnixStream) -> anyhow::Result<()> {
                 }
             }
             closed.store(true, Ordering::SeqCst);
-        })
-    };
+        });
+    }
 
-    // Main thread: stdin -> socket. Poll so a closed connection ends the relay
-    // without waiting for the next keystroke.
-    let mut stdin = std::io::stdin().lock();
-    let mut buf = [0u8; 1024];
-    while !closed.load(Ordering::SeqCst) {
-        if !stdin_readable(std::time::Duration::from_millis(100)) {
-            continue;
-        }
-        let n = match stdin.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => n,
+    fn stdin_readable(timeout: Duration) -> bool {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        let stdin = std::io::stdin();
+        let mut fds = [PollFd::new(&stdin, PollFlags::IN)];
+        let timespec = Timespec {
+            tv_sec: 0,
+            tv_nsec: i64::from(timeout.subsec_nanos()),
         };
-        if attach_proto::write_msg(&mut write_stream, attach_proto::MSG_DATA, &buf[..n]).is_err() {
-            break;
+        matches!(poll(&mut fds, Some(&timespec)), Ok(n) if n > 0)
+    }
+
+    fn terminal_size() -> Option<(u16, u16)> {
+        use std::os::unix::io::AsRawFd;
+        let fd = std::io::stdout().as_raw_fd();
+        // SAFETY: winsize is plain old data; TIOCGWINSZ fills it on success.
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        // SAFETY: `fd` is stdout; TIOCGWINSZ takes a winsize out-pointer.
+        if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 {
+            Some((ws.ws_row, ws.ws_col))
+        } else {
+            None
         }
-    }
-
-    let _ = attach_proto::write_msg(&mut write_stream, attach_proto::MSG_DETACH, &[]);
-    let _ = write_stream.shutdown(std::net::Shutdown::Both);
-    restore_terminal(&orig);
-    let _ = reader_handle.join();
-    if retired.load(Ordering::SeqCst) {
-        eprintln!("tender: another client took over this session");
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn stdin_readable(timeout: std::time::Duration) -> bool {
-    use rustix::event::{PollFd, PollFlags, Timespec, poll};
-    let stdin = std::io::stdin();
-    let mut fds = [PollFd::new(&stdin, PollFlags::IN)];
-    let timespec = Timespec {
-        tv_sec: 0,
-        tv_nsec: i64::from(timeout.subsec_nanos()),
-    };
-    matches!(poll(&mut fds, Some(&timespec)), Ok(n) if n > 0)
-}
-
-#[cfg(unix)]
-fn enter_raw_mode() -> anyhow::Result<libc::termios> {
-    use std::os::unix::io::AsRawFd;
-    let fd = std::io::stdin().as_raw_fd();
-    let mut orig: libc::termios = unsafe { std::mem::zeroed() };
-    if unsafe { libc::tcgetattr(fd, &mut orig) } != 0 {
-        anyhow::bail!("failed to get terminal attributes");
-    }
-    let mut raw = orig;
-    unsafe {
-        libc::cfmakeraw(&mut raw);
-    }
-    if unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &raw) } != 0 {
-        anyhow::bail!("failed to set raw mode");
-    }
-    Ok(orig)
-}
-
-#[cfg(unix)]
-fn restore_terminal(orig: &libc::termios) {
-    use std::os::unix::io::AsRawFd;
-    let fd = std::io::stdin().as_raw_fd();
-    unsafe {
-        libc::tcsetattr(fd, libc::TCSAFLUSH, orig);
-    }
-}
-
-#[cfg(unix)]
-fn terminal_size() -> Option<(u16, u16)> {
-    use std::os::unix::io::AsRawFd;
-    let fd = std::io::stdout().as_raw_fd();
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 {
-        Some((ws.ws_row, ws.ws_col))
-    } else {
-        None
     }
 }

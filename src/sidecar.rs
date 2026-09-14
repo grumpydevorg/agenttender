@@ -2046,7 +2046,15 @@ fn handle_attach_connection(
 
         loop {
             match attach_proto::read_msg(&mut stream) {
-                Ok((attach_proto::MSG_DATA, payload)) => writer.write_nowait(handle, payload),
+                Ok((attach_proto::MSG_DATA, payload)) => {
+                    // A full input queue must not hide a client that has left.
+                    let queued = writer.write_nowait_unless(handle, payload, || {
+                        crate::attach_socket::peer_hung_up(&stream)
+                    });
+                    if !queued {
+                        break;
+                    }
+                }
                 Ok((attach_proto::MSG_RESIZE, payload)) => {
                     if let Some((rows, cols)) = attach_proto::parse_resize(&payload) {
                         writer.resize(handle, rows, cols);

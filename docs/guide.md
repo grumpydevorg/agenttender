@@ -159,8 +159,12 @@ knowing:
 - **`tender push <name>`** feeds stdin to a session waiting on an interactive
   prompt: `printf 'y\n' | tender push dev`.
 - **`tender attach <name>`** connects your terminal to the live session for
-  hands-on interaction; detach and the session keeps running. It is refused
-  while another client holds the terminal.
+  hands-on interaction. Press **`Ctrl-\` then `d`** to detach; the session keeps
+  running. `Ctrl-\` twice sends one `Ctrl-\`, and `Ctrl-\` followed by any other
+  key sends both. `--escape none` turns the escape off so every key reaches the
+  session. Window resizes follow you, and your terminal settings are restored
+  however the attach ends. It is refused while another client holds the
+  terminal.
 - **`tender attach <name> --takeover`** takes the terminal anyway: the previous
   client is disconnected and any input it (or an in-flight `push`) had queued is
   dropped, never written. Use it to reconnect after a dropped SSH session.

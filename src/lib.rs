@@ -38,6 +38,7 @@
 //!   from it.
 //! - [`exec_frame`] / [`exec_request`] — the framed `exec` request/response
 //!   that rides SSH stdin instead of the remote argv.
+//! - [`attach_escape`] — the attach client's `Ctrl-\ d` detach escape.
 //! - `attach_socket` (Unix) — private, peer-verified attach sockets under the
 //!   state root.
 //! - [`pty_input`] — the sidecar's single PTY input writer and its control
@@ -63,6 +64,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod annotation;
+pub mod attach_escape;
 pub mod attach_proto;
 #[cfg(unix)]
 pub mod attach_socket;

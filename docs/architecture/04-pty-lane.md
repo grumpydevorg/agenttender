@@ -48,6 +48,14 @@ Current PTY rules:
   the start as `SpawnFailed` rather than running without a listener
 - both ends verify the peer's user id; the hello must complete within one overall
   deadline, and any frame declaring more than 64 KiB closes the connection
+- the `attach` CLI keeps keyboard, session writes, and terminal output on
+  separate paths: the main thread polls the keyboard and terminal size and only
+  queues messages (resize and detach ahead of keystrokes), a sender thread
+  writes them, and a reader thread writes output. `Ctrl-\ d` detaches (`Ctrl-\`
+  twice sends one; `--escape none` disables it); size changes are forwarded as
+  they happen. Leaving never waits on a blocked path, and the terminal is
+  restored without draining output. A connection whose input is backed up is
+  still released promptly when its client hangs up
 - while a human is attached, `push` is rejected
 - PTY output is merged and recorded as `O` lines in `output.log`; capture only
   offers output to the attached viewer's bounded queue (8 MiB), drained by that
@@ -83,4 +91,3 @@ Planned but not yet implemented (see the cloud PTY plan):
   viewer
 - runtime-directory and protected-temporary socket locations (only the
   persistent state root is implemented; other locations fail closed)
-- continuous resize forwarding and a detach escape in the `attach` CLI

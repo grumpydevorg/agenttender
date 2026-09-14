@@ -683,44 +683,95 @@ impl Drop for KillOnDrop<'_> {
 /// Run the real `tender attach` CLI inside a PTY, as a terminal user would.
 struct CliAttach {
     child: <tender::platform::Current as tender::platform::Platform>::SupervisedChild,
-    input: Box<dyn Write + Send>,
+    input: Option<Box<dyn Write + Send>>,
     output: Arc<Mutex<Vec<u8>>>,
+    /// While set, the terminal stops reading the CLI's output, as a stalled
+    /// terminal or SSH connection would.
+    output_paused: Arc<std::sync::atomic::AtomicBool>,
+    resize_fd: Option<std::fs::File>,
 }
 
 impl CliAttach {
     fn spawn(root: &TempDir, args: &[&str]) -> Self {
-        use tender::platform::{Current, Platform};
-        let mut argv = vec![
-            assert_cmd::cargo::cargo_bin("tender")
-                .to_string_lossy()
-                .into_owned(),
-            "attach".to_owned(),
-        ];
+        let mut argv = vec![tender_bin(), "attach".to_owned()];
         argv.extend(args.iter().map(|a| (*a).to_owned()));
+        Self::spawn_argv(root, &argv)
+    }
+
+    fn spawn_argv(root: &TempDir, argv: &[String]) -> Self {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tender::platform::{Current, Platform};
         let mut env = std::collections::BTreeMap::new();
         env.insert(
             "HOME".to_owned(),
             root.path().to_string_lossy().into_owned(),
         );
-        let mut child = Current::spawn_child_pty(&argv, None, &env).unwrap();
+        let mut child = Current::spawn_child_pty(argv, None, &env).unwrap();
+        // Take the resize handle before stdin takes the master's write half.
+        let resize_fd = Current::pty_resize_fd(&child);
         let input = Current::child_stdin(&mut child).unwrap();
         let mut reader = Current::child_stdout(&mut child).unwrap();
         let output = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&output);
+        let output_paused = Arc::new(AtomicBool::new(false));
+        let (sink, paused) = (Arc::clone(&output), Arc::clone(&output_paused));
         std::thread::spawn(move || {
             let mut chunk = [0u8; 4096];
-            while let Ok(n) = std::io::Read::read(&mut reader, &mut chunk) {
-                if n == 0 {
-                    break;
+            loop {
+                if paused.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
                 }
-                sink.lock().unwrap().extend_from_slice(&chunk[..n]);
+                match std::io::Read::read(&mut reader, &mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => sink.lock().unwrap().extend_from_slice(&chunk[..n]),
+                }
             }
         });
         Self {
             child,
-            input,
+            input: Some(input),
             output,
+            output_paused,
+            resize_fd,
         }
+    }
+
+    fn type_bytes(&mut self, bytes: &[u8]) {
+        self.input
+            .as_mut()
+            .expect("input still owned")
+            .write_all(bytes)
+            .unwrap();
+    }
+
+    /// Hand the terminal's keyboard to another thread (for writes that block).
+    fn take_input(&mut self) -> Box<dyn Write + Send> {
+        self.input.take().expect("input still owned")
+    }
+
+    fn pause_output(&self) {
+        self.output_paused
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn resume_output(&self) {
+        self.output_paused
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Resize the CLI's terminal, as a user resizing the Ghostty window would.
+    fn resize(&self, rows: u16, cols: u16) {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.resize_fd.as_ref().expect("resize handle").as_raw_fd();
+        let ws = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: `fd` is an open PTY master; TIOCSWINSZ takes a winsize pointer.
+        let rc = unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) };
+        assert_eq!(rc, 0, "resize the CLI's terminal");
     }
 
     /// Type `line` until the session log shows it. Keystrokes typed before the CLI
@@ -729,7 +780,7 @@ impl CliAttach {
     fn type_until_logged(&mut self, root: &TempDir, session: &str, line: &str) {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            self.input.write_all(line.as_bytes()).unwrap();
+            self.type_bytes(line.as_bytes());
             let output = tender(root)
                 .args(["log", session, "--raw"])
                 .output()
@@ -754,10 +805,328 @@ impl CliAttach {
 impl Drop for CliAttach {
     fn drop(&mut self) {
         use tender::platform::{Current, Platform};
+        self.resume_output();
         let kill = Current::child_kill_handle(&self.child);
         let _ = Current::kill_child(&kill, true);
         let _ = Current::child_wait(&mut self.child);
     }
+}
+
+fn tender_bin() -> String {
+    assert_cmd::cargo::cargo_bin("tender")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `tender attach` run by a shell in the CLI's terminal, recording the terminal
+/// settings (`stty -g`) before and after it and its exit code, so tests can
+/// prove the terminal was restored however the attach ended.
+struct WrappedAttach {
+    cli: CliAttach,
+    before: std::path::PathBuf,
+    after: std::path::PathBuf,
+    code: std::path::PathBuf,
+}
+
+impl WrappedAttach {
+    fn spawn(root: &TempDir, label: &str, args: &[&str]) -> Self {
+        let dir = root.path().join(format!("wrap-{label}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let q = |p: &std::path::Path| shell_words::quote(p.to_str().unwrap()).into_owned();
+        let (before, after, code) = (dir.join("before"), dir.join("after"), dir.join("code"));
+        let attach: Vec<String> = std::iter::once(tender_bin())
+            .chain(std::iter::once("attach".to_owned()))
+            .chain(args.iter().map(|a| (*a).to_owned()))
+            .map(|a| shell_words::quote(&a).into_owned())
+            .collect();
+        let script = format!(
+            "stty -g > {b}.tmp && mv {b}.tmp {b}; {cmd}; echo $? > {c}.tmp; \
+             stty -g > {a}.tmp; mv {a}.tmp {a}; mv {c}.tmp {c}; sleep 60",
+            b = q(&before),
+            a = q(&after),
+            c = q(&code),
+            cmd = attach.join(" "),
+        );
+        let cli = CliAttach::spawn_argv(root, &["sh".to_owned(), "-c".to_owned(), script]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !before.exists() {
+            assert!(Instant::now() < deadline, "wrapper never started");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Self {
+            cli,
+            before,
+            after,
+            code,
+        }
+    }
+
+    fn exited(&self) -> bool {
+        self.code.exists()
+    }
+
+    /// Wait for `tender attach` to exit and return its exit code.
+    fn wait_exit(&self, within: Duration) -> i32 {
+        let deadline = Instant::now() + within;
+        while !self.code.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "tender attach did not exit within {within:?}; cli output: {}",
+                self.cli.output()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::fs::read_to_string(&self.code)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    fn assert_terminal_restored(&self) {
+        let before = std::fs::read_to_string(&self.before).unwrap();
+        let after = std::fs::read_to_string(&self.after).unwrap();
+        assert_eq!(
+            before, after,
+            "terminal settings after attach differ from before"
+        );
+    }
+}
+
+#[test]
+fn cli_escape_detaches_and_restores_the_terminal() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-escape",
+    };
+    start_cat(&root, "pty-escape");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "escape", &["pty-escape"]);
+    wrapped
+        .cli
+        .type_until_logged(&root, "pty-escape", "before-detach\n");
+    wrapped.cli.type_bytes(b"\x1cd");
+
+    assert_eq!(wrapped.wait_exit(Duration::from_secs(10)), 0);
+    wrapped.assert_terminal_restored();
+    wait_for_pty_control(&root, "pty-escape", "AgentControl");
+    push(&root, "pty-escape", b"session-still-running\n");
+    wait_log_contains(&root, "pty-escape", "session-still-running");
+}
+
+/// A PTY child that shows control characters: `Ctrl-\` prints as `^\`.
+fn start_visible_cat(root: &TempDir, session: &str) {
+    tender(root)
+        .args(["start", session, "--pty", "--stdin", "--"])
+        .args(["sh", "-c", "stty raw -echo; exec cat -v"])
+        .output()
+        .unwrap();
+    harness::wait_running(root, session);
+}
+
+#[test]
+fn cli_doubled_escape_and_other_keys_reach_the_session_unchanged() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-literal",
+    };
+    start_visible_cat(&root, "pty-literal");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "literal", &["pty-literal"]);
+    wrapped
+        .cli
+        .type_until_logged(&root, "pty-literal", "literal-ready\n");
+    // Doubled prefix → one literal; prefix + other key → both; plain keys as typed.
+    wrapped.cli.type_bytes(b"A\x1c\x1cB\x1cxC\n");
+    wait_log_contains(&root, "pty-literal", "A^\\B^\\xC");
+    assert!(!wrapped.exited(), "no detach was requested");
+}
+
+#[test]
+fn cli_escape_none_forwards_the_detach_sequence() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-noescape",
+    };
+    start_visible_cat(&root, "pty-noescape");
+
+    let mut wrapped =
+        WrappedAttach::spawn(&root, "noescape", &["pty-noescape", "--escape", "none"]);
+    wrapped
+        .cli
+        .type_until_logged(&root, "pty-noescape", "none-ready\n");
+    wrapped.cli.type_bytes(b"N\x1cdM\n");
+    wait_log_contains(&root, "pty-noescape", "N^\\dM");
+    assert!(!wrapped.exited(), "--escape none must not detach");
+}
+
+#[test]
+fn cli_forwards_later_terminal_resizes() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-winch",
+    };
+    tender(&root)
+        .args(["start", "pty-winch", "--pty", "--stdin", "--", "sh"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-winch");
+
+    let mut cli = CliAttach::spawn(&root, &["pty-winch"]);
+    cli.type_until_logged(&root, "pty-winch", "echo winch-ready\n");
+
+    // Resized after the attach started: only continuous forwarding delivers it.
+    cli.resize(33, 111);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        cli.type_bytes(b"stty size\n");
+        let log = tender(&root)
+            .args(["log", "pty-winch", "--raw"])
+            .output()
+            .unwrap();
+        if String::from_utf8_lossy(&log.stdout).contains("33 111") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the session never saw the new size; cli output: {}",
+            cli.output()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[test]
+fn cli_takeover_by_another_client_restores_the_terminal() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-taken",
+    };
+    let sock_path = start_cat(&root, "pty-taken");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "taken", &["pty-taken"]);
+    wrapped
+        .cli
+        .type_until_logged(&root, "pty-taken", "before-takeover\n");
+    let (_other, (msg_type, _)) = hello(&sock_path, MODE_TAKEOVER);
+    assert_eq!(msg_type, MSG_ACCEPTED);
+
+    wrapped.wait_exit(Duration::from_secs(10));
+    wrapped.assert_terminal_restored();
+    assert!(
+        wrapped.cli.output().contains("took over"),
+        "the user is told why the attach ended: {}",
+        wrapped.cli.output()
+    );
+}
+
+#[test]
+fn cli_session_end_restores_the_terminal() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-ended",
+    };
+    start_cat(&root, "pty-ended");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "ended", &["pty-ended"]);
+    wrapped
+        .cli
+        .type_until_logged(&root, "pty-ended", "before-end\n");
+    tender(&root)
+        .args(["kill", "pty-ended", "--force"])
+        .output()
+        .unwrap();
+
+    wrapped.wait_exit(Duration::from_secs(10));
+    wrapped.assert_terminal_restored();
+}
+
+#[test]
+fn cli_detach_is_responsive_while_session_input_is_blocked() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-inblock",
+    };
+    // The child never reads its input, so everything typed backs up.
+    tender(&root)
+        .args(["start", "pty-inblock", "--pty", "--stdin", "--"])
+        .args([
+            "sh",
+            "-c",
+            "stty raw -echo; while true; do printf READY; sleep 0.2; done",
+        ])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-inblock");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "inblock", &["pty-inblock"]);
+    // Relayed output proves the CLI is in raw mode, so Ctrl-\ is not SIGQUIT.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !wrapped.cli.output().contains("READY") {
+        assert!(Instant::now() < deadline, "attach never relayed output");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let mut keyboard = wrapped.cli.take_input();
+    let typist = std::thread::spawn(move || {
+        let _ = keyboard.write_all(&vec![b'x'; 256 * 1024]);
+        let _ = keyboard.write_all(b"\x1cd");
+        keyboard
+    });
+
+    assert_eq!(wrapped.wait_exit(Duration::from_secs(15)), 0);
+    wrapped.assert_terminal_restored();
+    wait_for_pty_control(&root, "pty-inblock", "AgentControl");
+    drop(typist.join());
+}
+
+#[test]
+fn cli_detach_is_responsive_while_terminal_output_is_blocked() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-outblock",
+    };
+    tender(&root)
+        .args(["start", "pty-outblock", "--pty", "--stdin", "--"])
+        .args(["sh", "-c", "stty raw -echo; yes OUTPUT-FLOOD"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-outblock");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "outblock", &["pty-outblock"]);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !wrapped.cli.output().contains("OUTPUT-FLOOD") {
+        assert!(Instant::now() < deadline, "attach never relayed output");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // The terminal stops reading; the flood fills its output buffer and the
+    // CLI's writes to it block. That state cannot be observed directly, so give
+    // the flood a moment to fill it.
+    wrapped.cli.pause_output();
+    std::thread::sleep(Duration::from_millis(500));
+    wrapped.cli.type_bytes(b"\x1cd");
+
+    let code = wrapped.wait_exit(Duration::from_secs(15));
+    wrapped.cli.resume_output();
+    assert_eq!(code, 0);
+    wrapped.assert_terminal_restored();
 }
 
 #[test]

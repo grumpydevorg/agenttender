@@ -222,6 +222,40 @@ impl InputWriter {
         }
     }
 
+    /// Like [`InputWriter::write_nowait`], but give up waiting for queue space
+    /// as soon as `abandon` returns `true` (checked at least every 50 ms), so a
+    /// sender whose client has gone is not stuck behind a full queue. Returns
+    /// `false` if abandoned; nothing was queued then.
+    pub fn write_nowait_unless(
+        &self,
+        handle: ControllerHandle,
+        bytes: Vec<u8>,
+        abandon: impl Fn() -> bool,
+    ) -> bool {
+        let Some(request) = self.request(handle, bytes) else {
+            return true;
+        };
+        let mut queues = self.shared.lock();
+        while queues.inputs.len() >= INPUT_CAPACITY {
+            if abandon() {
+                return false;
+            }
+            queues = self
+                .shared
+                .space
+                .wait_timeout(queues, Duration::from_millis(50))
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        queues.inputs.push_back(InputItem::Write {
+            request,
+            reply: None,
+        });
+        drop(queues);
+        self.shared.work.notify_one();
+        true
+    }
+
     /// Release `handle` once every input it queued before this call is done.
     /// A handle that no longer authorizes releases nothing.
     pub fn end_of_input(&self, handle: ControllerHandle) {
@@ -679,6 +713,44 @@ mod tests {
                 .is_ok(),
             "released once its input was written"
         );
+    }
+
+    /// Records applied window sizes; accepts all input.
+    #[derive(Clone, Default)]
+    struct SizedPty(Arc<Mutex<Vec<(u16, u16)>>>);
+
+    impl PtyInputSink for SizedPty {
+        fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+    }
+
+    impl WritablePty for SizedPty {
+        fn wait_writable(&self, _timeout: Duration) -> io::Result<bool> {
+            Ok(true)
+        }
+
+        fn resize(&self, rows: u16, cols: u16) {
+            self.0.lock().unwrap().push((rows, cols));
+        }
+    }
+
+    #[test]
+    fn only_the_current_controller_can_resize() {
+        let pty = SizedPty::default();
+        let writer = InputWriter::spawn(RunId::new(), pty.clone(), Recorded::default());
+        let old = writer
+            .claim(writer.next_holder(), ControllerKind::Human)
+            .unwrap();
+        let new = writer.takeover(writer.next_holder()).unwrap().handle;
+
+        writer.resize(old, 10, 20);
+        writer.resize(new, 30, 40);
+        // Controls are served in order; a claim round-trip proves both resizes
+        // were processed before asserting.
+        let _ = writer.claim(writer.next_holder(), ControllerKind::Agent);
+
+        assert_eq!(pty.0.lock().unwrap().as_slice(), &[(30, 40)]);
     }
 
     #[test]

@@ -25,6 +25,17 @@ enum CliExecTarget {
     None,
 }
 
+/// The attach client's detach escape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum AttachEscape {
+    /// Ctrl-\ then d detaches; Ctrl-\ twice sends one Ctrl-\
+    #[value(name = "ctrl-backslash")]
+    CtrlBackslash,
+    /// No escape: every key goes to the session
+    #[value(name = "none")]
+    None,
+}
+
 impl From<CliExecTarget> for tender::model::spec::ExecTarget {
     fn from(c: CliExecTarget) -> Self {
         match c {
@@ -412,6 +423,10 @@ enum Commands {
         /// and dropping its queued input
         #[arg(long)]
         takeover: bool,
+        /// Detach escape: `ctrl-backslash` (Ctrl-\ then d detaches; Ctrl-\ twice
+        /// sends one Ctrl-\) or `none` (every key goes to the session)
+        #[arg(long, value_enum, default_value_t = AttachEscape::CtrlBackslash)]
+        escape: AttachEscape,
     },
     /// Print the usage guide (embedded), optionally a single topic
     ///
@@ -647,6 +662,7 @@ impl Commands {
                 name,
                 namespace,
                 takeover,
+                escape,
             } => {
                 let mut args = vec!["attach".to_string(), name.clone()];
                 if let Some(ns) = namespace {
@@ -654,6 +670,9 @@ impl Commands {
                 }
                 if *takeover {
                     args.push("--takeover".to_string());
+                }
+                if *escape == AttachEscape::None {
+                    args.extend(["--escape".to_string(), "none".to_string()]);
                 }
                 args
             }
@@ -1187,7 +1206,14 @@ fn main() {
             name,
             namespace,
             takeover,
-        } => resolve_namespace(namespace).and_then(|ns| commands::cmd_attach(&name, &ns, takeover)),
+            escape,
+        } => resolve_namespace(namespace).and_then(|ns| {
+            let mode = match escape {
+                AttachEscape::CtrlBackslash => tender::attach_escape::EscapeMode::CtrlBackslash,
+                AttachEscape::None => tender::attach_escape::EscapeMode::Disabled,
+            };
+            commands::cmd_attach(&name, &ns, takeover, mode)
+        }),
         Commands::Guide { topic } => commands::cmd_guide(topic.as_deref()),
         Commands::Skill { action } => match action {
             SkillAction::Print => commands::cmd_skill_print(),
