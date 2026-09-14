@@ -1091,3 +1091,42 @@ fn stalled_viewer_cannot_block_output_capture() {
     let _ = read_until_closed(&mut stalled);
     wait_for_pty_control(&root, "pty-stalled", "AgentControl");
 }
+
+#[test]
+fn detach_releases_control_even_when_pty_input_is_full() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-full-detach",
+    };
+    // The child never reads its input, so the PTY input buffer fills.
+    tender(&root)
+        .args(["start", "pty-full-detach", "--pty", "--stdin", "--"])
+        .args(["sh", "-c", "stty raw -echo; printf READY; sleep 60"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-full-detach");
+    wait_log_contains(&root, "pty-full-detach", "READY");
+    let sock_path = wait_for_attach_socket(&root, "pty-full-detach");
+
+    let mut human = attach_as_human(&sock_path);
+    human
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    for _ in 0..16 {
+        write_msg(&mut human, MSG_DATA, &vec![b'x'; 65536]);
+    }
+    write_msg(&mut human, MSG_DETACH, &[]);
+    let _ = read_until_closed(&mut human);
+
+    // The detached client must not keep control behind its unwritable input.
+    wait_for_pty_control(&root, "pty-full-detach", "AgentControl");
+    let (_next, (msg_type, reason)) = hello(&sock_path, MODE_ATTACH);
+    assert_eq!(
+        msg_type,
+        MSG_ACCEPTED,
+        "a detached client still holds control: {}",
+        String::from_utf8_lossy(&reason)
+    );
+}

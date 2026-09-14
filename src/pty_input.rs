@@ -78,6 +78,8 @@ enum Control {
         rows: u16,
         cols: u16,
     },
+    /// Release now and cancel everything the holder still has queued.
+    Disconnect { handle: ControllerHandle },
 }
 
 enum InputItem {
@@ -214,6 +216,14 @@ impl InputWriter {
         self.push_input(InputItem::End { handle, done: None });
     }
 
+    /// The controller behind `handle` disconnected: release it now, ahead of any
+    /// queued input, and cancel everything it still has queued or in flight.
+    /// Unlike [`InputWriter::end_of_input`], nothing it queued is written after
+    /// this is served, so a full PTY cannot keep a vanished client in control.
+    pub fn disconnect(&self, handle: ControllerHandle) {
+        self.push_control(Control::Disconnect { handle });
+    }
+
     /// Like [`InputWriter::end_of_input`], but wait until the release happened.
     pub fn end_of_input_and_wait(&self, handle: ControllerHandle) {
         let (done, rx) = sync_channel(1);
@@ -290,20 +300,38 @@ fn writer_loop<P: WritablePty, H: ControlHooks>(
         };
         shared.space.notify_all();
 
-        for control in controls {
-            apply_control(control, &mut arbiter, &mut kinds, &pty, &mut hooks);
-        }
-
+        // Stage the dequeued item first, so a disconnect served below can cancel
+        // it along with everything else its holder queued.
+        let mut next_end = None;
         match next_input {
             Some(InputItem::Write { request, reply }) => current = Some(Current { request, reply }),
-            Some(InputItem::End { handle, done }) => {
-                release(&mut arbiter, &mut kinds, handle, &mut hooks);
-                if let Some(done) = done {
-                    let _ = done.send(());
-                }
-                continue;
-            }
+            Some(end @ InputItem::End { .. }) => next_end = Some(end),
             None => {}
+        }
+
+        for control in controls {
+            if let Control::Disconnect { handle } = control {
+                disconnect(
+                    handle,
+                    shared,
+                    &mut arbiter,
+                    &mut kinds,
+                    &mut pty,
+                    &mut hooks,
+                    &mut current,
+                    &mut next_end,
+                );
+            } else {
+                apply_control(control, &mut arbiter, &mut kinds, &pty, &mut hooks);
+            }
+        }
+
+        if let Some(InputItem::End { handle, done }) = next_end {
+            release(&mut arbiter, &mut kinds, handle, &mut hooks);
+            if let Some(done) = done {
+                let _ = done.send(());
+            }
+            continue;
         }
 
         let Some(mut writing) = current.take() else {
@@ -336,6 +364,85 @@ fn writer_loop<P: WritablePty, H: ControlHooks>(
                 current = Some(writing);
             }
         }
+    }
+}
+
+/// Serve a disconnect ahead of all input: release `handle` if it is current,
+/// then cancel every input its holder still has staged, queued, or in flight.
+///
+/// Each cancelled write is finished through [`InputArbiter::write_step`], which
+/// cannot reach the PTY once the handle no longer authorizes, so callers waiting
+/// on an outcome receive `NotAuthorized` with the exact accepted count. The
+/// holder's revoked bytes are reported once, in aggregate.
+#[allow(clippy::too_many_arguments)]
+fn disconnect<P: WritablePty, H: ControlHooks>(
+    handle: ControllerHandle,
+    shared: &Shared,
+    arbiter: &mut InputArbiter,
+    kinds: &mut HashMap<HolderId, ControllerKind>,
+    pty: &mut P,
+    hooks: &mut H,
+    current: &mut Option<Current>,
+    next_end: &mut Option<InputItem>,
+) {
+    let holder = handle.holder();
+    let kind = kinds.get(&holder).copied();
+    release(arbiter, kinds, handle, hooks);
+
+    let belongs = |item: &InputItem| match item {
+        InputItem::Write { request, .. } => request.handle().holder() == holder,
+        InputItem::End { handle, .. } => handle.holder() == holder,
+    };
+    let mut cancelled: Vec<InputItem> = {
+        let mut queues = shared.lock();
+        let (theirs, others): (VecDeque<_>, VecDeque<_>) =
+            queues.inputs.drain(..).partition(|item| belongs(item));
+        queues.inputs = others;
+        theirs.into_iter().collect()
+    };
+    shared.space.notify_all();
+    if next_end.as_ref().is_some_and(belongs) {
+        cancelled.extend(next_end.take());
+    }
+    if current
+        .as_ref()
+        .is_some_and(|c| c.request.handle().holder() == holder)
+    {
+        if let Some(Current { request, reply }) = current.take() {
+            cancelled.push(InputItem::Write { request, reply });
+        }
+    }
+
+    let (mut accepted_total, mut bytes_total) = (0, 0);
+    for item in cancelled {
+        match item {
+            InputItem::Write { mut request, reply } => {
+                if let WriteStep::Done(outcome) = arbiter.write_step(&mut request, pty) {
+                    if let InputOutcome::Incomplete {
+                        accepted, total, ..
+                    } = outcome
+                    {
+                        accepted_total += accepted;
+                        bytes_total += total;
+                    }
+                    if let Some(reply) = reply {
+                        let _ = reply.send(outcome);
+                    }
+                }
+            }
+            InputItem::End { done, .. } => {
+                if let Some(done) = done {
+                    let _ = done.send(());
+                }
+            }
+        }
+    }
+    if bytes_total > 0 {
+        hooks.input_revoked(
+            kind.unwrap_or(ControllerKind::Human),
+            accepted_total,
+            bytes_total,
+        );
     }
 }
 
@@ -377,6 +484,12 @@ fn apply_control<P: WritablePty, H: ControlHooks>(
                 pty.resize(rows, cols);
             }
         }
+        Control::Disconnect { .. } => {
+            debug_assert!(
+                false,
+                "disconnect needs the queues; the writer loop serves it"
+            );
+        }
     }
 }
 
@@ -401,5 +514,149 @@ fn release<H: ControlHooks>(
     kinds.remove(&handle.holder());
     if released && human_owned {
         hooks.human_released();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// A PTY whose input buffer is permanently full: the child never reads.
+    struct FullPty;
+
+    impl PtyInputSink for FullPty {
+        fn try_write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::WouldBlock.into())
+        }
+    }
+
+    impl WritablePty for FullPty {
+        fn wait_writable(&self, timeout: Duration) -> io::Result<bool> {
+            std::thread::sleep(timeout.min(Duration::from_millis(1)));
+            Ok(false)
+        }
+
+        fn resize(&self, _rows: u16, _cols: u16) {}
+    }
+
+    /// A PTY that accepts one byte per attempt and records everything written.
+    #[derive(Clone, Default)]
+    struct SlowPty(Arc<Mutex<Vec<u8>>>);
+
+    impl PtyInputSink for SlowPty {
+        fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().push(bytes[0]);
+            Ok(1)
+        }
+    }
+
+    impl WritablePty for SlowPty {
+        fn wait_writable(&self, _timeout: Duration) -> io::Result<bool> {
+            Ok(true)
+        }
+
+        fn resize(&self, _rows: u16, _cols: u16) {}
+    }
+
+    /// Records hook calls in order.
+    #[derive(Clone, Default)]
+    struct Recorded(Arc<Mutex<Vec<String>>>);
+
+    impl Recorded {
+        fn calls(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl ControlHooks for Recorded {
+        fn human_control(&mut self, trigger: &'static str) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("human_control:{trigger}"));
+        }
+
+        fn human_released(&mut self) {
+            self.0.lock().unwrap().push("human_released".to_owned());
+        }
+
+        fn retire(&mut self, holder: HolderId, kind: ControllerKind, epoch: ControllerEpoch) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("retire:{}:{kind:?}:{epoch}", holder.get()));
+        }
+
+        fn input_revoked(&mut self, kind: ControllerKind, accepted: usize, total: usize) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("input_revoked:{kind:?}:{accepted}:{total}"));
+        }
+    }
+
+    #[test]
+    fn disconnect_releases_ahead_of_input_stuck_behind_a_full_pty() {
+        let hooks = Recorded::default();
+        let writer = InputWriter::spawn(RunId::new(), FullPty, hooks.clone());
+        let human = writer
+            .claim(writer.next_holder(), ControllerKind::Human)
+            .unwrap();
+        for _ in 0..4 {
+            writer.write_nowait(human, vec![b'x'; 1024]);
+        }
+        let stuck = {
+            let writer = writer.clone();
+            std::thread::spawn(move || writer.write(human, b"never-written".to_vec()))
+        };
+
+        writer.disconnect(human);
+
+        // Control is free again even though the PTY never accepts input.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let next = loop {
+            match writer.claim(writer.next_holder(), ControllerKind::Human) {
+                Ok(handle) => break handle,
+                Err(e) => assert!(
+                    Instant::now() < deadline,
+                    "a disconnected client still holds control: {e}"
+                ),
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(next.epoch() > human.epoch());
+
+        // The disconnected client's in-flight write is cancelled, not written.
+        match stuck.join().unwrap() {
+            Some(InputOutcome::Incomplete {
+                accepted: 0,
+                reason: IncompleteReason::NotAuthorized(_),
+                ..
+            }) => {}
+            other => panic!("the stuck write must be revoked, got {other:?}"),
+        }
+        assert!(hooks.calls().contains(&"human_released".to_owned()));
+    }
+
+    #[test]
+    fn end_of_input_still_drains_before_release() {
+        let pty = SlowPty::default();
+        let writer = InputWriter::spawn(RunId::new(), pty.clone(), Recorded::default());
+        let agent = writer
+            .claim(writer.next_holder(), ControllerKind::Agent)
+            .unwrap();
+        writer.write_nowait(agent, b"first".to_vec());
+        writer.write_nowait(agent, b"second".to_vec());
+
+        writer.end_of_input_and_wait(agent);
+
+        assert_eq!(pty.0.lock().unwrap().as_slice(), b"firstsecond");
+        assert!(
+            writer
+                .claim(writer.next_holder(), ControllerKind::Agent)
+                .is_ok(),
+            "released once its input was written"
+        );
     }
 }

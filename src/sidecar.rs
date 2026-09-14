@@ -1601,10 +1601,15 @@ impl crate::pty_input::ControlHooks for SidecarControlHooks {
             // Agent pushes learn of revocation from their write outcomes.
             return;
         }
-        // Retiring may wait on a stalled connection; never block the writer.
-        let registry = self.registry.clone();
+        // Forget the connection now, on the writer thread, before the successor
+        // is granted control: from here on it can never install a viewer.
+        let Some(entry) = self.registry.remove(holder) else {
+            return;
+        };
+        // Notifying and shutting down may wait on a stalled connection; never
+        // block the writer with that.
         let sink = Arc::clone(&self.attach_sink);
-        std::thread::spawn(move || retire_connection(holder, epoch, &registry, &sink));
+        std::thread::spawn(move || retire_connection(holder, epoch, entry, &sink));
     }
 
     fn input_revoked(
@@ -1620,21 +1625,18 @@ impl crate::pty_input::ControlHooks for SidecarControlHooks {
     }
 }
 
-/// Retire a superseded connection: forget it first (so it can never install a
-/// viewer), tell it best-effort, then shut the socket down, which also unblocks
-/// any output write stuck on it.
+/// Finish retiring a connection the takeover hook has already removed from the
+/// registry: tell it best-effort, shut the socket down (which also unblocks any
+/// output write stuck on it), and drop its viewer if it had installed one.
 #[cfg(unix)]
 fn retire_connection(
     holder: crate::model::pty_control::HolderId,
     epoch: crate::model::pty_control::ControllerEpoch,
-    registry: &ConnectionRegistry,
+    entry: Registered,
     sink: &AttachSink,
 ) {
     use crate::attach_proto;
 
-    let Some(entry) = registry.remove(holder) else {
-        return;
-    };
     let _ = entry
         .control
         .set_write_timeout(Some(std::time::Duration::from_millis(200)));
@@ -1655,6 +1657,23 @@ fn retire_connection(
         if let Some(v) = viewer.take() {
             v.queue.close();
         }
+    }
+}
+
+/// Install `viewer` unless its connection has been retired.
+///
+/// The registry check and the install happen under the sink lock. Combined
+/// with retirement removing the holder from the registry synchronously (on the
+/// writer thread, before the successor is even granted control), a retired
+/// connection can never install its viewer over its successor's.
+#[cfg(unix)]
+fn install_viewer(registry: &ConnectionRegistry, sink: &AttachSink, viewer: AttachViewer) -> bool {
+    let mut current = lock(sink);
+    if registry.contains(viewer.holder) {
+        *current = Some(viewer);
+        true
+    } else {
+        false
     }
 }
 
@@ -1774,20 +1793,20 @@ fn handle_attach_connection(
             let (queue, conn) = (Arc::clone(&queue), Arc::clone(&conn));
             std::thread::spawn(move || run_viewer_sender(&queue, &conn))
         };
-        let mut viewer = lock(attach_sink);
-        // A connection retired in the meantime must not displace its successor.
-        if registry.contains(holder) {
-            if let Ok(shutdown) = stream.try_clone() {
-                *viewer = Some(AttachViewer {
+        if let Ok(shutdown) = stream.try_clone() {
+            // Refused if this connection was retired in the meantime.
+            install_viewer(
+                registry,
+                attach_sink,
+                AttachViewer {
                     holder,
                     queue: Arc::clone(&queue),
                     disconnect: Box::new(move || {
                         let _ = shutdown.shutdown(std::net::Shutdown::Both);
                     }),
-                });
-            }
+                },
+            );
         }
-        drop(viewer);
         drop(sender); // detached: exits when the queue or connection closes
 
         loop {
@@ -1804,7 +1823,9 @@ fn handle_attach_connection(
         }
     }
 
-    writer.end_of_input(handle);
+    // Detach, disconnect, or retirement: release ahead of queued input and
+    // cancel what this client still has queued.
+    writer.disconnect(handle);
     registry.remove(holder);
     let mut viewer = lock(attach_sink);
     if viewer.as_ref().is_some_and(|v| v.holder == holder) {
@@ -1862,6 +1883,55 @@ mod tests {
     use crate::model::pty::PtyControl;
     use crate::model::spec::LaunchSpec;
     use std::num::NonZeroU32;
+
+    #[cfg(unix)]
+    #[test]
+    fn takeover_retirement_refuses_the_old_viewer_before_the_hook_returns() {
+        use crate::model::pty_control::{ControllerEpoch, ControllerKind, HolderId};
+        use crate::pty_input::ControlHooks;
+        use std::os::unix::net::UnixStream;
+
+        let dir = tempfile::tempdir().unwrap();
+        let registry = ConnectionRegistry::default();
+        let sink: AttachSink = Arc::new(Mutex::new(None));
+        let (old_conn, _peer) = UnixStream::pair().unwrap();
+        let old = HolderId::new(1);
+        registry.insert(
+            old,
+            Registered {
+                conn: Arc::new(Mutex::new(Box::new(old_conn.try_clone().unwrap()))),
+                control: old_conn,
+            },
+        );
+        let mut hooks = SidecarControlHooks {
+            session_dir: dir.path().to_path_buf(),
+            facts: LifecycleEvents::with_fresh_writer(
+                dir.path(),
+                &Namespace::new("default").unwrap(),
+                &SessionName::new("retire").unwrap(),
+                RunId::new(),
+                Generation::first(),
+            ),
+            registry: registry.clone(),
+            attach_sink: Arc::clone(&sink),
+        };
+
+        hooks.retire(old, ControllerKind::Human, ControllerEpoch::new(2));
+
+        // No waiting: the old connection may try to install at any instant after
+        // the takeover is decided, including before any notification thread runs.
+        let installed = install_viewer(
+            &registry,
+            &sink,
+            AttachViewer {
+                holder: old,
+                queue: Arc::new(ViewerQueue::default()),
+                disconnect: Box::new(|| {}),
+            },
+        );
+        assert!(!installed, "a retired connection installed its viewer");
+        assert!(lock(&sink).is_none());
+    }
 
     /// Write a PTY-enabled meta.json (AgentControl by default) into `dir`.
     fn write_pty_meta(dir: &Path) -> Meta {
