@@ -487,7 +487,7 @@ pub struct DecodeError {
 ///
 /// [`DecodeError`] for any corruption or rule violation.
 pub fn decode_segment(bytes: &[u8]) -> Result<DecodedSegment, DecodeError> {
-    decode_segment_with_summary(bytes).map(|(segment, _)| segment)
+    decode_segment_with_summary(bytes, None).map(|(segment, _)| segment)
 }
 
 /// What cross-segment validation needs from a decoded segment.
@@ -498,8 +498,42 @@ struct SegmentSummary {
     next_sequence: Option<Sequence>,
     last_sequence: Option<Sequence>,
     last_elapsed_ns: Option<u64>,
-    first_elapsed_ns: Option<u64>,
     final_geometry: Geometry,
+}
+
+/// Where a segment sits in a recording and what it must continue from.
+///
+/// Continuity is checked against the header before any record is read, and
+/// against the first record before it is accepted. A segment that breaks
+/// continuity therefore contributes no records to a failure's
+/// `last_valid_sequence`, whatever corruption follows it.
+struct Continuity<'a> {
+    position: u32,
+    /// Segment 0's header and the previous segment's summary; `None` for the
+    /// first segment.
+    previous: Option<(&'a SegmentHeader, SegmentSummary)>,
+}
+
+fn check_header_continuity(header: &SegmentHeader, continuity: &Continuity) -> Option<Violation> {
+    if header.segment_index != continuity.position {
+        return Some(Violation::SegmentIndex);
+    }
+    let (first, prev) = continuity.previous?;
+    if header.run_id != first.run_id {
+        Some(Violation::SegmentRun)
+    } else if header.origin_unix_ns != first.origin_unix_ns {
+        Some(Violation::SegmentOrigin)
+    } else if header.input_recorded != first.input_recorded {
+        Some(Violation::SegmentFlags)
+    } else if header.term != first.term {
+        Some(Violation::SegmentTerm)
+    } else if prev.next_sequence != Some(header.first_sequence) {
+        Some(Violation::SegmentFirstSequence)
+    } else if header.geometry != prev.final_geometry {
+        Some(Violation::SegmentGeometry)
+    } else {
+        None
+    }
 }
 
 fn error_at(kind: DecodeErrorKind, offset: usize, last: Option<Sequence>) -> DecodeError {
@@ -658,14 +692,20 @@ fn decode_body(
 
 fn decode_segment_with_summary(
     bytes: &[u8],
+    continuity: Option<&Continuity>,
 ) -> Result<(DecodedSegment, SegmentSummary), DecodeError> {
     let (header, header_len) = decode_header(bytes).map_err(|kind| error_at(kind, 0, None))?;
+    if let Some(violation) = continuity.and_then(|c| check_header_continuity(&header, c)) {
+        return Err(error_at(DecodeErrorKind::Invalid(violation), 0, None));
+    }
+    let previous_elapsed_ns = continuity
+        .and_then(|c| c.previous)
+        .and_then(|(_, prev)| prev.last_elapsed_ns);
     let mut summary = SegmentSummary {
         header_len,
         next_sequence: Some(header.first_sequence),
         last_sequence: None,
         last_elapsed_ns: None,
-        first_elapsed_ns: None,
         final_geometry: header.geometry,
     };
     let mut records = Vec::new();
@@ -698,11 +738,17 @@ fn decode_segment_with_summary(
         }
         let record = decode_body(&bytes[pos + PREFIX_LEN..crc_at], &header, &summary)
             .map_err(|v| error_at(DecodeErrorKind::Invalid(v), pos, summary.last_sequence))?;
+        if records.is_empty() && previous_elapsed_ns.is_some_and(|prev| record.elapsed_ns < prev) {
+            return Err(error_at(
+                DecodeErrorKind::Invalid(Violation::SegmentElapsed),
+                pos,
+                None,
+            ));
+        }
 
         summary.next_sequence = record.sequence.next();
         summary.last_sequence = Some(record.sequence);
         summary.last_elapsed_ns = Some(record.elapsed_ns);
-        summary.first_elapsed_ns.get_or_insert(record.elapsed_ns);
         if let RecordKind::Resize { geometry, .. } = record.kind {
             summary.final_geometry = geometry;
         }
@@ -750,13 +796,17 @@ where
             ..error_at(kind, offset, last)
         };
         let last_so_far = previous.and_then(|p| p.last_sequence);
-        let (segment, summary) = decode_segment_with_summary(bytes).map_err(|e| DecodeError {
-            segment: Some(position),
-            last_valid_sequence: e.last_valid_sequence.or(last_so_far),
-            ..e
-        })?;
+        let continuity = Continuity {
+            position,
+            previous: first.as_ref().zip(previous),
+        };
+        let (segment, summary) =
+            decode_segment_with_summary(bytes, Some(&continuity)).map_err(|e| DecodeError {
+                segment: Some(position),
+                last_valid_sequence: e.last_valid_sequence.or(last_so_far),
+                ..e
+            })?;
         let is_final = segments.peek().is_none();
-        let header = &segment.header;
 
         if let (SegmentEnd::Truncated { offset }, false) = (segment.end, is_final) {
             return Err(DecodeError {
@@ -770,34 +820,6 @@ where
         }
 
         let invalid = |v, offset| at(DecodeErrorKind::Invalid(v), offset, last_so_far);
-        if header.segment_index != position {
-            return Err(invalid(Violation::SegmentIndex, 0));
-        }
-        if let (Some(first), Some(prev)) = (&first, previous) {
-            if header.run_id != first.run_id {
-                return Err(invalid(Violation::SegmentRun, 0));
-            }
-            if header.origin_unix_ns != first.origin_unix_ns {
-                return Err(invalid(Violation::SegmentOrigin, 0));
-            }
-            if header.input_recorded != first.input_recorded {
-                return Err(invalid(Violation::SegmentFlags, 0));
-            }
-            if header.term != first.term {
-                return Err(invalid(Violation::SegmentTerm, 0));
-            }
-            if prev.next_sequence != Some(header.first_sequence) {
-                return Err(invalid(Violation::SegmentFirstSequence, 0));
-            }
-            if header.geometry != prev.final_geometry {
-                return Err(invalid(Violation::SegmentGeometry, 0));
-            }
-            if let (Some(before), Some(after)) = (prev.last_elapsed_ns, summary.first_elapsed_ns) {
-                if after < before {
-                    return Err(invalid(Violation::SegmentElapsed, summary.header_len));
-                }
-            }
-        }
         if segment.records.is_empty() && !is_final {
             return Err(invalid(Violation::EmptyInteriorSegment, summary.header_len));
         }

@@ -978,6 +978,84 @@ fn only_the_final_segment_may_be_truncated() {
 }
 
 // ---------------------------------------------------------------------------
+// Recovery boundary: last_valid_sequence never includes records that break
+// cross-segment rules, even when a later record in that segment is corrupt.
+// ---------------------------------------------------------------------------
+
+/// Segment 1 with a valid-looking first record, then a record whose checksum is
+/// broken. `header` is adjusted by `mutate`.
+fn seg1_then_bad_checksum(
+    first: &SegmentEncoder,
+    mutate: impl FnOnce(&mut SegmentHeader),
+    sequence: u64,
+    elapsed_ns: u64,
+) -> Vec<u8> {
+    let mut header = first.next_segment().unwrap().header().clone();
+    mutate(&mut header);
+    let mut bytes = segment_with_header(
+        header,
+        &[
+            output(sequence, elapsed_ns, b"not-a-valid-prefix"),
+            output(sequence + 1, elapsed_ns + 1, b"bad-checksum"),
+        ],
+    );
+    *bytes.last_mut().unwrap() ^= 0x01;
+    bytes
+}
+
+fn assert_recovery_boundary(seg1: &[u8], kind: DecodeErrorKind, last_valid: u64) {
+    let (seg0, _) = two_segments();
+    let err = decode_recording([seg0.as_slice(), seg1]).unwrap_err();
+    assert_eq!(err.kind, kind, "the continuity violation is reported first");
+    assert_eq!(err.segment, Some(1));
+    assert_eq!(
+        err.last_valid_sequence.map(Sequence::get),
+        Some(last_valid),
+        "recovery boundary"
+    );
+}
+
+#[test]
+fn foreign_run_segment_does_not_advance_the_recovery_boundary() {
+    let (_, first) = two_segments();
+    let seg1 = seg1_then_bad_checksum(&first, |h| h.run_id = RunId::new(), 5, 3_000_000);
+    assert_recovery_boundary(&seg1, DecodeErrorKind::Invalid(Violation::SegmentRun), 4);
+}
+
+#[test]
+fn sequence_gap_segment_does_not_advance_the_recovery_boundary() {
+    let (_, first) = two_segments();
+    let seg1 = seg1_then_bad_checksum(&first, |h| h.first_sequence = seq(100), 100, 3_000_000);
+    assert_recovery_boundary(
+        &seg1,
+        DecodeErrorKind::Invalid(Violation::SegmentFirstSequence),
+        4,
+    );
+}
+
+#[test]
+fn time_regressing_segment_does_not_advance_the_recovery_boundary() {
+    let (_, first) = two_segments();
+    let seg1 = seg1_then_bad_checksum(&first, |_| {}, 5, 0);
+    assert_recovery_boundary(
+        &seg1,
+        DecodeErrorKind::Invalid(Violation::SegmentElapsed),
+        4,
+    );
+}
+
+#[test]
+fn continuing_segment_with_a_later_bad_checksum_keeps_its_valid_records() {
+    let (_, first) = two_segments();
+    let seg1 = seg1_then_bad_checksum(&first, |_| {}, 5, 3_000_000);
+    assert_recovery_boundary(
+        &seg1,
+        DecodeErrorKind::Corrupt(Corruption::RecordChecksum),
+        5,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Properties
 // ---------------------------------------------------------------------------
 

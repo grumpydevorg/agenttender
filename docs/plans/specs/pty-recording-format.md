@@ -151,6 +151,14 @@ Across the segments of one recording:
 
 Violations → `Invalid(...)` unless stated otherwise.
 
+**Check continuity before trusting a segment's records.** When decoding a
+recording, a segment's header continuity rules (index, identity fields,
+`first_sequence`, geometry) are checked immediately after its header decodes, and
+elapsed-time continuity is checked on its first record before that record is
+accepted. The last valid sequence reported with any later error therefore never
+includes a record from a segment that breaks continuity, even if corruption
+follows it in the same segment.
+
 ## Golden fixture
 
 `tests/fixtures/recording/v1-segment0.hex` is annotated hex (lines starting with
