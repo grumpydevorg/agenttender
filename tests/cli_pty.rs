@@ -6,8 +6,13 @@ use harness::tender;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
-use tender::attach_proto::{MSG_DATA, MSG_DETACH, MSG_RESIZE, read_msg, resize_payload};
+use tender::attach_proto::{
+    MODE_ATTACH, MODE_PUSH, MODE_TAKEOVER, MSG_ACCEPTED, MSG_DATA, MSG_DETACH, MSG_HELLO,
+    MSG_INPUT_DONE, MSG_REJECTED, MSG_RESIZE, MSG_RETIRED, PROTOCOL_VERSION, read_msg,
+    resize_payload,
+};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -324,10 +329,77 @@ fn wait_for_attach_socket(root: &TempDir, session: &str) -> std::path::PathBuf {
     }
 }
 
-/// Connect to the attach socket and hold the connection (simulating a human).
+/// Connect, send a v1 hello in `mode`, and return the stream with the sidecar's
+/// reply (`(message type, payload)`), read under a deadline.
+fn hello(sock_path: &std::path::Path, mode: u8) -> (UnixStream, (u8, Vec<u8>)) {
+    let mut stream = UnixStream::connect(sock_path).expect("failed to connect to attach socket");
+    write_msg(&mut stream, MSG_HELLO, &[PROTOCOL_VERSION, mode]);
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let reply = read_msg(&mut stream).expect("sidecar replies to hello");
+    // Fails with EINVAL on macOS once the sidecar has shut a rejected socket down.
+    let _ = stream.set_read_timeout(None);
+    (stream, reply)
+}
+
+fn epoch_of(payload: &[u8]) -> u64 {
+    u64::from_be_bytes(payload.try_into().expect("epoch payload is 8 bytes"))
+}
+
+/// Attach as a human through the v1 handshake and hold the connection.
 /// Returns the stream so the caller can control when it disconnects.
 fn attach_as_human(sock_path: &std::path::Path) -> UnixStream {
-    UnixStream::connect(sock_path).expect("failed to connect to attach socket")
+    let (stream, (msg_type, payload)) = hello(sock_path, MODE_ATTACH);
+    assert_eq!(
+        msg_type,
+        MSG_ACCEPTED,
+        "attach should be accepted: {}",
+        String::from_utf8_lossy(&payload)
+    );
+    stream
+}
+
+/// Poll `tender log --raw` until it contains `needle`.
+fn wait_log_contains(root: &TempDir, session: &str, needle: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let output = tender(root)
+            .args(["log", session, "--raw"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        if stdout.contains(needle) {
+            return stdout;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "log for {session} never contained {needle:?}; got: {stdout}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Read until the sidecar closes the stream, returning every message seen.
+fn read_until_closed(stream: &mut UnixStream) -> Vec<(u8, Vec<u8>)> {
+    // EINVAL on macOS means the socket is already shut down, and a read then
+    // returns end of stream immediately, so ignoring it cannot hang.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let mut seen = Vec::new();
+    loop {
+        match read_msg(stream) {
+            Ok(msg) => seen.push(msg),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+                ) =>
+            {
+                return seen;
+            }
+            Err(e) => panic!("expected the sidecar to close the stream, got {e}"),
+        }
+    }
 }
 
 /// Wait for meta.json PTY control to reach a specific state.
@@ -589,4 +661,1493 @@ fn attach_detach_emit_control_changed_events() {
     assert_eq!(changed[1]["seq"], 2);
 
     tender(&root).args(["kill", "pty-ev"]).output().ok();
+}
+
+// --- Cloud PTY control, slice 1: sidecar-enforced input authority ---
+
+/// Force-kills a session when dropped, so a failing assertion cannot leak a
+/// running sidecar and child.
+struct KillOnDrop<'a> {
+    root: &'a TempDir,
+    session: &'static str,
+}
+
+impl Drop for KillOnDrop<'_> {
+    fn drop(&mut self) {
+        let _ = tender(self.root)
+            .args(["kill", self.session, "--force"])
+            .output();
+    }
+}
+
+/// Run the real `tender attach` CLI inside a PTY, as a terminal user would.
+struct CliAttach {
+    child: <tender::platform::Current as tender::platform::Platform>::SupervisedChild,
+    input: Option<Box<dyn Write + Send>>,
+    output: Arc<Mutex<Vec<u8>>>,
+    /// While set, the terminal stops reading the CLI's output, as a stalled
+    /// terminal or SSH connection would.
+    output_paused: Arc<std::sync::atomic::AtomicBool>,
+    resize_fd: Option<std::fs::File>,
+}
+
+impl CliAttach {
+    fn spawn(root: &TempDir, args: &[&str]) -> Self {
+        let mut argv = vec![tender_bin(), "attach".to_owned()];
+        argv.extend(args.iter().map(|a| (*a).to_owned()));
+        Self::spawn_argv(root, &argv)
+    }
+
+    fn spawn_argv(root: &TempDir, argv: &[String]) -> Self {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tender::platform::{Current, Platform};
+        let mut env = std::collections::BTreeMap::new();
+        env.insert(
+            "HOME".to_owned(),
+            root.path().to_string_lossy().into_owned(),
+        );
+        let mut child = Current::spawn_child_pty(argv, None, &env).unwrap();
+        // Take the resize handle before stdin takes the master's write half.
+        let resize_fd = Current::pty_resize_fd(&child);
+        let input = Current::child_stdin(&mut child).unwrap();
+        let mut reader = Current::child_stdout(&mut child).unwrap();
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let output_paused = Arc::new(AtomicBool::new(false));
+        let (sink, paused) = (Arc::clone(&output), Arc::clone(&output_paused));
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            loop {
+                if paused.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                match std::io::Read::read(&mut reader, &mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => sink.lock().unwrap().extend_from_slice(&chunk[..n]),
+                }
+            }
+        });
+        Self {
+            child,
+            input: Some(input),
+            output,
+            output_paused,
+            resize_fd,
+        }
+    }
+
+    fn type_bytes(&mut self, bytes: &[u8]) {
+        self.input
+            .as_mut()
+            .expect("input still owned")
+            .write_all(bytes)
+            .unwrap();
+    }
+
+    /// Hand the terminal's keyboard to another thread (for writes that block).
+    fn take_input(&mut self) -> Box<dyn Write + Send> {
+        self.input.take().expect("input still owned")
+    }
+
+    fn pause_output(&self) {
+        self.output_paused
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn resume_output(&self) {
+        self.output_paused
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Resize the CLI's terminal, as a user resizing the Ghostty window would.
+    fn resize(&self, rows: u16, cols: u16) {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.resize_fd.as_ref().expect("resize handle").as_raw_fd();
+        let ws = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: `fd` is an open PTY master; TIOCSWINSZ takes a winsize pointer.
+        let rc = unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) };
+        assert_eq!(rc, 0, "resize the CLI's terminal");
+    }
+
+    /// Type `line` until the session log shows it. Keystrokes typed before the CLI
+    /// enters raw mode are discarded (`TCSAFLUSH`), so a single write races the
+    /// handshake; the marker is idempotent, so retyping is safe.
+    fn type_until_logged(&mut self, root: &TempDir, session: &str, line: &str) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            self.type_bytes(line.as_bytes());
+            let output = tender(root)
+                .args(["log", session, "--raw"])
+                .output()
+                .unwrap();
+            if String::from_utf8_lossy(&output.stdout).contains(line.trim_end()) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "typed {line:?} never reached {session}; cli output: {}",
+                self.output()
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    fn output(&self) -> String {
+        String::from_utf8_lossy(&self.output.lock().unwrap()).into_owned()
+    }
+}
+
+impl Drop for CliAttach {
+    fn drop(&mut self) {
+        use tender::platform::{Current, Platform};
+        self.resume_output();
+        let kill = Current::child_kill_handle(&self.child);
+        let _ = Current::kill_child(&kill, true);
+        let _ = Current::child_wait(&mut self.child);
+    }
+}
+
+fn tender_bin() -> String {
+    assert_cmd::cargo::cargo_bin("tender")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `tender attach` run by a shell in the CLI's terminal, recording the terminal
+/// settings (`stty -g`) before and after it and its exit code, so tests can
+/// prove the terminal was restored however the attach ended.
+struct WrappedAttach {
+    cli: CliAttach,
+    before: std::path::PathBuf,
+    after: std::path::PathBuf,
+    code: std::path::PathBuf,
+}
+
+impl WrappedAttach {
+    fn spawn(root: &TempDir, label: &str, args: &[&str]) -> Self {
+        let dir = root.path().join(format!("wrap-{label}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let q = |p: &std::path::Path| shell_words::quote(p.to_str().unwrap()).into_owned();
+        let (before, after, code) = (dir.join("before"), dir.join("after"), dir.join("code"));
+        let attach: Vec<String> = std::iter::once(tender_bin())
+            .chain(std::iter::once("attach".to_owned()))
+            .chain(args.iter().map(|a| (*a).to_owned()))
+            .map(|a| shell_words::quote(&a).into_owned())
+            .collect();
+        let script = format!(
+            "stty -g > {b}.tmp && mv {b}.tmp {b}; {cmd}; echo $? > {c}.tmp; \
+             stty -g > {a}.tmp; mv {a}.tmp {a}; mv {c}.tmp {c}; sleep 60",
+            b = q(&before),
+            a = q(&after),
+            c = q(&code),
+            cmd = attach.join(" "),
+        );
+        let cli = CliAttach::spawn_argv(root, &["sh".to_owned(), "-c".to_owned(), script]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !before.exists() {
+            assert!(Instant::now() < deadline, "wrapper never started");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Self {
+            cli,
+            before,
+            after,
+            code,
+        }
+    }
+
+    fn exited(&self) -> bool {
+        self.code.exists()
+    }
+
+    /// Wait for `tender attach` to exit and return its exit code.
+    fn wait_exit(&self, within: Duration) -> i32 {
+        let deadline = Instant::now() + within;
+        while !self.code.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "tender attach did not exit within {within:?}; cli output: {}",
+                self.cli.output()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::fs::read_to_string(&self.code)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    fn assert_terminal_restored(&self) {
+        let before = std::fs::read_to_string(&self.before).unwrap();
+        let after = std::fs::read_to_string(&self.after).unwrap();
+        assert_eq!(
+            before, after,
+            "terminal settings after attach differ from before"
+        );
+    }
+}
+
+#[test]
+fn cli_escape_detaches_and_restores_the_terminal() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-escape",
+    };
+    start_cat(&root, "pty-escape");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "escape", &["pty-escape"]);
+    wrapped
+        .cli
+        .type_until_logged(&root, "pty-escape", "before-detach\n");
+    wrapped.cli.type_bytes(b"\x1cd");
+
+    assert_eq!(wrapped.wait_exit(Duration::from_secs(10)), 0);
+    wrapped.assert_terminal_restored();
+    wait_for_pty_control(&root, "pty-escape", "AgentControl");
+    push(&root, "pty-escape", b"session-still-running\n");
+    wait_log_contains(&root, "pty-escape", "session-still-running");
+}
+
+/// A PTY child that shows control characters: `Ctrl-\` prints as `^\`.
+fn start_visible_cat(root: &TempDir, session: &str) {
+    tender(root)
+        .args(["start", session, "--pty", "--stdin", "--"])
+        .args(["sh", "-c", "stty raw -echo; exec cat -v"])
+        .output()
+        .unwrap();
+    harness::wait_running(root, session);
+}
+
+#[test]
+fn cli_doubled_escape_and_other_keys_reach_the_session_unchanged() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-literal",
+    };
+    start_visible_cat(&root, "pty-literal");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "literal", &["pty-literal"]);
+    wrapped
+        .cli
+        .type_until_logged(&root, "pty-literal", "literal-ready\n");
+    // Doubled prefix → one literal; prefix + other key → both; plain keys as typed.
+    wrapped.cli.type_bytes(b"A\x1c\x1cB\x1cxC\n");
+    wait_log_contains(&root, "pty-literal", "A^\\B^\\xC");
+    assert!(!wrapped.exited(), "no detach was requested");
+}
+
+#[test]
+fn cli_escape_none_forwards_the_detach_sequence() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-noescape",
+    };
+    start_visible_cat(&root, "pty-noescape");
+
+    let mut wrapped =
+        WrappedAttach::spawn(&root, "noescape", &["pty-noescape", "--escape", "none"]);
+    wrapped
+        .cli
+        .type_until_logged(&root, "pty-noescape", "none-ready\n");
+    wrapped.cli.type_bytes(b"N\x1cdM\n");
+    wait_log_contains(&root, "pty-noescape", "N^\\dM");
+    assert!(!wrapped.exited(), "--escape none must not detach");
+}
+
+#[test]
+fn cli_forwards_later_terminal_resizes() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-winch",
+    };
+    tender(&root)
+        .args(["start", "pty-winch", "--pty", "--stdin", "--", "sh"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-winch");
+
+    let mut cli = CliAttach::spawn(&root, &["pty-winch"]);
+    cli.type_until_logged(&root, "pty-winch", "echo winch-ready\n");
+
+    // Resized after the attach started: only continuous forwarding delivers it.
+    cli.resize(33, 111);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        cli.type_bytes(b"stty size\n");
+        let log = tender(&root)
+            .args(["log", "pty-winch", "--raw"])
+            .output()
+            .unwrap();
+        if String::from_utf8_lossy(&log.stdout).contains("33 111") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the session never saw the new size; cli output: {}",
+            cli.output()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[test]
+fn cli_takeover_by_another_client_restores_the_terminal() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-taken",
+    };
+    let sock_path = start_cat(&root, "pty-taken");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "taken", &["pty-taken"]);
+    wrapped
+        .cli
+        .type_until_logged(&root, "pty-taken", "before-takeover\n");
+    let (_other, (msg_type, _)) = hello(&sock_path, MODE_TAKEOVER);
+    assert_eq!(msg_type, MSG_ACCEPTED);
+
+    wrapped.wait_exit(Duration::from_secs(10));
+    wrapped.assert_terminal_restored();
+    assert!(
+        wrapped.cli.output().contains("took over"),
+        "the user is told why the attach ended: {}",
+        wrapped.cli.output()
+    );
+}
+
+#[test]
+fn cli_session_end_restores_the_terminal() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-ended",
+    };
+    start_cat(&root, "pty-ended");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "ended", &["pty-ended"]);
+    wrapped
+        .cli
+        .type_until_logged(&root, "pty-ended", "before-end\n");
+    tender(&root)
+        .args(["kill", "pty-ended", "--force"])
+        .output()
+        .unwrap();
+
+    wrapped.wait_exit(Duration::from_secs(10));
+    wrapped.assert_terminal_restored();
+}
+
+#[test]
+fn cli_detach_is_responsive_while_session_input_is_blocked() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-inblock",
+    };
+    // The child never reads its input, so everything typed backs up.
+    tender(&root)
+        .args(["start", "pty-inblock", "--pty", "--stdin", "--"])
+        .args([
+            "sh",
+            "-c",
+            "stty raw -echo; while true; do printf READY; sleep 0.2; done",
+        ])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-inblock");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "inblock", &["pty-inblock"]);
+    // Relayed output proves the CLI is in raw mode, so Ctrl-\ is not SIGQUIT.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !wrapped.cli.output().contains("READY") {
+        assert!(Instant::now() < deadline, "attach never relayed output");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let mut keyboard = wrapped.cli.take_input();
+    let typist = std::thread::spawn(move || {
+        let _ = keyboard.write_all(&vec![b'x'; 256 * 1024]);
+        let _ = keyboard.write_all(b"\x1cd");
+        keyboard
+    });
+
+    assert_eq!(wrapped.wait_exit(Duration::from_secs(15)), 0);
+    wrapped.assert_terminal_restored();
+    wait_for_pty_control(&root, "pty-inblock", "AgentControl");
+    drop(typist.join());
+}
+
+#[test]
+fn cli_detach_is_responsive_while_terminal_output_is_blocked() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-outblock",
+    };
+    tender(&root)
+        .args(["start", "pty-outblock", "--pty", "--stdin", "--"])
+        .args(["sh", "-c", "stty raw -echo; yes OUTPUT-FLOOD"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-outblock");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "outblock", &["pty-outblock"]);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !wrapped.cli.output().contains("OUTPUT-FLOOD") {
+        assert!(Instant::now() < deadline, "attach never relayed output");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // The terminal stops reading; the flood fills its output buffer and the
+    // CLI's writes to it block. That state cannot be observed directly, so give
+    // the flood a moment to fill it.
+    wrapped.cli.pause_output();
+    std::thread::sleep(Duration::from_millis(500));
+    wrapped.cli.type_bytes(b"\x1cd");
+
+    let code = wrapped.wait_exit(Duration::from_secs(15));
+    wrapped.cli.resume_output();
+    assert_eq!(code, 0);
+    wrapped.assert_terminal_restored();
+}
+
+#[test]
+fn cli_attach_delivers_typed_input_through_the_handshake() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-cli",
+    };
+    start_cat(&root, "pty-cli");
+
+    let mut cli = CliAttach::spawn(&root, &["pty-cli"]);
+    wait_for_pty_control(&root, "pty-cli", "HumanControl");
+    cli.type_until_logged(&root, "pty-cli", "typed-through-cli\n");
+    assert!(!cli.output().contains("error"), "cli: {}", cli.output());
+}
+
+#[test]
+fn cli_attach_takeover_retires_the_current_controller() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-cli-take",
+    };
+    let sock_path = start_cat(&root, "pty-cli-take");
+    let mut old = attach_as_human(&sock_path);
+
+    let mut cli = CliAttach::spawn(&root, &["pty-cli-take", "--takeover"]);
+    let seen = read_until_closed(&mut old);
+    assert!(
+        seen.iter().any(|(t, _)| *t == MSG_RETIRED),
+        "the raw controller is retired by the CLI takeover: {seen:?}; cli: {}",
+        cli.output()
+    );
+    cli.type_until_logged(&root, "pty-cli-take", "cli-took-over\n");
+}
+
+/// Start `cat` under a PTY with `--stdin` and return its attach socket.
+fn start_cat(root: &TempDir, session: &str) -> std::path::PathBuf {
+    tender(root)
+        .args(["start", session, "--pty", "--stdin", "--", "cat"])
+        .output()
+        .unwrap();
+    harness::wait_running(root, session);
+    wait_for_attach_socket(root, session)
+}
+
+fn push(root: &TempDir, session: &str, bytes: &[u8]) {
+    let output = tender(root)
+        .args(["push", session])
+        .write_stdin(bytes.to_vec())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "push failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn connection_without_hello_gains_no_control_and_is_closed() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-nohello",
+    };
+    let sock_path = start_cat(&root, "pty-nohello");
+
+    let mut raw = UnixStream::connect(&sock_path).unwrap();
+    write_msg(&mut raw, MSG_DATA, b"no-hello-marker\n");
+    let seen = read_until_closed(&mut raw);
+    assert!(
+        seen.iter().all(|(t, _)| *t != MSG_ACCEPTED),
+        "a connection without hello must never be accepted: {seen:?}"
+    );
+
+    // Causal barrier: input that arrives later through push is visible, so the
+    // earlier marker would be visible too had it reached the PTY.
+    push(&root, "pty-nohello", b"control-marker\n");
+    let log = wait_log_contains(&root, "pty-nohello", "control-marker");
+    assert!(!log.contains("no-hello-marker"), "log: {log}");
+
+    let status = tender(&root)
+        .args(["status", "pty-nohello"])
+        .output()
+        .unwrap();
+    let meta: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(meta["pty"]["control"], "AgentControl");
+
+    tender(&root).args(["kill", "pty-nohello"]).output().ok();
+}
+
+#[test]
+fn attach_is_accepted_with_an_epoch_and_a_second_attach_is_rejected() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-epoch",
+    };
+    let sock_path = start_cat(&root, "pty-epoch");
+
+    let (mut first, (msg_type, payload)) = hello(&sock_path, MODE_ATTACH);
+    assert_eq!(msg_type, MSG_ACCEPTED);
+    assert_eq!(epoch_of(&payload), 1);
+    wait_for_pty_control(&root, "pty-epoch", "HumanControl");
+
+    let (mut second, (msg_type, payload)) = hello(&sock_path, MODE_ATTACH);
+    assert_eq!(
+        msg_type,
+        MSG_REJECTED,
+        "a plain attach must not supersede: {}",
+        String::from_utf8_lossy(&payload)
+    );
+    let _ = read_until_closed(&mut second);
+
+    // The first controller is undisturbed.
+    write_msg(&mut first, MSG_DATA, b"first-still-owns\n");
+    wait_log_contains(&root, "pty-epoch", "first-still-owns");
+
+    drop(first);
+    tender(&root).args(["kill", "pty-epoch"]).output().ok();
+}
+
+#[test]
+fn takeover_retires_the_previous_human_and_rejects_its_later_input() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-takeover",
+    };
+    let sock_path = start_cat(&root, "pty-takeover");
+
+    let mut old = attach_as_human(&sock_path);
+    let (mut new, (msg_type, payload)) = hello(&sock_path, MODE_TAKEOVER);
+    assert_eq!(msg_type, MSG_ACCEPTED);
+    assert_eq!(epoch_of(&payload), 2);
+
+    let seen = read_until_closed(&mut old);
+    let retired: Vec<_> = seen.iter().filter(|(t, _)| *t == MSG_RETIRED).collect();
+    assert_eq!(retired.len(), 1, "old controller is told it was retired");
+    assert_eq!(epoch_of(&retired[0].1), 2);
+
+    // The retired connection is shut down; anything it still manages to send is
+    // rejected. Its write may fail outright, which is equally correct.
+    let _ = old.write_all(&[MSG_DATA, 0, 0, 0, 13]);
+    let _ = old.write_all(b"old-after-rt\n");
+
+    write_msg(&mut new, MSG_DATA, b"new-owns-now\n");
+    let log = wait_log_contains(&root, "pty-takeover", "new-owns-now");
+    assert!(!log.contains("old-after-rt"), "log: {log}");
+
+    let takeover_event = harness::read_events(&root, "pty-takeover")
+        .into_iter()
+        .find(|e| e["kind"] == "pty.control_changed" && e["data"]["trigger"] == "takeover");
+    assert!(takeover_event.is_some(), "takeover is recorded as a fact");
+
+    drop(new);
+    tender(&root).args(["kill", "pty-takeover"]).output().ok();
+}
+
+#[test]
+fn takeover_revokes_queued_agent_input() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-revoke",
+    };
+    let go = root.path().join("go");
+
+    // The child consumes exactly 1 KiB of agent input, reports READY, then stops
+    // reading until the go file exists. Everything the agent pushes after that
+    // stays queued behind a full PTY input buffer.
+    let script = "stty raw -echo; head -c 1024 >/dev/null; printf READY; \
+                  while [ ! -f \"$GO\" ]; do sleep 0.05; done; exec cat";
+    tender(&root)
+        .args(["start", "pty-revoke", "--pty", "--stdin"])
+        .arg("--env")
+        .arg(format!("GO={}", go.display()))
+        .args(["--", "sh", "-c", script])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-revoke");
+    let sock_path = wait_for_attach_socket(&root, "pty-revoke");
+
+    let mut payload = vec![b'a'; 2 << 20];
+    payload.extend_from_slice(b"AGENT-TAIL\n");
+    let mut agent = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+        .args(["push", "pty-revoke"])
+        .env("HOME", root.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut agent_stdin = agent.stdin.take().unwrap();
+    let feeder = std::thread::spawn(move || {
+        // The write fails with a broken pipe if the sidecar stops reading; either
+        // outcome is fine for the feeder.
+        let _ = agent_stdin.write_all(&payload);
+    });
+
+    // Barrier: agent input is flowing and the rest of it is queued.
+    wait_log_contains(&root, "pty-revoke", "READY");
+    assert!(
+        agent.try_wait().unwrap().is_none(),
+        "setup invariant: the agent push must still be in flight at takeover"
+    );
+
+    let (mut human, (msg_type, _)) = hello(&sock_path, MODE_TAKEOVER);
+    assert_eq!(msg_type, MSG_ACCEPTED);
+    write_msg(&mut human, MSG_DATA, b"HUMAN-LINE\n");
+    std::fs::write(&go, b"").unwrap();
+
+    let log = wait_log_contains(&root, "pty-revoke", "HUMAN-LINE");
+    assert!(
+        !log.contains("AGENT-TAIL"),
+        "queued agent input was written after takeover"
+    );
+    let a_count = log.bytes().filter(|&b| b == b'a').count();
+    assert!(
+        a_count < 1 << 20,
+        "at most the kernel-buffered prefix may precede the takeover; saw {a_count} bytes"
+    );
+    let revoked = harness::wait_event_kind(&root, "pty-revoke", "pty.input_revoked");
+    assert_eq!(revoked["data"]["kind"], "Agent");
+
+    // The revoked push itself reports it: no false success.
+    drop(human);
+    feeder.join().unwrap();
+    let pushed = agent.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&pushed.stderr);
+    assert!(
+        !pushed.status.success(),
+        "a push revoked by takeover must not exit 0; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("revoked"),
+        "the failure says the push was revoked: {stderr}"
+    );
+    tender(&root)
+        .args(["kill", "pty-revoke", "--force"])
+        .output()
+        .ok();
+}
+
+#[test]
+fn takeover_after_a_silent_connection_reaches_the_same_running_process() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-reconnect",
+    };
+
+    tender(&root)
+        .args(["start", "pty-reconnect", "--pty", "--stdin", "--", "sh"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-reconnect");
+    let sock_path = wait_for_attach_socket(&root, "pty-reconnect");
+    let status = tender(&root)
+        .args(["status", "pty-reconnect"])
+        .output()
+        .unwrap();
+    let meta: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    let child_pid = meta["child"]["pid"].as_u64().unwrap();
+
+    // A controller that goes silent without closing, like a half-open SSH session.
+    let _silent = attach_as_human(&sock_path);
+
+    let (mut new, (msg_type, _)) = hello(&sock_path, MODE_TAKEOVER);
+    assert_eq!(msg_type, MSG_ACCEPTED);
+    write_msg(&mut new, MSG_DATA, b"echo \"pid=\"$$\n");
+
+    let expected = format!("pid={child_pid}");
+    wait_log_contains(&root, "pty-reconnect", &expected);
+
+    drop(new);
+    tender(&root)
+        .args(["kill", "pty-reconnect", "--force"])
+        .output()
+        .ok();
+}
+
+#[test]
+fn stalled_viewer_cannot_block_output_capture() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-stalled",
+    };
+    let go = root.path().join("go");
+
+    // After the go file appears, the child writes ~10 MiB — more than one
+    // viewer's queue budget — then a marker, then stays alive.
+    let script = "while [ ! -f \"$GO\" ]; do sleep 0.05; done; \
+                  yes 0123456789abcdef0123456789abcdef | head -c 10485760; \
+                  echo; echo ALL-OUTPUT-DONE; sleep 60";
+    tender(&root)
+        .args(["start", "pty-stalled", "--pty"])
+        .arg("--env")
+        .arg(format!("GO={}", go.display()))
+        .args(["--", "sh", "-c", script])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-stalled");
+    let sock_path = wait_for_attach_socket(&root, "pty-stalled");
+
+    // A viewer that attaches and then never reads.
+    let mut stalled = attach_as_human(&sock_path);
+    std::fs::write(&go, b"").unwrap();
+
+    // Capture must keep up regardless of the stalled viewer. Read output.log
+    // directly: `tender log` would re-parse ~10 MiB on every poll.
+    let log_path = root
+        .path()
+        .join(".tender/sessions/default/pty-stalled/output.log");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let log = std::fs::read(&log_path).unwrap_or_default();
+        if log.windows(15).any(|w| w == b"ALL-OUTPUT-DONE") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "output capture stalled behind a viewer that never reads ({} log bytes)",
+            log.len()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // The stalled viewer was disconnected rather than buffered without bound,
+    // and with it went its control.
+    let _ = read_until_closed(&mut stalled);
+    wait_for_pty_control(&root, "pty-stalled", "AgentControl");
+}
+
+#[test]
+fn a_second_push_is_refused_while_one_holds_the_terminal() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-twopush",
+    };
+    let go = root.path().join("go");
+    // The child consumes exactly 1 KiB of the first push, reports READY, then
+    // reads nothing until the go file exists: the first push stays in flight.
+    let script = "stty raw -echo; head -c 1024 >/dev/null; printf READY; \
+                  while [ ! -f \"$GO\" ]; do sleep 0.05; done; exec cat";
+    tender(&root)
+        .args(["start", "pty-twopush", "--pty", "--stdin"])
+        .arg("--env")
+        .arg(format!("GO={}", go.display()))
+        .args(["--", "sh", "-c", script])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-twopush");
+
+    let mut first = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+        .args(["push", "pty-twopush"])
+        .env("HOME", root.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first_stdin = first.stdin.take().unwrap();
+    let feeder = std::thread::spawn(move || {
+        let _ = first_stdin.write_all(&vec![b'a'; 1 << 20]);
+    });
+    // Barrier: the first push holds the terminal and its input is flowing.
+    wait_log_contains(&root, "pty-twopush", "READY");
+
+    let second = tender(&root)
+        .args(["push", "pty-twopush"])
+        .write_stdin(b"SECOND-PUSH\n".to_vec())
+        .timeout(Duration::from_secs(20))
+        .output()
+        .expect("a second push must return promptly, not block behind the first");
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        !second.status.success(),
+        "a concurrent push must be refused, not interleaved: {stderr}"
+    );
+    assert!(
+        stderr.contains("owned"),
+        "the refusal names the owner: {stderr}"
+    );
+
+    std::fs::write(&go, b"").unwrap();
+    feeder.join().unwrap();
+    let first = first.wait_with_output().unwrap();
+    assert!(
+        first.status.success(),
+        "the first push completes: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let log = wait_log_contains(&root, "pty-twopush", "aaaa");
+    assert!(!log.contains("SECOND-PUSH"), "refused bytes were written");
+}
+
+#[test]
+fn attach_socket_is_private_and_under_the_state_root() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-private",
+    };
+    let sock_path = start_cat(&root, "pty-private");
+
+    let sockets = root.path().join(".tender").join("sockets");
+    assert_eq!(
+        sock_path
+            .parent()
+            .map(std::fs::canonicalize)
+            .transpose()
+            .unwrap(),
+        Some(std::fs::canonicalize(&sockets).unwrap()),
+        "socket lives in the state root's private directory, not shared temp"
+    );
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&sockets), 0o700);
+    assert_eq!(mode(&sock_path), 0o600);
+}
+
+#[test]
+fn oversized_attach_frame_closes_the_connection_and_releases_control() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-bigframe",
+    };
+    let sock_path = start_cat(&root, "pty-bigframe");
+
+    let mut human = attach_as_human(&sock_path);
+    wait_for_pty_control(&root, "pty-bigframe", "HumanControl");
+    // Declare a 1 GiB payload; the sidecar must not wait for or allocate it.
+    human
+        .write_all(&[MSG_DATA, 0x40, 0x00, 0x00, 0x00])
+        .unwrap();
+    let _ = read_until_closed(&mut human);
+    wait_for_pty_control(&root, "pty-bigframe", "AgentControl");
+
+    // The session is unaffected.
+    push(&root, "pty-bigframe", b"still-running\n");
+    wait_log_contains(&root, "pty-bigframe", "still-running");
+}
+
+#[test]
+fn a_trickled_hello_is_cut_off_at_the_overall_deadline() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-slowhello",
+    };
+    let sock_path = start_cat(&root, "pty-slowhello");
+
+    // A well-formed hello sent one byte per second: every individual read is
+    // quick, but the whole handshake takes 7 s, past the 5 s deadline.
+    let mut slow = UnixStream::connect(&sock_path).unwrap();
+    let hello = [MSG_HELLO, 0, 0, 0, 2, PROTOCOL_VERSION, MODE_ATTACH];
+    let started = Instant::now();
+    for byte in hello {
+        if slow.write_all(&[byte]).is_err() {
+            break; // already closed by the sidecar
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    let seen = read_until_closed(&mut slow);
+    assert!(
+        seen.iter().all(|(t, _)| *t != MSG_ACCEPTED),
+        "a hello past its deadline must not be accepted: {seen:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(12),
+        "closed promptly after the deadline"
+    );
+    let status = tender(&root)
+        .args(["status", "pty-slowhello"])
+        .output()
+        .unwrap();
+    let meta: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(meta["pty"]["control"], "AgentControl");
+}
+
+#[test]
+fn an_unsafe_socket_directory_fails_start_loudly() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-unsafe",
+    };
+    let elsewhere = root.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::create_dir_all(root.path().join(".tender")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, root.path().join(".tender/sockets")).unwrap();
+
+    let output = tender(&root)
+        .args(["start", "pty-unsafe", "--pty", "--stdin", "--", "cat"])
+        .output()
+        .unwrap();
+    let meta = harness::wait_terminal(&root, "pty-unsafe");
+    assert_eq!(
+        meta["status"],
+        "SpawnFailed",
+        "a PTY session must not run without its private listener; start said: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let warnings = meta["warnings"].to_string();
+    assert!(
+        warnings.contains("socket"),
+        "the failure names the socket: {warnings}"
+    );
+    assert!(
+        std::fs::read_dir(&elsewhere).unwrap().next().is_none(),
+        "nothing was created through the symlink"
+    );
+}
+
+#[test]
+fn detach_releases_control_even_when_pty_input_is_full() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-full-detach",
+    };
+    // The child never reads its input, so the PTY input buffer fills.
+    tender(&root)
+        .args(["start", "pty-full-detach", "--pty", "--stdin", "--"])
+        .args(["sh", "-c", "stty raw -echo; printf READY; sleep 60"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-full-detach");
+    wait_log_contains(&root, "pty-full-detach", "READY");
+    let sock_path = wait_for_attach_socket(&root, "pty-full-detach");
+
+    let mut human = attach_as_human(&sock_path);
+    human
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    for _ in 0..16 {
+        write_msg(&mut human, MSG_DATA, &vec![b'x'; 65536]);
+    }
+    write_msg(&mut human, MSG_DETACH, &[]);
+    let _ = read_until_closed(&mut human);
+
+    // The detached client must not keep control behind its unwritable input.
+    wait_for_pty_control(&root, "pty-full-detach", "AgentControl");
+    let (_next, (msg_type, reason)) = hello(&sock_path, MODE_ATTACH);
+    assert_eq!(
+        msg_type,
+        MSG_ACCEPTED,
+        "a detached client still holds control: {}",
+        String::from_utf8_lossy(&reason)
+    );
+}
+
+#[test]
+fn a_disconnected_push_releases_control_behind_a_full_pty() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-push-gone",
+    };
+    tender(&root)
+        .args(["start", "pty-push-gone", "--pty", "--stdin", "--"])
+        .args([
+            "sh",
+            "-c",
+            "stty raw -echo; head -c 1024 >/dev/null; printf READY; sleep 60",
+        ])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-push-gone");
+    let sock_path = wait_for_attach_socket(&root, "pty-push-gone");
+
+    // A push client that sends more than the child will read, then vanishes
+    // while the sidecar is still waiting for the PTY to accept it.
+    let (mut agent, (msg_type, _)) = hello(&sock_path, MODE_PUSH);
+    assert_eq!(msg_type, MSG_ACCEPTED);
+    agent
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write_msg(&mut agent, MSG_DATA, &vec![b'x'; 65536]);
+    wait_log_contains(&root, "pty-push-gone", "READY");
+    agent.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(agent);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (_next, (msg_type, reason)) = hello(&sock_path, MODE_ATTACH);
+        if msg_type == MSG_ACCEPTED {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a disconnected push still holds the terminal: {}",
+            String::from_utf8_lossy(&reason)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn idle_pushes_retired_by_takeover_do_not_exhaust_connection_slots() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-push-slots",
+    };
+    let sock_path = start_cat(&root, "pty-push-slots");
+
+    // More rounds than there are connection slots. Each push stays connected and
+    // idle; the client never closes it.
+    let mut idle_pushes = Vec::new();
+    for round in 0..9 {
+        let (mut push, (msg_type, reason)) = hello(&sock_path, MODE_PUSH);
+        assert_eq!(
+            msg_type,
+            MSG_ACCEPTED,
+            "push {round}: {}",
+            String::from_utf8_lossy(&reason)
+        );
+        let (mut human, (msg_type, reason)) = hello(&sock_path, MODE_TAKEOVER);
+        assert_eq!(
+            msg_type,
+            MSG_ACCEPTED,
+            "takeover {round}: {}",
+            String::from_utf8_lossy(&reason)
+        );
+
+        // The retired push is told, and its connection is closed server-side.
+        let seen = read_until_closed(&mut push);
+        let done = seen
+            .iter()
+            .find(|(t, _)| *t == MSG_INPUT_DONE)
+            .unwrap_or_else(|| panic!("push {round} got no outcome: {seen:?}"));
+        assert_eq!(
+            tender::attach_proto::parse_input_done(&done.1).map(|(s, _, _)| s),
+            Some(tender::attach_proto::INPUT_REVOKED)
+        );
+        idle_pushes.push(push);
+
+        write_msg(&mut human, MSG_DETACH, &[]);
+        let _ = read_until_closed(&mut human);
+        wait_for_pty_control(&root, "pty-push-slots", "AgentControl");
+    }
+}
+
+#[test]
+fn an_old_runs_cleanup_cannot_remove_its_replacements_breadcrumb() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-replaced",
+    };
+    let callback = root.path().join("callback.sh");
+    let started = root.path().join("callback-started");
+    let finish = root.path().join("callback-finish");
+    std::fs::write(
+        &callback,
+        b"touch \"$1\"; i=0; while [ ! -f \"$2\" ] && [ \"$i\" -lt 400 ]; do sleep 0.05; i=$((i+1)); done\n",
+    )
+    .unwrap();
+    let on_exit = format!(
+        "sh {} {} {}",
+        callback.display(),
+        started.display(),
+        finish.display()
+    );
+    let first = tender(&root)
+        .args(["start", "pty-replaced", "--pty", "--stdin", "--on-exit"])
+        .arg(&on_exit)
+        .args(["--", "cat"])
+        .output()
+        .unwrap();
+    let old_run: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let old_run_id = old_run["run_id"].as_str().unwrap().to_owned();
+    harness::wait_running(&root, "pty-replaced");
+    let old_socket = wait_for_attach_socket(&root, "pty-replaced");
+
+    // End the old run; its exit callback runs after the session lock is released.
+    tender(&root)
+        .args(["kill", "pty-replaced", "--force"])
+        .output()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !started.exists() {
+        assert!(Instant::now() < deadline, "exit callback never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // A replacement starts while the old sidecar is still in its callback.
+    tender(&root)
+        .args([
+            "start",
+            "pty-replaced",
+            "--replace",
+            "--pty",
+            "--stdin",
+            "--",
+            "cat",
+        ])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-replaced");
+    let new_socket = wait_for_attach_socket(&root, "pty-replaced");
+    assert_ne!(old_socket, new_socket);
+
+    // Let the old sidecar finish: its callback record is written afterwards.
+    std::fs::write(&finish, b"").unwrap();
+    let record = root
+        .path()
+        .join(format!(".tender/callbacks/{old_run_id}.json"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !record.exists() {
+        assert!(Instant::now() < deadline, "old sidecar never finished");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let session = root.path().join(".tender/sessions/default/pty-replaced");
+    assert!(!old_socket.exists(), "the old run's socket is gone");
+    assert_eq!(
+        tender::attach_proto::read_sock_path(&session),
+        Some(new_socket),
+        "the old run's cleanup removed the replacement's breadcrumb"
+    );
+}
+
+// --- Cloud PTY control, slice 1: exact recording ---
+
+fn session_meta(root: &TempDir, session: &str) -> serde_json::Value {
+    let path = root
+        .path()
+        .join(format!(".tender/sessions/default/{session}/meta.json"));
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// The run's recording directory, as named by its metadata.
+fn recording_dir(root: &TempDir, session: &str) -> std::path::PathBuf {
+    let meta = session_meta(root, session);
+    let dir = meta["pty"]["recording"]["dir"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no recording in metadata: {meta}"));
+    assert_eq!(
+        dir,
+        format!("recording/{}", meta["run_id"].as_str().unwrap()),
+        "one directory per run"
+    );
+    root.path()
+        .join(format!(".tender/sessions/default/{session}"))
+        .join(dir)
+}
+
+fn decode_session_recording(root: &TempDir, session: &str) -> tender::recording::DecodedRecording {
+    let dir = recording_dir(root, session);
+    let files = tender::recorder::DirectoryStore::segments(&dir).unwrap();
+    let bytes: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
+    tender::recording::decode_recording(bytes.iter().map(Vec::as_slice)).expect("recording decodes")
+}
+
+fn recorded_output(records: &[tender::recording::Record]) -> Vec<u8> {
+    records
+        .iter()
+        .filter_map(|r| match &r.kind {
+            tender::recording::RecordKind::Output(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .copied()
+        .collect()
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+#[test]
+fn pty_output_is_recorded_exactly_with_the_initial_geometry() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+
+    // Escape sequences, bytes that are not UTF-8, and no trailing newline.
+    tender(&root)
+        .args([
+            "start",
+            "pty-rec",
+            "--pty",
+            "--",
+            "sh",
+            "-c",
+            "stty size; printf '\\033[31mred\\377\\376tail'",
+        ])
+        .output()
+        .unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-rec",
+    };
+    harness::wait_terminal(&root, "pty-rec");
+
+    let recording = decode_session_recording(&root, "pty-rec");
+    assert_eq!(
+        recorded_output(&recording.records),
+        b"24 80\r\n\x1b[31mred\xff\xfetail",
+        "the child starts at 24x80 and every output byte is recorded as written"
+    );
+    assert_eq!(recording.end, tender::recording::SegmentEnd::Clean);
+
+    let meta = session_meta(&root, "pty-rec");
+    let header = &recording.header;
+    assert_eq!(
+        header.run_id.as_uuid().to_string(),
+        meta["run_id"].as_str().unwrap()
+    );
+    assert_eq!((header.geometry.rows(), header.geometry.cols()), (24, 80));
+    assert!(!header.input_recorded, "input is not recorded by default");
+    let expected_term = std::env::var("TERM")
+        .ok()
+        .and_then(|t| tender::recording::TermName::new(t).ok())
+        .map(|t| t.as_str().to_owned())
+        .unwrap_or_default();
+    assert_eq!(header.term.as_str(), expected_term);
+
+    let last = recording.records.last().unwrap().sequence.get();
+    let state = &meta["pty"]["recording"];
+    assert_eq!(state["state"], "Complete", "{meta}");
+    assert_eq!(state["input_recorded"], false);
+    assert_eq!(state["last_recorded_sequence"], last);
+    assert_eq!(state["last_synced_sequence"], last);
+
+    let dir = recording_dir(&root, "pty-rec");
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(dir.parent().unwrap()), 0o700);
+    assert_eq!(mode(&dir), 0o700);
+}
+
+#[test]
+fn an_applied_resize_is_recorded_between_the_output_around_it() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let sock = start_cat(&root, "pty-rec-resize");
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-rec-resize",
+    };
+
+    let mut human = attach_as_human(&sock);
+    write_msg(&mut human, MSG_DATA, b"one\n");
+    wait_log_contains(&root, "pty-rec-resize", "one");
+    write_msg(&mut human, MSG_RESIZE, &resize_payload(30, 100));
+    write_msg(&mut human, MSG_DATA, b"two\n");
+    wait_log_contains(&root, "pty-rec-resize", "two");
+    write_msg(&mut human, MSG_DETACH, &[]);
+    drop(human);
+    tender(&root)
+        .args(["kill", "pty-rec-resize", "--force"])
+        .output()
+        .unwrap();
+    harness::wait_terminal(&root, "pty-rec-resize");
+
+    let recording = decode_session_recording(&root, "pty-rec-resize");
+    let resizes: Vec<usize> = recording
+        .records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.kind, tender::recording::RecordKind::Resize { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(resizes.len(), 1, "{:?}", recording.records);
+    let at = resizes[0];
+    assert_eq!(
+        recording.records[at].kind,
+        tender::recording::RecordKind::Resize {
+            geometry: tender::recording::Geometry::new(30, 100).unwrap(),
+            cause: tender::recording::ResizeCause::User,
+        }
+    );
+    let before = recorded_output(&recording.records[..at]);
+    let after = recorded_output(&recording.records[at + 1..]);
+    assert!(contains(&before, b"one"), "before: {before:?}");
+    assert!(!contains(&before, b"two"), "before: {before:?}");
+    assert!(contains(&after, b"two"), "after: {after:?}");
+}
+
+#[test]
+fn a_resize_with_a_zero_dimension_is_ignored() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    tender(&root)
+        .args(["start", "pty-zero-size", "--pty", "--stdin", "--", "sh"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-zero-size");
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-zero-size",
+    };
+    let sock = wait_for_attach_socket(&root, "pty-zero-size");
+
+    let mut human = attach_as_human(&sock);
+    write_msg(&mut human, MSG_RESIZE, &resize_payload(0, 100));
+    write_msg(&mut human, MSG_DATA, b"stty size\n");
+    wait_log_contains(&root, "pty-zero-size", "24 80");
+    write_msg(&mut human, MSG_DETACH, &[]);
+    drop(human);
+    tender(&root)
+        .args(["kill", "pty-zero-size", "--force"])
+        .output()
+        .unwrap();
+    harness::wait_terminal(&root, "pty-zero-size");
+
+    let recording = decode_session_recording(&root, "pty-zero-size");
+    assert!(
+        !recording
+            .records
+            .iter()
+            .any(|r| matches!(r.kind, tender::recording::RecordKind::Resize { .. })),
+        "{:?}",
+        recording.records
+    );
+}
+
+#[test]
+fn a_recording_size_limit_stops_recording_but_not_the_session() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    tender(&root)
+        .env("TENDER_TEST_RECORDING_MAX_BYTES", "2048")
+        .args(["start", "pty-rec-limit", "--pty", "--stdin", "--", "cat"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-rec-limit");
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-rec-limit",
+    };
+
+    // A small record first: how the PTY coalesces the flood into reads (and so
+    // whether any of it fits under the limit) differs between platforms.
+    push(&root, "pty-rec-limit", b"first\n");
+    wait_log_contains(&root, "pty-rec-limit", "first");
+    let line = format!("{}\n", "x".repeat(59));
+    push(&root, "pty-rec-limit", line.repeat(50).as_bytes());
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let meta = loop {
+        let meta = session_meta(&root, "pty-rec-limit");
+        if meta["pty"]["recording"]["state"] == "Stopped" {
+            break meta;
+        }
+        assert!(Instant::now() < deadline, "recording never stopped: {meta}");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(meta["status"], "Running", "the session keeps running");
+    assert_eq!(meta["pty"]["recording"]["reason"], "size_limit");
+    let last = meta["pty"]["recording"]["last_recorded_sequence"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the stop names the recorded prefix: {meta}"));
+
+    // The event precedes the metadata flip.
+    let events = harness::read_events(&root, "pty-rec-limit");
+    let event = events
+        .iter()
+        .find(|e| e["kind"] == "recording.stopped")
+        .expect("recording.stopped is logged before status shows it");
+    assert_eq!(
+        event["data"],
+        serde_json::json!({"last_recorded_sequence": last, "reason": "size_limit"})
+    );
+
+    // Capture continues past the unrecorded suffix.
+    push(&root, "pty-rec-limit", b"after-stop\n");
+    wait_log_contains(&root, "pty-rec-limit", "after-stop");
+
+    tender(&root)
+        .args(["kill", "pty-rec-limit", "--force"])
+        .output()
+        .unwrap();
+    let meta = harness::wait_terminal(&root, "pty-rec-limit");
+    assert_eq!(meta["pty"]["recording"]["state"], "Stopped", "{meta}");
+    assert_eq!(meta["pty"]["recording"]["last_recorded_sequence"], last);
+    assert!(
+        meta["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("recording stopped")),
+        "{meta}"
+    );
+
+    let recording = decode_session_recording(&root, "pty-rec-limit");
+    assert_eq!(recording.records.last().unwrap().sequence.get(), last);
+    assert!(!contains(
+        &recorded_output(&recording.records),
+        b"after-stop"
+    ));
+    let dir = recording_dir(&root, "pty-rec-limit");
+    let total: u64 = tender::recorder::DirectoryStore::segments(&dir)
+        .unwrap()
+        .iter()
+        .map(|f| std::fs::metadata(f).unwrap().len())
+        .sum();
+    assert!(total <= 2048, "{total} bytes recorded");
 }

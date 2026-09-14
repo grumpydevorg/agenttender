@@ -159,7 +159,26 @@ knowing:
 - **`tender push <name>`** feeds stdin to a session waiting on an interactive
   prompt: `printf 'y\n' | tender push dev`.
 - **`tender attach <name>`** connects your terminal to the live session for
-  hands-on interaction; detach and the session keeps running.
+  hands-on interaction. Press **`Ctrl-\` then `d`** to detach; the session keeps
+  running. `Ctrl-\` twice sends one `Ctrl-\`, and `Ctrl-\` followed by any other
+  key sends both. `--escape none` turns the escape off so every key reaches the
+  session. Window resizes follow you, and your terminal settings are restored
+  however the attach ends. It is refused while another client holds the
+  terminal.
+- **`tender attach <name> --takeover`** takes the terminal anyway: the previous
+  client is disconnected and any input it (or an in-flight `push`) had queued is
+  dropped, never written. Use it to reconnect after a dropped SSH session.
+- On a PTY session, `push` holds the terminal for its duration and succeeds only
+  once every byte has been written to it. It fails, reporting how many bytes
+  were written, if another client holds the terminal or takes it over mid-push;
+  a second concurrent push is refused rather than interleaved.
+- A PTY session starts at 24×80 and records its exact output and every applied
+  window size under `recording/<run_id>/` in the session directory (typed input
+  is not recorded). `tender status` shows the recording under `pty.recording`.
+  If recording has to stop (size limit, disk failure, or storage falling behind),
+  the session keeps running: status shows `Stopped` with the last recorded
+  sequence, a `recording.stopped` event is logged, and the run ends with a
+  warning that later output was not recorded.
 
 ## Observe long-running work
 

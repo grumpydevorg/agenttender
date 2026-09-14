@@ -23,17 +23,139 @@ use crate::model::dep_fail::DepFailReason;
 use crate::model::event::{Kind, Uuid7};
 use crate::model::ids::{EpochTimestamp, Generation, Namespace, RunId, SessionName, Source};
 use crate::model::meta::Meta;
-use crate::model::pty::{PtyControl, PtyMeta};
+use crate::model::pty::{PtyControl, PtyMeta, PtyRecording, RecordingState, RecordingStopReason};
 use crate::model::spec::{DependencyBinding, IoMode, LaunchSpec, StdinMode};
 use crate::model::state::ExitReason;
 use crate::platform::{Current, Platform};
+use crate::recorder::{Recorder, RecorderLimits, RecorderSummary, RecorderThread, StopReason};
 use crate::session::{self, LockGuard, SessionDir, SessionRoot};
 
 /// Type alias for the platform's ReadyWriter to avoid verbose turbofish.
 type ReadyWriter = <Current as Platform>::ReadyWriter;
 
-/// Shared sink for teeing PTY output to an attached client.
-type AttachSink = Arc<Mutex<Option<Box<dyn Write + Send>>>>;
+/// The human viewer PTY output is teed to, tagged with its controller identity
+/// so a stale connection can never clear or replace its successor's viewer.
+///
+/// Output capture never writes to the viewer's socket. It offers each chunk to
+/// the viewer's bounded [`ViewerQueue`], which the viewer's own sender thread
+/// drains; a viewer that falls a full budget behind is disconnected instead of
+/// stalling capture (and, through capture, the child).
+struct AttachViewer {
+    holder: crate::model::pty_control::HolderId,
+    queue: Arc<ViewerQueue>,
+    /// Shut the viewer's socket down (used when it overflows its queue).
+    disconnect: Box<dyn Fn() + Send>,
+}
+
+/// Queued output bytes one viewer may fall behind before it is disconnected.
+const VIEWER_QUEUE_BYTES: usize = 8 << 20;
+
+/// A byte-bounded queue of output chunks for one viewer.
+#[derive(Default)]
+struct ViewerQueue {
+    state: Mutex<ViewerQueueState>,
+    ready: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct ViewerQueueState {
+    chunks: std::collections::VecDeque<Vec<u8>>,
+    bytes: usize,
+    closed: bool,
+}
+
+impl ViewerQueue {
+    /// Queue `chunk` without blocking. `false` means the viewer is closed or has
+    /// just overflowed its budget; either way it must be dropped.
+    fn offer(&self, chunk: &[u8]) -> bool {
+        let mut state = lock(&self.state);
+        if state.closed {
+            return false;
+        }
+        if state.bytes + chunk.len() > VIEWER_QUEUE_BYTES {
+            state.closed = true;
+            state.chunks.clear();
+            state.bytes = 0;
+            drop(state);
+            self.ready.notify_all();
+            return false;
+        }
+        state.bytes += chunk.len();
+        state.chunks.push_back(chunk.to_vec());
+        drop(state);
+        self.ready.notify_all();
+        true
+    }
+
+    /// Wait for the next chunk; `None` once closed.
+    fn next(&self) -> Option<Vec<u8>> {
+        let mut state = lock(&self.state);
+        loop {
+            if state.closed {
+                return None;
+            }
+            if let Some(chunk) = state.chunks.pop_front() {
+                state.bytes -= chunk.len();
+                return Some(chunk);
+            }
+            state = self.ready.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn close(&self) {
+        lock(&self.state).closed = true;
+        self.ready.notify_all();
+    }
+}
+
+/// Drain a viewer's queue into its connection until either closes.
+fn run_viewer_sender(queue: &ViewerQueue, conn: &Mutex<Box<dyn Write + Send>>) {
+    use crate::attach_proto;
+    while let Some(chunk) = queue.next() {
+        if attach_proto::write_msg(&mut *lock(conn), attach_proto::MSG_DATA, &chunk).is_err() {
+            queue.close();
+            return;
+        }
+    }
+}
+
+/// Shared sink for teeing PTY output to the attached client.
+type AttachSink = Arc<Mutex<Option<AttachViewer>>>;
+
+/// Lock a mutex, recovering the data if another thread panicked while holding it.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The sidecar's PTY input authority and live attach connections (Unix only;
+/// PTY sessions are unsupported elsewhere, so the type is uninhabited there).
+#[cfg(unix)]
+struct PtyInput {
+    writer: crate::pty_input::InputWriter,
+    registry: ConnectionRegistry,
+}
+#[cfg(not(unix))]
+type PtyInput = std::convert::Infallible;
+
+/// Removes a run's attach socket, and its breadcrumb while it still names that
+/// socket, when dropped. The run drops it before releasing the session lock, and
+/// on every early exit. The socket is this run's own: its name derives from the
+/// run identity and binding refused any pre-existing path.
+#[cfg(unix)]
+struct AttachSocketCleanup {
+    socket: PathBuf,
+    session_dir: PathBuf,
+}
+
+#[cfg(unix)]
+impl Drop for AttachSocketCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.socket);
+        if crate::attach_proto::read_breadcrumb(&self.session_dir).as_ref() == Some(&self.socket) {
+            let _ = std::fs::remove_file(self.session_dir.join("a.sock.path"));
+        }
+    }
+}
 
 /// Run the sidecar process. Called from the `_sidecar` subcommand.
 ///
@@ -617,21 +739,92 @@ fn test_abort_point(point: &str) {
 
 /// A Write wrapper around Arc<Mutex<Box<dyn Write + Send>>>.
 /// Allows multiple owners to write to the same underlying sink.
-struct SharedWriter(Arc<Mutex<Box<dyn Write + Send>>>);
+/// Forward pushed stdin for a PTY session through the single input writer.
+#[cfg(unix)]
+fn setup_pty_stdin_forwarding(
+    session_dir: &Path,
+    input: &PtyInput,
+    errors: &Arc<Mutex<Vec<String>>>,
+) -> anyhow::Result<()> {
+    #[allow(clippy::let_unit_value)]
+    let transport = Current::create_stdin_transport(session_dir)?;
+    let session_dir = session_dir.to_path_buf();
+    let writer = input.writer.clone();
+    let errors = Arc::clone(errors);
+    std::thread::spawn(move || forward_pty_stdin(transport, &session_dir, &writer, &errors));
+    Ok(())
+}
 
-impl Write for SharedWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0
-            .lock()
-            .map_err(|_| io::Error::other("write mutex poisoned"))?
-            .write(buf)
-    }
+#[cfg(not(unix))]
+fn setup_pty_stdin_forwarding(
+    _session_dir: &Path,
+    input: &PtyInput,
+    _errors: &Arc<Mutex<Vec<String>>>,
+) -> anyhow::Result<()> {
+    match *input {}
+}
 
-    fn flush(&mut self) -> io::Result<()> {
-        self.0
-            .lock()
-            .map_err(|_| io::Error::other("write mutex poisoned"))?
-            .flush()
+/// Each push connection claims the PTY as an agent for its duration and writes
+/// through the input writer, one acknowledged chunk at a time.
+///
+/// A push that cannot claim (a human holds control) or whose claim is revoked by
+/// a takeover has its remaining bytes drained and discarded — never written to
+/// the PTY. The FIFO is drained rather than closed because reopening it would
+/// hand the still-connected push writer to the next accept. The legacy push CLI
+/// therefore cannot observe the rejection; revocation is recorded as a
+/// `pty.input_revoked` event and the rejection as a run warning.
+#[cfg(unix)]
+fn forward_pty_stdin(
+    transport: <Current as Platform>::StdinTransport,
+    session_dir: &Path,
+    writer: &crate::pty_input::InputWriter,
+    errors: &Mutex<Vec<String>>,
+) {
+    use crate::model::pty_control::{ControllerKind, IncompleteReason, InputOutcome};
+
+    let mut buf = [0u8; 8192];
+    loop {
+        let Some(mut reader) = Current::accept_stdin_connection(&transport, session_dir) else {
+            return;
+        };
+        let handle = match writer.claim(writer.next_holder(), ControllerKind::Agent) {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                lock(errors).push(format!("push rejected: {e}"));
+                None
+            }
+        };
+        let mut authorized = handle;
+        loop {
+            let n = match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => {
+                    lock(errors).push(format!("stdin read failed: {e}"));
+                    return;
+                }
+            };
+            let Some(current) = authorized else {
+                continue; // rejected or revoked: drain and discard
+            };
+            match writer.write(current, buf[..n].to_vec()) {
+                Some(InputOutcome::Accepted { .. }) => {}
+                Some(InputOutcome::Incomplete {
+                    reason: IncompleteReason::NotAuthorized(_),
+                    ..
+                }) => authorized = None,
+                Some(InputOutcome::Incomplete { .. }) | None => {
+                    lock(errors).push("stdin forwarding: child stdin closed".to_owned());
+                    return;
+                }
+            }
+        }
+        if let Some(handle) = handle {
+            // Release only after this push's input is done, so the next push can
+            // claim; a revoked handle releases nothing.
+            let _ = writer.end_of_input_and_wait(handle);
+        }
     }
 }
 
@@ -816,6 +1009,34 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     let is_pty = meta.launch_spec().io_mode == IoMode::Pty;
     let stdin_piped = meta.launch_spec().stdin_mode == StdinMode::Pipe;
 
+    // A PTY session's private attach socket is bound and published before the
+    // child exists, so a PTY session never runs without its listener. The guard
+    // removes the socket and breadcrumb on every exit path.
+    #[cfg(unix)]
+    let (mut attach_socket, attach_socket_cleanup) = if is_pty {
+        match crate::attach_socket::bind_for_session(session_dir, run_id) {
+            Ok(bound) => {
+                let cleanup = AttachSocketCleanup {
+                    socket: bound.path.clone(),
+                    session_dir: session_dir.to_path_buf(),
+                };
+                (Some(bound), Some(cleanup))
+            }
+            Err(e) => {
+                meta.add_warning(format!("attach socket unavailable: {e}"));
+                meta.transition_spawn_failed(EpochTimestamp::now())?;
+                lifecycle.emit(&mut meta, true);
+                session::write_meta_atomic(&session, &meta)?;
+                if !has_deps {
+                    signal_meta_snapshot(ready, &meta)?;
+                }
+                return Ok(());
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     let mut child = if is_pty {
         match Current::spawn_child_pty(
             meta.launch_spec().argv(),
@@ -886,64 +1107,84 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     // --- Attach sink for PTY tee ---
     let attach_sink: AttachSink = Arc::new(Mutex::new(None));
 
+    // --- Exact recording of PTY output and applied geometry ---
+    let recording = is_pty.then(|| {
+        start_pty_recording(
+            session_dir,
+            run_id,
+            &effective_env,
+            LifecycleEvents::with_fresh_writer(
+                session_dir,
+                &namespace,
+                &session_name,
+                run_id,
+                generation,
+            ),
+        )
+    });
+    let recorder = recording.as_ref().map(|r| r.thread.recorder());
+
     // --- Stdin forwarding (conditional) ---
     let stdin_errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
-    // Get a dup'd fd for PTY resize before child_stdin takes the write half.
-    let mut pty_resize_fd: Option<std::fs::File> = if is_pty {
-        Current::pty_resize_fd(&child)
+    // --- PTY input authority: one writer owns the arbiter and the PTY input ---
+    #[cfg(unix)]
+    let pty_input: Option<PtyInput> = if is_pty {
+        // Dup the resize fd before the write half is taken.
+        let resize = Current::pty_resize_fd(&child);
+        let writer = child
+            .take_pty_writer()
+            .ok_or_else(|| anyhow::anyhow!("PTY write half unavailable"))?;
+        let registry = ConnectionRegistry::default();
+        let hooks = SidecarControlHooks {
+            session_dir: session_dir.to_path_buf(),
+            facts: LifecycleEvents::with_fresh_writer(
+                session_dir,
+                &namespace,
+                &session_name,
+                run_id,
+                generation,
+            ),
+            registry: registry.clone(),
+            attach_sink: Arc::clone(&attach_sink),
+        };
+        Some(PtyInput {
+            writer: crate::pty_input::InputWriter::spawn(
+                run_id,
+                UnixPtyInput {
+                    writer,
+                    resize,
+                    recorder: recorder.clone(),
+                },
+                hooks,
+            ),
+            registry,
+        })
     } else {
         None
     };
-
-    // For PTY sessions: wrap the write side in Arc<Mutex> for shared access.
-    // Both the FIFO forwarding thread and the future attach listener need to
-    // write to the PTY master.
-    let pty_write_handle: Option<Arc<Mutex<Box<dyn Write + Send>>>> = if is_pty {
-        Current::child_stdin(&mut child).map(|w| Arc::new(Mutex::new(w)))
-    } else {
-        None
-    };
+    #[cfg(not(unix))]
+    let pty_input: Option<PtyInput> = None;
 
     if meta.launch_spec().stdin_mode == StdinMode::Pipe {
-        let child_stdin: Box<dyn Write + Send> = if let Some(ref shared) = pty_write_handle {
-            // PTY: forwarding thread writes through a clone of the shared handle
-            let shared_clone = Arc::clone(shared);
-            Box::new(SharedWriter(shared_clone))
-        } else {
-            // Pipe: forwarding thread owns the write side directly
-            Current::child_stdin(&mut child)
-                .ok_or_else(|| anyhow::anyhow!("child stdin not piped"))?
-        };
-        setup_stdin_forwarding(session_dir, child_stdin, &stdin_errors)?;
+        match &pty_input {
+            Some(input) => setup_pty_stdin_forwarding(session_dir, input, &stdin_errors)?,
+            None => {
+                // Pipe: forwarding thread owns the write side directly
+                let child_stdin = Current::child_stdin(&mut child)
+                    .ok_or_else(|| anyhow::anyhow!("child stdin not piped"))?;
+                setup_stdin_forwarding(session_dir, child_stdin, &stdin_errors)?;
+            }
+        }
     }
 
     // --- Attach listener for PTY sessions (Unix only) ---
     #[cfg(unix)]
-    if is_pty {
-        let sock_path = crate::attach_proto::sock_path(session_dir);
-        crate::attach_proto::write_sock_breadcrumb(session_dir, &sock_path);
-        let pty_write_clone = pty_write_handle.as_ref().unwrap().clone();
-        let attach_sink_clone = Arc::clone(&attach_sink);
-        let session_path = session_dir.to_path_buf();
-        let resize_fd = pty_resize_fd.take();
-        let facts = LifecycleEvents::with_fresh_writer(
-            session_dir,
-            &namespace,
-            &session_name,
-            run_id,
-            generation,
-        );
-        std::thread::spawn(move || {
-            run_attach_listener(
-                &sock_path,
-                pty_write_clone,
-                attach_sink_clone,
-                &session_path,
-                resize_fd,
-                facts,
-            );
-        });
+    if let (Some(input), Some(bound)) = (&pty_input, attach_socket.take()) {
+        let writer = input.writer.clone();
+        let registry = input.registry.clone();
+        let sink = Arc::clone(&attach_sink);
+        std::thread::spawn(move || run_attach_listener(&bound.listener, &writer, &registry, &sink));
     }
 
     // --- Transition to Running + readiness signal ---
@@ -952,7 +1193,20 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
         meta.set_pty(PtyMeta::new());
     }
     lifecycle.emit(&mut meta, false);
-    session::write_meta_atomic(&session, &meta)?;
+    {
+        // A recording that already stopped has reported, or will report under
+        // this lock after this write: either way meta.json ends up Stopped.
+        let _serialized = self::lock(&META_WRITE);
+        if let (Some(run), Some(recorder)) = (&recording, &recorder) {
+            let state = recorder
+                .stopped()
+                .map_or(RecordingState::Recording, |stopped| {
+                    stopped_state(stopped, None)
+                });
+            meta.set_pty_recording(run.meta(state));
+        }
+        session::write_meta_atomic(&session, &meta)?;
+    }
     if !has_deps {
         signal_meta_snapshot(ready, &meta)?;
     }
@@ -977,10 +1231,24 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
 
     // --- Supervise ---
     let exit_reason = if is_pty {
-        supervise(&session, &mut child, Some(&attach_sink))?
+        supervise(&session, &mut child, Some(&attach_sink), recorder.as_ref())?
     } else {
-        supervise(&session, &mut child, None)?
+        supervise(&session, &mut child, None, None)?
     };
+
+    // Capture has drained the PTY: close the recording at what it holds.
+    if let Some(run) = recording {
+        let dir = run.dir.clone();
+        let (state, warning) = finished_recording(run.thread.finish());
+        meta.set_pty_recording(PtyRecording {
+            dir,
+            input_recorded: false,
+            state,
+        });
+        if let Some(warning) = warning {
+            meta.add_warning(warning);
+        }
+    }
 
     // --- Cancel timeout + collect warnings + determine exit reason ---
     timeout_cancel.store(true, Ordering::Relaxed);
@@ -1026,13 +1294,6 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     // Clean up breadcrumb -- no longer needed, meta has the child identity
     let _ = std::fs::remove_file(session_dir.join("child_pid"));
 
-    // Clean up attach socket and breadcrumb
-    if is_pty {
-        let sock = crate::attach_proto::sock_path(session_dir);
-        let _ = std::fs::remove_file(&sock);
-        let _ = std::fs::remove_file(session_dir.join("a.sock.path"));
-    }
-
     for warning in collect_warnings(session_dir, &stdin_errors) {
         meta.add_warning(warning);
     }
@@ -1045,7 +1306,16 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     test_abort_point("before_terminal_event");
     lifecycle.emit(&mut meta, true);
     test_abort_point("before_terminal_meta");
-    session::write_meta_atomic(&session, &meta)?;
+    {
+        let _serialized = self::lock(&META_WRITE);
+        session::write_meta_atomic(&session, &meta)?;
+    }
+
+    // Retire this run's attach endpoint while still holding the session lock: a
+    // replacement cannot start until the lock is released, so it cannot publish
+    // a breadcrumb this cleanup would then remove.
+    #[cfg(unix)]
+    drop(attach_socket_cleanup);
 
     // --- Release lock: session is now available for --replace ---
     drop(lock);
@@ -1191,6 +1461,7 @@ fn supervise(
     session: &SessionDir,
     child: &mut <Current as Platform>::SupervisedChild,
     attach_sink: Option<&AttachSink>,
+    recorder: Option<&Recorder>,
 ) -> anyhow::Result<ExitReason> {
     let log_path = session.path().join("output.log");
     let log_file = OpenOptions::new()
@@ -1206,7 +1477,7 @@ fn supervise(
     let log_ref = &log;
     let (stdout_result, stderr_result) = std::thread::scope(|scope| {
         let stdout_handle = if let Some(sink) = attach_sink {
-            scope.spawn(move || capture_stream_with_tee(stdout, 'O', log_ref, sink))
+            scope.spawn(move || capture_stream_with_tee(stdout, 'O', log_ref, sink, recorder))
         } else {
             scope.spawn(move || capture_stream(stdout, 'O', log_ref))
         };
@@ -1280,15 +1551,15 @@ fn capture_stream(
     Ok(())
 }
 
-/// Read raw bytes from a stream, write to log, and tee to the attach sink.
-/// Used for PTY sessions where a human may be attached.
+/// Read raw bytes from a stream, record them, write them to the log, and tee
+/// them to the attach sink. Used for PTY sessions where a human may be attached.
 fn capture_stream_with_tee(
     mut stream: Box<dyn std::io::Read + Send>,
     tag: char,
     log: &Mutex<File>,
     attach_sink: &AttachSink,
+    recorder: Option<&Recorder>,
 ) -> Result<(), String> {
-    use crate::attach_proto;
     let mut buf = [0u8; 4096];
     loop {
         let n = match stream.read(&mut buf) {
@@ -1296,6 +1567,11 @@ fn capture_stream_with_tee(
             Ok(n) => n,
             Err(_) => break,
         };
+
+        // Record first: sequencing never waits for storage.
+        if let Some(recorder) = recorder {
+            recorder.output(&buf[..n]);
+        }
 
         // Write to log (best-effort chunk-based transcript)
         {
@@ -1314,100 +1590,569 @@ fn capture_stream_with_tee(
             }
         }
 
-        // Tee raw bytes to attached client (if any)
-        if let Ok(mut sink_guard) = attach_sink.lock() {
-            if let Some(ref mut writer) = *sink_guard {
-                if attach_proto::write_msg(writer, attach_proto::MSG_DATA, &buf[..n]).is_err() {
-                    *sink_guard = None; // Client disconnected
-                }
+        // Offer raw bytes to the attached viewer's bounded queue; never block.
+        let mut sink_guard = lock(attach_sink);
+        if let Some(viewer) = sink_guard.as_ref() {
+            if !viewer.queue.offer(&buf[..n]) {
+                (viewer.disconnect)();
+                *sink_guard = None; // closed, or fell a full budget behind
             }
         }
     }
     Ok(())
 }
 
+/// The PTY input the single writer drives: the master's write half, a dup used
+/// for window-size changes, and the recorder that records applied sizes.
 #[cfg(unix)]
-fn run_attach_listener(
-    sock_path: &Path,
-    pty_write: Arc<Mutex<Box<dyn Write + Send>>>,
-    attach_sink: AttachSink,
-    session_dir: &Path,
-    resize_fd: Option<std::fs::File>,
-    mut facts: LifecycleEvents,
-) {
-    use crate::attach_proto;
-    use std::os::unix::net::UnixListener;
+struct UnixPtyInput {
+    writer: crate::platform::unix::PtyWriter,
+    resize: Option<File>,
+    recorder: Option<Recorder>,
+}
 
-    // Remove stale socket if exists
-    let _ = std::fs::remove_file(sock_path);
-
-    let listener = match UnixListener::bind(sock_path) {
-        Ok(l) => l,
-        Err(_) => return,
-    };
-
-    // Accept connections one at a time
-    for stream_result in listener.incoming() {
-        let mut read_half = match stream_result {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-
-        // try_clone for the write half (capture thread tees output here)
-        let write_half = match read_half.try_clone() {
-            Ok(w) => w,
-            Err(_) => continue,
-        };
-
-        // Set attach sink -- capture thread starts teeing output
-        *attach_sink.lock().unwrap() = Some(Box::new(write_half));
-
-        // WAL-ordered control fact before the meta flip (spec §3.6); the
-        // append itself is best-effort, not fsynced.
-        // Minimal by design: who owns the PTY's input, nothing else —
-        // screen-state semantics are adapter territory (plan boundary note).
-        facts.append_fact(
-            "pty.control_changed",
-            serde_json::json!({"control": "HumanControl", "trigger": "attach"}),
-        );
-        // Update meta to HumanControl
-        set_pty_control_on_disk(session_dir, PtyControl::HumanControl);
-
-        // Read input from human
-        loop {
-            match attach_proto::read_msg(&mut read_half) {
-                Ok((attach_proto::MSG_DATA, payload)) => {
-                    if let Ok(mut w) = pty_write.lock() {
-                        let _ = w.write_all(&payload);
-                        let _ = w.flush();
-                    }
-                }
-                Ok((attach_proto::MSG_RESIZE, payload)) => {
-                    if let Some((rows, cols)) = attach_proto::parse_resize(&payload) {
-                        if let Some(ref fd) = resize_fd {
-                            apply_pty_resize(fd, rows, cols);
-                        }
-                    }
-                }
-                Ok((attach_proto::MSG_DETACH, _)) | Err(_) => break,
-                _ => {}
-            }
-        }
-
-        // Clear attach sink -- capture thread stops teeing
-        *attach_sink.lock().unwrap() = None;
-
-        facts.append_fact(
-            "pty.control_changed",
-            serde_json::json!({"control": "AgentControl", "trigger": "detach"}),
-        );
-        // Update meta to AgentControl
-        set_pty_control_on_disk(session_dir, PtyControl::AgentControl);
+#[cfg(unix)]
+impl crate::model::pty_control::PtyInputSink for UnixPtyInput {
+    fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.writer.try_write(bytes)
     }
 }
 
 #[cfg(unix)]
-fn apply_pty_resize(fd: &std::fs::File, rows: u16, cols: u16) {
+impl crate::pty_input::WritablePty for UnixPtyInput {
+    fn wait_writable(&self, timeout: std::time::Duration) -> io::Result<bool> {
+        self.writer.wait_writable(timeout)
+    }
+
+    /// A size with a zero dimension is ignored: it cannot be recorded, and no
+    /// terminal program can draw into it.
+    fn resize(&self, rows: u16, cols: u16) {
+        let (Some(fd), Some(geometry)) =
+            (&self.resize, crate::recording::Geometry::new(rows, cols))
+        else {
+            return;
+        };
+        let apply = || apply_pty_resize(fd, rows, cols);
+        let _ = match &self.recorder {
+            Some(recorder) => {
+                recorder.resize_applied(geometry, crate::recording::ResizeCause::User, apply)
+            }
+            None => apply(),
+        };
+    }
+}
+
+/// A live attach-socket connection: a descriptor used only to shut the socket
+/// down, and how to retire it when a takeover supersedes it.
+#[cfg(unix)]
+struct Registered {
+    control: std::os::unix::net::UnixStream,
+    retirement: Retirement,
+}
+
+/// How a superseded connection is retired.
+#[cfg(unix)]
+enum Retirement {
+    /// An attach client: told with `MSG_RETIRED` through its framed writer
+    /// (shared with its output sender), then shut down.
+    Viewer {
+        conn: Arc<Mutex<Box<dyn Write + Send>>>,
+    },
+    /// A push: flagged revoked and its read side shut down, which wakes a handler
+    /// waiting for the next frame; the handler then reports the outcome itself.
+    Push { revoked: Arc<AtomicBool> },
+}
+
+/// Live attach connections by controller identity, so a takeover can retire
+/// exactly the superseded connection.
+#[cfg(unix)]
+#[derive(Clone, Default)]
+struct ConnectionRegistry(
+    Arc<Mutex<std::collections::HashMap<crate::model::pty_control::HolderId, Registered>>>,
+);
+
+#[cfg(unix)]
+impl ConnectionRegistry {
+    fn insert(&self, holder: crate::model::pty_control::HolderId, entry: Registered) {
+        lock(&self.0).insert(holder, entry);
+    }
+
+    fn remove(&self, holder: crate::model::pty_control::HolderId) -> Option<Registered> {
+        lock(&self.0).remove(&holder)
+    }
+
+    fn contains(&self, holder: crate::model::pty_control::HolderId) -> bool {
+        lock(&self.0).contains_key(&holder)
+    }
+}
+
+/// Maximum simultaneous attach connections, including ones awaiting a hello.
+#[cfg(unix)]
+const MAX_ATTACH_CONNECTIONS: usize = 8;
+
+/// Ownership side effects, run on the input writer thread.
+#[cfg(unix)]
+struct SidecarControlHooks {
+    session_dir: PathBuf,
+    facts: LifecycleEvents,
+    registry: ConnectionRegistry,
+    attach_sink: AttachSink,
+}
+
+#[cfg(unix)]
+impl crate::pty_input::ControlHooks for SidecarControlHooks {
+    fn human_control(&mut self, trigger: &'static str) {
+        // WAL-ordered control fact before the meta flip (spec §3.6); the
+        // append itself is best-effort, not fsynced. Minimal by design: who
+        // owns the PTY's input, nothing else.
+        self.facts.append_fact(
+            "pty.control_changed",
+            serde_json::json!({"control": "HumanControl", "trigger": trigger}),
+        );
+        set_pty_control_on_disk(&self.session_dir, PtyControl::HumanControl);
+    }
+
+    fn human_released(&mut self) {
+        self.facts.append_fact(
+            "pty.control_changed",
+            serde_json::json!({"control": "AgentControl", "trigger": "detach"}),
+        );
+        set_pty_control_on_disk(&self.session_dir, PtyControl::AgentControl);
+    }
+
+    fn retire(
+        &mut self,
+        holder: crate::model::pty_control::HolderId,
+        kind: crate::model::pty_control::ControllerKind,
+        epoch: crate::model::pty_control::ControllerEpoch,
+    ) {
+        // Forget the connection now, on the writer thread, before the successor
+        // is granted control: from here on it can never install a viewer. An
+        // unregistered holder (a FIFO exec forwarder) learns of revocation from
+        // its write outcomes.
+        let _ = kind;
+        let Some(entry) = self.registry.remove(holder) else {
+            return;
+        };
+        match entry.retirement {
+            Retirement::Push { revoked } => {
+                // Nonblocking: interrupt a handler idling on its next frame. A
+                // handler waiting on a PTY write gets a NotAuthorized outcome.
+                revoked.store(true, Ordering::SeqCst);
+                let _ = entry.control.shutdown(std::net::Shutdown::Read);
+            }
+            Retirement::Viewer { conn } => {
+                // Notifying and shutting down may wait on a stalled connection;
+                // never block the writer with that.
+                let sink = Arc::clone(&self.attach_sink);
+                let control = entry.control;
+                std::thread::spawn(move || {
+                    retire_connection(holder, epoch, &conn, &control, &sink)
+                });
+            }
+        }
+    }
+
+    fn input_revoked(
+        &mut self,
+        kind: crate::model::pty_control::ControllerKind,
+        accepted: usize,
+        total: usize,
+    ) {
+        self.facts.append_fact(
+            "pty.input_revoked",
+            serde_json::json!({"kind": format!("{kind:?}"), "accepted": accepted, "total": total}),
+        );
+    }
+}
+
+/// Finish retiring a connection the takeover hook has already removed from the
+/// registry: tell it best-effort, shut the socket down (which also unblocks any
+/// output write stuck on it), and drop its viewer if it had installed one.
+#[cfg(unix)]
+fn retire_connection(
+    holder: crate::model::pty_control::HolderId,
+    epoch: crate::model::pty_control::ControllerEpoch,
+    conn: &Mutex<Box<dyn Write + Send>>,
+    control: &std::os::unix::net::UnixStream,
+    sink: &AttachSink,
+) {
+    use crate::attach_proto;
+
+    let _ = control.set_write_timeout(Some(std::time::Duration::from_millis(200)));
+    for _ in 0..20 {
+        if let Ok(mut conn) = conn.try_lock() {
+            let _ = attach_proto::write_msg(
+                &mut *conn,
+                attach_proto::MSG_RETIRED,
+                &epoch.get().to_be_bytes(),
+            );
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let _ = control.shutdown(std::net::Shutdown::Both);
+    let mut viewer = lock(sink);
+    if viewer.as_ref().is_some_and(|v| v.holder == holder) {
+        if let Some(v) = viewer.take() {
+            v.queue.close();
+        }
+    }
+}
+
+/// One acknowledged agent push: claim control if nobody holds it, write each
+/// received frame before reading the next (so the client feels the PTY's
+/// backpressure), and report exactly what was written.
+///
+/// The claim is released only after all input is written. Neither of the
+/// handler's two waits can hold control hostage:
+///
+/// - **waiting for the next frame:** a takeover retires the registered push,
+///   which flags it revoked and shuts its read side down; the handler wakes and
+///   reports `revoked`;
+/// - **waiting for a PTY write:** a takeover makes the write outcome
+///   `NotAuthorized`; a client that vanishes is noticed by polling for hang-up,
+///   and its input is cancelled.
+///
+/// A push that stops early reports how far it got. A vanished client gets no
+/// report; its connection is simply gone.
+#[cfg(unix)]
+fn handle_push_connection(
+    mut stream: std::os::unix::net::UnixStream,
+    writer: &crate::pty_input::InputWriter,
+    registry: &ConnectionRegistry,
+) {
+    use crate::attach_proto::{self, INPUT_CLOSED, INPUT_REVOKED, INPUT_WRITTEN};
+    use crate::model::pty_control::{ControllerKind, IncompleteReason, InputOutcome};
+
+    let holder = writer.next_holder();
+    let revoked = Arc::new(AtomicBool::new(false));
+    let Ok(control) = stream.try_clone() else {
+        return;
+    };
+    // Register before claiming, so a takeover right after the grant retires it.
+    registry.insert(
+        holder,
+        Registered {
+            control,
+            retirement: Retirement::Push {
+                revoked: Arc::clone(&revoked),
+            },
+        },
+    );
+    let handle = match writer.claim(holder, ControllerKind::Agent) {
+        Ok(handle) => handle,
+        Err(e) => {
+            registry.remove(holder);
+            return reject_connection(&mut stream, &e.to_string());
+        }
+    };
+    let gone = |stream: &std::os::unix::net::UnixStream| {
+        registry.remove(holder);
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        writer.disconnect(handle);
+    };
+    if attach_proto::write_msg(
+        &mut stream,
+        attach_proto::MSG_ACCEPTED,
+        &handle.epoch().get().to_be_bytes(),
+    )
+    .is_err()
+    {
+        return gone(&stream);
+    }
+
+    let (mut accepted, mut received) = (0u64, 0u64);
+    let status = loop {
+        match attach_proto::read_msg(&mut stream) {
+            Ok((attach_proto::MSG_DATA, payload)) => {
+                received += payload.len() as u64;
+                let Some(outcome) = writer.submit(handle, payload) else {
+                    continue; // an empty frame writes nothing
+                };
+                match await_push_write(&outcome, &stream, &revoked, writer, handle) {
+                    PushWrite::Done(InputOutcome::Accepted { bytes, .. }) => {
+                        accepted += bytes as u64;
+                    }
+                    PushWrite::Done(InputOutcome::Incomplete {
+                        accepted: partial,
+                        reason,
+                        ..
+                    }) => {
+                        accepted += partial as u64;
+                        break if matches!(reason, IncompleteReason::NotAuthorized(_)) {
+                            INPUT_REVOKED
+                        } else {
+                            INPUT_CLOSED
+                        };
+                    }
+                    PushWrite::WriterGone => break INPUT_CLOSED,
+                    PushWrite::ClientGone => return gone(&stream),
+                }
+            }
+            Ok((attach_proto::MSG_DETACH, _)) => {
+                // Every earlier frame was written before the next was read, so
+                // nothing is queued: the release happens at once.
+                break if writer.end_of_input_and_wait(handle) {
+                    INPUT_WRITTEN
+                } else {
+                    INPUT_REVOKED
+                };
+            }
+            Ok(_) => {}
+            Err(_) if revoked.load(Ordering::SeqCst) => break INPUT_REVOKED,
+            // The client vanished or broke the protocol: cancel its input.
+            Err(_) => return gone(&stream),
+        }
+    };
+    registry.remove(holder);
+    if status != INPUT_WRITTEN {
+        writer.disconnect(handle); // release if still held; nothing else is queued
+    }
+    let _ = attach_proto::write_msg(
+        &mut stream,
+        attach_proto::MSG_INPUT_DONE,
+        &attach_proto::input_done_payload(status, accepted, received),
+    );
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+}
+
+/// How waiting for one push write ended.
+#[cfg(unix)]
+enum PushWrite {
+    Done(crate::model::pty_control::InputOutcome),
+    WriterGone,
+    ClientGone,
+}
+
+/// Wait for a push write's outcome, watching for the client to vanish. A
+/// vanished client's input is cancelled before returning, so the wait cannot
+/// outlast the PTY accepting nothing.
+#[cfg(unix)]
+fn await_push_write(
+    outcome: &std::sync::mpsc::Receiver<crate::model::pty_control::InputOutcome>,
+    stream: &std::os::unix::net::UnixStream,
+    revoked: &AtomicBool,
+    writer: &crate::pty_input::InputWriter,
+    handle: crate::model::pty_control::ControllerHandle,
+) -> PushWrite {
+    use std::sync::mpsc::RecvTimeoutError;
+
+    loop {
+        match outcome.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(done) => return PushWrite::Done(done),
+            Err(RecvTimeoutError::Disconnected) => return PushWrite::WriterGone,
+            // A retired push shut its own read side down; its write outcome
+            // (NotAuthorized) is what ends the wait, not a hang-up.
+            Err(RecvTimeoutError::Timeout)
+                if !revoked.load(Ordering::SeqCst)
+                    && crate::attach_socket::peer_hung_up(stream) =>
+            {
+                writer.disconnect(handle); // cancels this write
+                let _ = outcome.recv();
+                return PushWrite::ClientGone;
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+/// Install `viewer` unless its connection has been retired.
+///
+/// The registry check and the install happen under the sink lock. Combined
+/// with retirement removing the holder from the registry synchronously (on the
+/// writer thread, before the successor is even granted control), a retired
+/// connection can never install its viewer over its successor's.
+#[cfg(unix)]
+fn install_viewer(registry: &ConnectionRegistry, sink: &AttachSink, viewer: AttachViewer) -> bool {
+    let mut current = lock(sink);
+    if registry.contains(viewer.holder) {
+        *current = Some(viewer);
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(unix)]
+fn run_attach_listener(
+    listener: &std::os::unix::net::UnixListener,
+    writer: &crate::pty_input::InputWriter,
+    registry: &ConnectionRegistry,
+    attach_sink: &AttachSink,
+) {
+    use std::sync::atomic::AtomicUsize;
+
+    let active = Arc::new(AtomicUsize::new(0));
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else {
+            continue;
+        };
+        // Only the run owner's own processes may attach. The socket directory
+        // is already owner-only; this checks the connecting process itself.
+        if crate::attach_socket::verify_peer(&stream).is_err() {
+            reject_connection(&mut stream, "peer identity rejected");
+            continue;
+        }
+        if active.fetch_add(1, Ordering::SeqCst) >= MAX_ATTACH_CONNECTIONS {
+            active.fetch_sub(1, Ordering::SeqCst);
+            reject_connection(&mut stream, "too many attach connections");
+            continue;
+        }
+        let (writer, registry, sink, active) = (
+            writer.clone(),
+            registry.clone(),
+            Arc::clone(attach_sink),
+            Arc::clone(&active),
+        );
+        std::thread::spawn(move || {
+            handle_attach_connection(stream, &writer, &registry, &sink);
+            active.fetch_sub(1, Ordering::SeqCst);
+        });
+    }
+}
+
+#[cfg(unix)]
+fn reject_connection(stream: &mut std::os::unix::net::UnixStream, reason: &str) {
+    use crate::attach_proto;
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(200)));
+    let _ = attach_proto::write_msg(stream, attach_proto::MSG_REJECTED, reason.as_bytes());
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+}
+
+/// One attach connection: v1 hello, claim or takeover through the input writer,
+/// then relay input and resizes until detach, disconnect, or retirement.
+#[cfg(unix)]
+fn handle_attach_connection(
+    mut stream: std::os::unix::net::UnixStream,
+    writer: &crate::pty_input::InputWriter,
+    registry: &ConnectionRegistry,
+    attach_sink: &AttachSink,
+) {
+    use crate::attach_proto::{
+        self, MODE_ATTACH, MODE_PUSH, MODE_TAKEOVER, MSG_HELLO, PROTOCOL_VERSION,
+    };
+    use crate::model::pty_control::ControllerKind;
+
+    // One overall deadline for the whole hello: a client trickling bytes cannot
+    // hold a connection slot open by keeping each individual read short.
+    let hello = attach_proto::read_msg(&mut crate::attach_socket::DeadlineReader {
+        stream: &stream,
+        deadline: std::time::Instant::now() + attach_proto::HELLO_TIMEOUT,
+    });
+    let mode = match hello {
+        Ok((MSG_HELLO, p))
+            if p.len() == 2
+                && p[0] == PROTOCOL_VERSION
+                && matches!(p[1], MODE_ATTACH | MODE_TAKEOVER | MODE_PUSH) =>
+        {
+            p[1]
+        }
+        Ok((MSG_HELLO, _)) => {
+            return reject_connection(&mut stream, "unsupported attach protocol version or mode");
+        }
+        _ => return reject_connection(&mut stream, "attach requires a protocol hello"),
+    };
+    let _ = stream.set_read_timeout(None);
+    if mode == MODE_PUSH {
+        return handle_push_connection(stream, writer, registry);
+    }
+
+    let (Ok(conn_stream), Ok(control)) = (stream.try_clone(), stream.try_clone()) else {
+        return;
+    };
+    let conn: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(Box::new(conn_stream)));
+    let holder = writer.next_holder();
+    // Register before asking for control, so a takeover that lands immediately
+    // after the grant can still find and retire this connection.
+    registry.insert(
+        holder,
+        Registered {
+            control,
+            retirement: Retirement::Viewer {
+                conn: Arc::clone(&conn),
+            },
+        },
+    );
+    let granted = if mode == MODE_TAKEOVER {
+        writer.takeover(holder).map(|t| t.handle)
+    } else {
+        writer.claim(holder, ControllerKind::Human)
+    };
+    let handle = match granted {
+        Ok(handle) => handle,
+        Err(e) => {
+            registry.remove(holder);
+            return reject_connection(&mut stream, &e.to_string());
+        }
+    };
+
+    // Reply before installing the viewer, so tee output never precedes it.
+    let accepted = attach_proto::write_msg(
+        &mut *lock(&conn),
+        attach_proto::MSG_ACCEPTED,
+        &handle.epoch().get().to_be_bytes(),
+    );
+    let queue = Arc::new(ViewerQueue::default());
+    if accepted.is_ok() {
+        let sender = {
+            let (queue, conn) = (Arc::clone(&queue), Arc::clone(&conn));
+            std::thread::spawn(move || run_viewer_sender(&queue, &conn))
+        };
+        if let Ok(shutdown) = stream.try_clone() {
+            // Refused if this connection was retired in the meantime.
+            install_viewer(
+                registry,
+                attach_sink,
+                AttachViewer {
+                    holder,
+                    queue: Arc::clone(&queue),
+                    disconnect: Box::new(move || {
+                        let _ = shutdown.shutdown(std::net::Shutdown::Both);
+                    }),
+                },
+            );
+        }
+        drop(sender); // detached: exits when the queue or connection closes
+
+        loop {
+            match attach_proto::read_msg(&mut stream) {
+                Ok((attach_proto::MSG_DATA, payload)) => {
+                    // A full input queue must not hide a client that has left.
+                    let queued = writer.write_nowait_unless(handle, payload, || {
+                        crate::attach_socket::peer_hung_up(&stream)
+                    });
+                    if !queued {
+                        break;
+                    }
+                }
+                Ok((attach_proto::MSG_RESIZE, payload)) => {
+                    if let Some((rows, cols)) = attach_proto::parse_resize(&payload) {
+                        writer.resize(handle, rows, cols);
+                    }
+                }
+                Ok((attach_proto::MSG_DETACH, _)) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    }
+
+    // Detach, disconnect, retirement, or a protocol violation such as an
+    // oversized frame: close the connection, release ahead of queued input,
+    // and cancel what this client still has queued.
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    writer.disconnect(handle);
+    registry.remove(holder);
+    let mut viewer = lock(attach_sink);
+    if viewer.as_ref().is_some_and(|v| v.holder == holder) {
+        *viewer = None;
+    }
+    drop(viewer);
+    queue.close();
+}
+
+#[cfg(unix)]
+fn apply_pty_resize(fd: &std::fs::File, rows: u16, cols: u16) -> io::Result<()> {
     use std::os::unix::io::AsRawFd;
     let ws = libc::winsize {
         ws_row: rows,
@@ -1417,19 +2162,31 @@ fn apply_pty_resize(fd: &std::fs::File, rows: u16, cols: u16) {
     };
     // SAFETY: fd is a valid PTY master fd. TIOCSWINSZ with a valid winsize
     // pointer is safe on any terminal fd.
-    unsafe {
-        libc::ioctl(fd.as_raw_fd(), libc::TIOCSWINSZ, &ws);
+    if unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCSWINSZ, &ws) } == -1 {
+        return Err(io::Error::last_os_error());
     }
+    Ok(())
 }
 
-/// Best-effort: flip the PTY control state in the session's `meta.json` through
-/// a typed `Meta` round-trip (read → `set_pty_control` → write). Keeps meta.json
-/// a valid typed `Meta` — consistent with how the sidecar serializes meta
-/// everywhere else — instead of hand-patching an untyped JSON value with a raw
-/// string. Persistence is the same best-effort tmp+rename the attach path has
-/// always used (no fsync): a control flip must not block the attach thread, and
-/// the durable lifecycle writes go through `write_meta_atomic` elsewhere.
+/// Serializes the sidecar's `meta.json` writes once helper threads can patch it:
+/// the patches below, and the main thread's Running and terminal writes, which
+/// fold in the recording state they read under this lock.
+static META_WRITE: Mutex<()> = Mutex::new(());
+
+/// Best-effort: flip the PTY control state in the session's `meta.json`.
 fn set_pty_control_on_disk(session_dir: &Path, control: PtyControl) {
+    patch_meta_on_disk(session_dir, |meta| meta.set_pty_control(control));
+}
+
+/// Best-effort: patch the session's `meta.json` through a typed `Meta`
+/// round-trip (read → `patch` → write). Keeps meta.json a valid typed `Meta` —
+/// consistent with how the sidecar serializes meta everywhere else — instead of
+/// hand-patching an untyped JSON value. Persistence is the same best-effort
+/// tmp+rename the attach path has always used (no fsync): a patch must not block
+/// the thread making it for long, and the durable lifecycle writes go through
+/// `write_meta_atomic` elsewhere.
+fn patch_meta_on_disk(session_dir: &Path, patch: impl FnOnce(&mut Meta)) {
+    let _serialized = lock(&META_WRITE);
     let meta_path = session_dir.join("meta.json");
     let Ok(content) = std::fs::read_to_string(&meta_path) else {
         return;
@@ -1437,7 +2194,7 @@ fn set_pty_control_on_disk(session_dir: &Path, control: PtyControl) {
     let Ok(mut meta) = serde_json::from_str::<Meta>(&content) else {
         return;
     };
-    meta.set_pty_control(control);
+    patch(&mut meta);
     let Ok(json) = serde_json::to_string_pretty(&meta) else {
         return;
     };
@@ -1447,6 +2204,143 @@ fn set_pty_control_on_disk(session_dir: &Path, control: PtyControl) {
     }
 }
 
+/// A PTY run's recording: the recorder and where its segments live.
+struct PtyRecordingRun {
+    thread: RecorderThread,
+    /// Relative to the session directory.
+    dir: String,
+}
+
+impl PtyRecordingRun {
+    fn meta(&self, state: RecordingState) -> PtyRecording {
+        PtyRecording {
+            dir: self.dir.clone(),
+            input_recorded: false,
+            state,
+        }
+    }
+}
+
+/// Start recording a PTY run: output and applied geometry, not input. The child
+/// starts at the platform's initial PTY size, under its `TERM` (recorded empty if
+/// unset or not recordable). A stop is appended as a `recording.stopped` event,
+/// then written to `meta.json`.
+fn start_pty_recording(
+    session_dir: &Path,
+    run_id: RunId,
+    child_env: &std::collections::BTreeMap<String, String>,
+    mut facts: LifecycleEvents,
+) -> PtyRecordingRun {
+    use crate::recording::{Geometry, SegmentHeader, Sequence, TermName};
+
+    let dir = format!("recording/{run_id}");
+    let term = child_env
+        .get("TERM")
+        .cloned()
+        .or_else(|| std::env::var("TERM").ok())
+        .and_then(|term| TermName::new(term).ok())
+        .unwrap_or_else(|| TermName::new("").expect("an empty TERM is recordable"));
+    let origin_unix_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+    let header = SegmentHeader {
+        run_id,
+        segment_index: 0,
+        first_sequence: Sequence::FIRST,
+        origin_unix_ns,
+        geometry: Geometry::new(
+            crate::platform::INITIAL_PTY_ROWS,
+            crate::platform::INITIAL_PTY_COLS,
+        )
+        .expect("the initial PTY size is nonzero"),
+        input_recorded: false,
+        term,
+    };
+
+    let store = crate::recorder::DirectoryStore::new(session_dir.join(&dir));
+    let report_dir = session_dir.to_path_buf();
+    let thread = RecorderThread::start(header, store, recorder_limits(), move |stopped| {
+        let mut data = serde_json::json!({
+            "last_recorded_sequence": stopped.last_recorded.map(Sequence::get),
+            "reason": stopped.reason.as_str(),
+        });
+        if let StopReason::WriteFailed(kind) = stopped.reason {
+            data["error"] = serde_json::Value::String(format!("{kind:?}"));
+        }
+        facts.append_fact("recording.stopped", data);
+        let state = stopped_state(stopped, None);
+        patch_meta_on_disk(&report_dir, |meta| {
+            if let Some(mut recording) = meta.pty().and_then(|p| p.recording.clone()) {
+                recording.state = state;
+                meta.set_pty_recording(recording);
+            }
+        });
+    });
+    PtyRecordingRun { thread, dir }
+}
+
+/// Recording limits. Debug builds accept `TENDER_TEST_RECORDING_MAX_BYTES` so
+/// tests can reach the size limit; release sidecars ignore it.
+fn recorder_limits() -> RecorderLimits {
+    let mut limits = RecorderLimits::default();
+    if cfg!(debug_assertions) {
+        if let Some(max) = std::env::var("TENDER_TEST_RECORDING_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            limits.max_bytes = max;
+        }
+    }
+    limits
+}
+
+fn stopped_state(
+    stopped: crate::recorder::Stopped,
+    last_synced: Option<crate::recording::Sequence>,
+) -> RecordingState {
+    let (reason, error) = match stopped.reason {
+        StopReason::SizeLimit => (RecordingStopReason::SizeLimit, None),
+        StopReason::WriteFailed(kind) => {
+            (RecordingStopReason::WriteFailed, Some(format!("{kind:?}")))
+        }
+        StopReason::BacklogFull => (RecordingStopReason::BacklogFull, None),
+        StopReason::Stalled => (RecordingStopReason::Stalled, None),
+    };
+    RecordingState::Stopped {
+        last_recorded_sequence: stopped.last_recorded.map(crate::recording::Sequence::get),
+        last_synced_sequence: last_synced.map(crate::recording::Sequence::get),
+        reason,
+        error,
+    }
+}
+
+/// The recording's final state, and a run warning if it stopped early.
+fn finished_recording(summary: RecorderSummary) -> (RecordingState, Option<String>) {
+    let Some(stopped) = summary.stopped else {
+        return (
+            RecordingState::Complete {
+                last_recorded_sequence: summary.last_recorded.map(crate::recording::Sequence::get),
+                last_synced_sequence: summary.last_synced.map(crate::recording::Sequence::get),
+            },
+            None,
+        );
+    };
+    let at = stopped.last_recorded.map_or_else(
+        || "before its first record".to_owned(),
+        |s| format!("at sequence {}", s.get()),
+    );
+    let cause = match stopped.reason {
+        StopReason::WriteFailed(kind) => format!("write_failed: {kind:?}"),
+        reason => reason.as_str().to_owned(),
+    };
+    (
+        stopped_state(stopped, summary.last_synced),
+        Some(format!(
+            "recording stopped {at} ({cause}); later output was not recorded"
+        )),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1454,6 +2348,57 @@ mod tests {
     use crate::model::pty::PtyControl;
     use crate::model::spec::LaunchSpec;
     use std::num::NonZeroU32;
+
+    #[cfg(unix)]
+    #[test]
+    fn takeover_retirement_refuses_the_old_viewer_before_the_hook_returns() {
+        use crate::model::pty_control::{ControllerEpoch, ControllerKind, HolderId};
+        use crate::pty_input::ControlHooks;
+        use std::os::unix::net::UnixStream;
+
+        let dir = tempfile::tempdir().unwrap();
+        let registry = ConnectionRegistry::default();
+        let sink: AttachSink = Arc::new(Mutex::new(None));
+        let (old_conn, _peer) = UnixStream::pair().unwrap();
+        let old = HolderId::new(1);
+        registry.insert(
+            old,
+            Registered {
+                retirement: Retirement::Viewer {
+                    conn: Arc::new(Mutex::new(Box::new(old_conn.try_clone().unwrap()))),
+                },
+                control: old_conn,
+            },
+        );
+        let mut hooks = SidecarControlHooks {
+            session_dir: dir.path().to_path_buf(),
+            facts: LifecycleEvents::with_fresh_writer(
+                dir.path(),
+                &Namespace::new("default").unwrap(),
+                &SessionName::new("retire").unwrap(),
+                RunId::new(),
+                Generation::first(),
+            ),
+            registry: registry.clone(),
+            attach_sink: Arc::clone(&sink),
+        };
+
+        hooks.retire(old, ControllerKind::Human, ControllerEpoch::new(2));
+
+        // No waiting: the old connection may try to install at any instant after
+        // the takeover is decided, including before any notification thread runs.
+        let installed = install_viewer(
+            &registry,
+            &sink,
+            AttachViewer {
+                holder: old,
+                queue: Arc::new(ViewerQueue::default()),
+                disconnect: Box::new(|| {}),
+            },
+        );
+        assert!(!installed, "a retired connection installed its viewer");
+        assert!(lock(&sink).is_none());
+    }
 
     /// Write a PTY-enabled meta.json (AgentControl by default) into `dir`.
     fn write_pty_meta(dir: &Path) -> Meta {
