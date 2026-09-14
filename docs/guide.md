@@ -159,7 +159,13 @@ knowing:
 - **`tender push <name>`** feeds stdin to a session waiting on an interactive
   prompt: `printf 'y\n' | tender push dev`.
 - **`tender attach <name>`** connects your terminal to the live session for
-  hands-on interaction; detach and the session keeps running.
+  hands-on interaction; detach and the session keeps running. It is refused
+  while another client holds the terminal.
+- **`tender attach <name> --takeover`** takes the terminal anyway: the previous
+  client is disconnected and any input it (or an in-flight `push`) had queued is
+  dropped, never written. Use it to reconnect after a dropped SSH session. On a
+  PTY session, pushed bytes dropped this way are recorded as a
+  `pty.input_revoked` event; the `push` command itself cannot report it yet.
 
 ## Observe long-running work
 

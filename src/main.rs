@@ -408,6 +408,10 @@ enum Commands {
         /// Namespace
         #[arg(long)]
         namespace: Option<String>,
+        /// Take control even if another client holds it, retiring that client
+        /// and dropping its queued input
+        #[arg(long)]
+        takeover: bool,
     },
     /// Print the usage guide (embedded), optionally a single topic
     ///
@@ -639,10 +643,17 @@ impl Commands {
                 }
                 args
             }
-            Commands::Attach { name, namespace } => {
+            Commands::Attach {
+                name,
+                namespace,
+                takeover,
+            } => {
                 let mut args = vec!["attach".to_string(), name.clone()];
                 if let Some(ns) = namespace {
                     args.extend(["--namespace".to_string(), ns.clone()]);
+                }
+                if *takeover {
+                    args.push("--takeover".to_string());
                 }
                 args
             }
@@ -1172,9 +1183,11 @@ fn main() {
                 (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
             }
         }
-        Commands::Attach { name, namespace } => {
-            resolve_namespace(namespace).and_then(|ns| commands::cmd_attach(&name, &ns))
-        }
+        Commands::Attach {
+            name,
+            namespace,
+            takeover,
+        } => resolve_namespace(namespace).and_then(|ns| commands::cmd_attach(&name, &ns, takeover)),
         Commands::Guide { topic } => commands::cmd_guide(topic.as_deref()),
         Commands::Skill { action } => match action {
             SkillAction::Print => commands::cmd_skill_print(),

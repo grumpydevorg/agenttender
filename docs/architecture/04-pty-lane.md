@@ -5,17 +5,19 @@ Tender has two execution lanes:
 - pipe sessions: machine-friendly, `push` + `exec`, separate stdout/stderr
 - PTY sessions: terminal-friendly, merged transcript, `push` + `attach`, no generic shell `exec`
 
-This file describes the current PTY implementation on `main`, not the planned lease extension.
-
-The remote-first successor is [cloud PTY control and replay](../plans/active/00_cloud-pty-control.md).
-It is a plan, not shipped behavior: single-writer controller enforcement,
-exact recordings, reconnect, and an optional external screen extension.
+This file describes the current PTY implementation, including the parts of
+[cloud PTY control and replay](../plans/active/00_cloud-pty-control.md) that
+have shipped: sidecar-enforced input ownership with controller epochs, the
+attach handshake, and takeover. Recording, bounded viewer delivery, private
+sockets, and the screen extension are still planned there.
 
 ```mermaid
 stateDiagram-v2
     [*] --> AgentControl: tender start --pty
 
-    AgentControl --> HumanControl: tender attach\nor direct attach socket client
+    AgentControl --> HumanControl: attach (hello, mode attach)\nwhile no human holds control
+    HumanControl --> HumanControl: attach --takeover\nretires the previous client
+    AgentControl --> HumanControl: attach --takeover\nrevokes an in-flight push
     HumanControl --> AgentControl: detach message\nor socket close
 
     AgentControl --> AgentControl: push accepted
@@ -24,9 +26,17 @@ stateDiagram-v2
 
 Current PTY rules:
 
-- `start --pty` spawns the child under a PTY; the sidecar owns the PTY master
-- `push` writes raw bytes into the PTY input path
-- `attach` connects a human terminal over a Unix socket and steals control
+- `start --pty` spawns the child under a PTY; the sidecar owns the PTY master,
+  whose descriptions are nonblocking with poll-aware read and write halves
+- one sidecar input writer owns the run's `InputArbiter` and the PTY input; every
+  write is authorized against the current controller epoch on that thread, and
+  control requests are served before queued input
+- `push` claims control as an agent for the duration of one push connection
+- `attach` must open with a v1 hello (`MSG_HELLO`); a plain attach is refused
+  while a human holds control, and `--takeover` supersedes the holder, which
+  receives `MSG_RETIRED` and is disconnected
+- input queued by a superseded controller is never written; a revoked push is
+  drained and recorded as `pty.input_revoked`
 - while a human is attached, `push` is rejected
 - PTY output is merged and recorded as `O` lines in `output.log`
 
@@ -35,14 +45,16 @@ PTY-specific I/O shape:
 ```mermaid
 flowchart LR
     Push["tender push"] --> FIFO["stdin.pipe"]
-    FIFO --> Sidecar["sidecar forwarding thread"]
-    Sidecar --> PTY["PTY master"]
+    FIFO --> Forwarder["push forwarder (agent claim)"]
+    Human["human terminal"] --> Attach["attach socket connections (hello, claim/takeover)"]
+    Forwarder --> Writer["input writer (arbiter, epochs)"]
+    Attach --> Writer
+    Writer --> PTY["PTY master"]
     PTY --> Child["TTY-sensitive child"]
     Child --> PTY
-    PTY --> Sidecar
-    Sidecar --> Log["output.log (tag O)"]
-    Sidecar --> Attach["attach socket relay"]
-    Attach --> Human["human terminal"]
+    PTY --> Capture["capture thread"]
+    Capture --> Log["output.log (tag O)"]
+    Capture --> Attach
 ```
 
 Important exception:
@@ -50,12 +62,13 @@ Important exception:
 - generic shell `exec` is rejected on PTY sessions
 - `ExecTarget::PythonRepl` is the implemented exception: it uses a side-channel result file instead of transcript scraping, so PTY Python REPL sessions can still support `exec`
 
-Planned but not yet implemented:
+Planned but not yet implemented (see the cloud PTY plan):
 
-This planned extension should follow Theme 3: State Machine First, Protocol Second; see [../design-principles.md](../design-principles.md).
-
-- lease-backed exclusive PTY ownership
-- token-authorized push headers
-- PTY observe mode
-
-Those are described in [../plans/backlog/pty-automation.md](../plans/backlog/pty-automation.md).
+- bounded, nonblocking viewer delivery (a stalled attached client can still slow
+  output capture today)
+- exact output recording and replay
+- private, peer-verified attach sockets (the socket still lives in the system
+  temporary directory)
+- push over the attach socket with acknowledged outcomes, so `push` can report a
+  revocation
+- continuous resize forwarding and a detach escape in the `attach` CLI

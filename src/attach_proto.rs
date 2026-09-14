@@ -6,6 +6,28 @@ use std::path::{Path, PathBuf};
 pub const MSG_DATA: u8 = 0x01;
 pub const MSG_RESIZE: u8 = 0x02;
 pub const MSG_DETACH: u8 = 0x03;
+/// Client → sidecar, first message of every connection: `[version, mode]`.
+/// A connection that does not open with a valid hello is closed without
+/// gaining control.
+pub const MSG_HELLO: u8 = 0x04;
+/// Sidecar → client: control granted. Payload: the controller epoch (u64 BE).
+pub const MSG_ACCEPTED: u8 = 0x05;
+/// Sidecar → client: control refused. Payload: UTF-8 reason. The sidecar then
+/// closes the connection.
+pub const MSG_REJECTED: u8 = 0x06;
+/// Sidecar → client: another client took over. Payload: the new epoch (u64 BE).
+/// The sidecar then shuts the connection down.
+pub const MSG_RETIRED: u8 = 0x07;
+
+/// The attach protocol version carried in [`MSG_HELLO`].
+pub const PROTOCOL_VERSION: u8 = 1;
+/// [`MSG_HELLO`] mode: take control only if nobody holds it.
+pub const MODE_ATTACH: u8 = 1;
+/// [`MSG_HELLO`] mode: take control, retiring any current controller.
+pub const MODE_TAKEOVER: u8 = 2;
+
+/// How long the sidecar waits for a connection's hello.
+pub const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub fn write_msg(w: &mut impl Write, msg_type: u8, payload: &[u8]) -> io::Result<()> {
     let len = payload.len() as u32;

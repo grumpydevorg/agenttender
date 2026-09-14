@@ -28,6 +28,18 @@ pub struct SupervisedChild {
     pty_master_write: Option<File>,
 }
 
+impl SupervisedChild {
+    /// Take the PTY master's write half for the sidecar's single input writer.
+    /// `None` for pipe sessions or once taken.
+    pub fn take_pty_writer(&mut self) -> Option<PtyWriter> {
+        if self.is_pty {
+            self.pty_master_write.take().map(PtyWriter::new)
+        } else {
+            None
+        }
+    }
+}
+
 /// Lightweight kill handle for Unix. Carries the ProcessIdentity
 /// needed for identity-verified group kill. Send + Clone so it can
 /// be moved to a timeout thread.
