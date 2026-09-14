@@ -34,9 +34,88 @@ type ReadyWriter = <Current as Platform>::ReadyWriter;
 
 /// The human viewer PTY output is teed to, tagged with its controller identity
 /// so a stale connection can never clear or replace its successor's viewer.
+///
+/// Output capture never writes to the viewer's socket. It offers each chunk to
+/// the viewer's bounded [`ViewerQueue`], which the viewer's own sender thread
+/// drains; a viewer that falls a full budget behind is disconnected instead of
+/// stalling capture (and, through capture, the child).
 struct AttachViewer {
     holder: crate::model::pty_control::HolderId,
-    conn: Arc<Mutex<Box<dyn Write + Send>>>,
+    queue: Arc<ViewerQueue>,
+    /// Shut the viewer's socket down (used when it overflows its queue).
+    disconnect: Box<dyn Fn() + Send>,
+}
+
+/// Queued output bytes one viewer may fall behind before it is disconnected.
+const VIEWER_QUEUE_BYTES: usize = 8 << 20;
+
+/// A byte-bounded queue of output chunks for one viewer.
+#[derive(Default)]
+struct ViewerQueue {
+    state: Mutex<ViewerQueueState>,
+    ready: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct ViewerQueueState {
+    chunks: std::collections::VecDeque<Vec<u8>>,
+    bytes: usize,
+    closed: bool,
+}
+
+impl ViewerQueue {
+    /// Queue `chunk` without blocking. `false` means the viewer is closed or has
+    /// just overflowed its budget; either way it must be dropped.
+    fn offer(&self, chunk: &[u8]) -> bool {
+        let mut state = lock(&self.state);
+        if state.closed {
+            return false;
+        }
+        if state.bytes + chunk.len() > VIEWER_QUEUE_BYTES {
+            state.closed = true;
+            state.chunks.clear();
+            state.bytes = 0;
+            drop(state);
+            self.ready.notify_all();
+            return false;
+        }
+        state.bytes += chunk.len();
+        state.chunks.push_back(chunk.to_vec());
+        drop(state);
+        self.ready.notify_all();
+        true
+    }
+
+    /// Wait for the next chunk; `None` once closed.
+    fn next(&self) -> Option<Vec<u8>> {
+        let mut state = lock(&self.state);
+        loop {
+            if state.closed {
+                return None;
+            }
+            if let Some(chunk) = state.chunks.pop_front() {
+                state.bytes -= chunk.len();
+                return Some(chunk);
+            }
+            state = self.ready.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn close(&self) {
+        lock(&self.state).closed = true;
+        self.ready.notify_all();
+    }
+}
+
+/// Drain a viewer's queue into its connection until either closes.
+fn run_viewer_sender(queue: &ViewerQueue, conn: &Mutex<Box<dyn Write + Send>>) {
+    use crate::attach_proto;
+    while let Some(chunk) = queue.next() {
+        if attach_proto::write_msg(&mut *lock(conn), attach_proto::MSG_DATA, &chunk).is_err() {
+            queue.close();
+            return;
+        }
+    }
 }
 
 /// Shared sink for teeing PTY output to the attached client.
@@ -1382,7 +1461,6 @@ fn capture_stream_with_tee(
     log: &Mutex<File>,
     attach_sink: &AttachSink,
 ) -> Result<(), String> {
-    use crate::attach_proto;
     let mut buf = [0u8; 4096];
     loop {
         let n = match stream.read(&mut buf) {
@@ -1408,13 +1486,12 @@ fn capture_stream_with_tee(
             }
         }
 
-        // Tee raw bytes to attached client (if any)
+        // Offer raw bytes to the attached viewer's bounded queue; never block.
         let mut sink_guard = lock(attach_sink);
         if let Some(viewer) = sink_guard.as_ref() {
-            let mut conn = lock(&viewer.conn);
-            if attach_proto::write_msg(&mut *conn, attach_proto::MSG_DATA, &buf[..n]).is_err() {
-                drop(conn);
-                *sink_guard = None; // Client disconnected
+            if !viewer.queue.offer(&buf[..n]) {
+                (viewer.disconnect)();
+                *sink_guard = None; // closed, or fell a full budget behind
             }
         }
     }
@@ -1575,7 +1652,9 @@ fn retire_connection(
     let _ = entry.control.shutdown(std::net::Shutdown::Both);
     let mut viewer = lock(sink);
     if viewer.as_ref().is_some_and(|v| v.holder == holder) {
-        *viewer = None;
+        if let Some(v) = viewer.take() {
+            v.queue.close();
+        }
     }
 }
 
@@ -1689,16 +1768,27 @@ fn handle_attach_connection(
         attach_proto::MSG_ACCEPTED,
         &handle.epoch().get().to_be_bytes(),
     );
+    let queue = Arc::new(ViewerQueue::default());
     if accepted.is_ok() {
+        let sender = {
+            let (queue, conn) = (Arc::clone(&queue), Arc::clone(&conn));
+            std::thread::spawn(move || run_viewer_sender(&queue, &conn))
+        };
         let mut viewer = lock(attach_sink);
         // A connection retired in the meantime must not displace its successor.
         if registry.contains(holder) {
-            *viewer = Some(AttachViewer {
-                holder,
-                conn: Arc::clone(&conn),
-            });
+            if let Ok(shutdown) = stream.try_clone() {
+                *viewer = Some(AttachViewer {
+                    holder,
+                    queue: Arc::clone(&queue),
+                    disconnect: Box::new(move || {
+                        let _ = shutdown.shutdown(std::net::Shutdown::Both);
+                    }),
+                });
+            }
         }
         drop(viewer);
+        drop(sender); // detached: exits when the queue or connection closes
 
         loop {
             match attach_proto::read_msg(&mut stream) {
@@ -1720,6 +1810,8 @@ fn handle_attach_connection(
     if viewer.as_ref().is_some_and(|v| v.holder == holder) {
         *viewer = None;
     }
+    drop(viewer);
+    queue.close();
 }
 
 #[cfg(unix)]

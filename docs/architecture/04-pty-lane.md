@@ -8,7 +8,7 @@ Tender has two execution lanes:
 This file describes the current PTY implementation, including the parts of
 [cloud PTY control and replay](../plans/active/00_cloud-pty-control.md) that
 have shipped: sidecar-enforced input ownership with controller epochs, the
-attach handshake, and takeover. Recording, bounded viewer delivery, private
+attach handshake, takeover, and bounded viewer delivery. Recording, private
 sockets, and the screen extension are still planned there.
 
 ```mermaid
@@ -38,7 +38,10 @@ Current PTY rules:
 - input queued by a superseded controller is never written; a revoked push is
   drained and recorded as `pty.input_revoked`
 - while a human is attached, `push` is rejected
-- PTY output is merged and recorded as `O` lines in `output.log`
+- PTY output is merged and recorded as `O` lines in `output.log`; capture only
+  offers output to the attached viewer's bounded queue (8 MiB), drained by that
+  viewer's own sender thread, so a viewer that stops reading is disconnected
+  (releasing its control) instead of stalling capture and the child
 
 PTY-specific I/O shape:
 
@@ -64,9 +67,8 @@ Important exception:
 
 Planned but not yet implemented (see the cloud PTY plan):
 
-- bounded, nonblocking viewer delivery (a stalled attached client can still slow
-  output capture today)
-- exact output recording and replay
+- exact output recording and replay, including catch-up for a disconnected
+  viewer
 - private, peer-verified attach sockets (the socket still lives in the system
   temporary directory)
 - push over the attach socket with acknowledged outcomes, so `push` can report a

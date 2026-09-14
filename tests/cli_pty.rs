@@ -1037,3 +1037,57 @@ fn takeover_after_a_silent_connection_reaches_the_same_running_process() {
         .output()
         .ok();
 }
+
+#[test]
+fn stalled_viewer_cannot_block_output_capture() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-stalled",
+    };
+    let go = root.path().join("go");
+
+    // After the go file appears, the child writes ~10 MiB — more than one
+    // viewer's queue budget — then a marker, then stays alive.
+    let script = "while [ ! -f \"$GO\" ]; do sleep 0.05; done; \
+                  yes 0123456789abcdef0123456789abcdef | head -c 10485760; \
+                  echo; echo ALL-OUTPUT-DONE; sleep 60";
+    tender(&root)
+        .args(["start", "pty-stalled", "--pty"])
+        .arg("--env")
+        .arg(format!("GO={}", go.display()))
+        .args(["--", "sh", "-c", script])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-stalled");
+    let sock_path = wait_for_attach_socket(&root, "pty-stalled");
+
+    // A viewer that attaches and then never reads.
+    let mut stalled = attach_as_human(&sock_path);
+    std::fs::write(&go, b"").unwrap();
+
+    // Capture must keep up regardless of the stalled viewer. Read output.log
+    // directly: `tender log` would re-parse ~10 MiB on every poll.
+    let log_path = root
+        .path()
+        .join(".tender/sessions/default/pty-stalled/output.log");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let log = std::fs::read(&log_path).unwrap_or_default();
+        if log.windows(15).any(|w| w == b"ALL-OUTPUT-DONE") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "output capture stalled behind a viewer that never reads ({} log bytes)",
+            log.len()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // The stalled viewer was disconnected rather than buffered without bound,
+    // and with it went its control.
+    let _ = read_until_closed(&mut stalled);
+    wait_for_pty_control(&root, "pty-stalled", "AgentControl");
+}
