@@ -192,13 +192,24 @@ impl InputWriter {
 
     /// Queue `bytes` and wait for the outcome. Empty input is a no-op.
     pub fn write(&self, handle: ControllerHandle, bytes: Vec<u8>) -> Option<InputOutcome> {
+        self.submit(handle, bytes)?.recv().ok()
+    }
+
+    /// Queue `bytes` (waiting only for queue space) and return where the outcome
+    /// will arrive, so the caller can watch other events while it waits. `None`
+    /// for empty input. A closed receiver means the writer stopped.
+    pub fn submit(
+        &self,
+        handle: ControllerHandle,
+        bytes: Vec<u8>,
+    ) -> Option<std::sync::mpsc::Receiver<InputOutcome>> {
         let request = self.request(handle, bytes)?;
         let (reply, rx) = sync_channel(1);
         self.push_input(InputItem::Write {
             request,
             reply: Some(reply),
         });
-        rx.recv().ok()
+        Some(rx)
     }
 
     /// Queue `bytes` without waiting for the outcome (waits only for queue space).

@@ -264,6 +264,24 @@ pub fn verify_peer(stream: &UnixStream) -> io::Result<()> {
     }
 }
 
+/// Whether the peer has closed its end, checked without blocking or consuming
+/// data. Reports a closed peer even if its unread frames are still queued, so a
+/// client that sent input and then vanished is noticed while the sidecar is busy
+/// waiting on the PTY rather than reading.
+#[must_use]
+pub fn peer_hung_up(stream: &UnixStream) -> bool {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+
+    let mut fds = [PollFd::new(stream, PollFlags::IN)];
+    let now = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // A socket error counts as hung up: the connection is unusable either way.
+    matches!(poll(&mut fds, Some(&now)), Ok(n) if n > 0)
+        && fds[0].revents().intersects(PollFlags::HUP | PollFlags::ERR)
+}
+
 /// Reads from a socket under one overall deadline, so a client that trickles
 /// bytes cannot extend a handshake indefinitely.
 pub struct DeadlineReader<'a> {
@@ -411,6 +429,26 @@ mod tests {
         let (a, _b) = UnixStream::pair().unwrap();
         assert_eq!(peer_uid(&a).unwrap(), rustix::process::geteuid().as_raw());
         verify_peer(&a).unwrap();
+    }
+
+    #[test]
+    fn peer_hung_up_tracks_the_peer_without_consuming_data() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        assert!(!peer_hung_up(&a), "an idle live peer");
+
+        b.write_all(b"queued").unwrap();
+        assert!(!peer_hung_up(&a), "a live peer with unread data");
+
+        drop(b);
+        assert!(
+            peer_hung_up(&a),
+            "a closed peer, even with unread data queued"
+        );
+
+        let mut rest = Vec::new();
+        (&a).read_to_end(&mut rest).unwrap();
+        assert_eq!(rest, b"queued", "checking consumed nothing");
+        assert!(peer_hung_up(&a), "a closed peer after draining");
     }
 
     #[test]

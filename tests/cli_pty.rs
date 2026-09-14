@@ -9,8 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tender::attach_proto::{
-    MODE_ATTACH, MODE_TAKEOVER, MSG_ACCEPTED, MSG_DATA, MSG_DETACH, MSG_HELLO, MSG_REJECTED,
-    MSG_RESIZE, MSG_RETIRED, PROTOCOL_VERSION, read_msg, resize_payload,
+    MODE_ATTACH, MODE_PUSH, MODE_TAKEOVER, MSG_ACCEPTED, MSG_DATA, MSG_DETACH, MSG_HELLO,
+    MSG_INPUT_DONE, MSG_REJECTED, MSG_RESIZE, MSG_RETIRED, PROTOCOL_VERSION, read_msg,
+    resize_payload,
 };
 
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -1326,5 +1327,180 @@ fn detach_releases_control_even_when_pty_input_is_full() {
         MSG_ACCEPTED,
         "a detached client still holds control: {}",
         String::from_utf8_lossy(&reason)
+    );
+}
+
+#[test]
+fn a_disconnected_push_releases_control_behind_a_full_pty() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-push-gone",
+    };
+    tender(&root)
+        .args(["start", "pty-push-gone", "--pty", "--stdin", "--"])
+        .args([
+            "sh",
+            "-c",
+            "stty raw -echo; head -c 1024 >/dev/null; printf READY; sleep 60",
+        ])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-push-gone");
+    let sock_path = wait_for_attach_socket(&root, "pty-push-gone");
+
+    // A push client that sends more than the child will read, then vanishes
+    // while the sidecar is still waiting for the PTY to accept it.
+    let (mut agent, (msg_type, _)) = hello(&sock_path, MODE_PUSH);
+    assert_eq!(msg_type, MSG_ACCEPTED);
+    agent
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write_msg(&mut agent, MSG_DATA, &vec![b'x'; 65536]);
+    wait_log_contains(&root, "pty-push-gone", "READY");
+    agent.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(agent);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (_next, (msg_type, reason)) = hello(&sock_path, MODE_ATTACH);
+        if msg_type == MSG_ACCEPTED {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a disconnected push still holds the terminal: {}",
+            String::from_utf8_lossy(&reason)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn idle_pushes_retired_by_takeover_do_not_exhaust_connection_slots() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-push-slots",
+    };
+    let sock_path = start_cat(&root, "pty-push-slots");
+
+    // More rounds than there are connection slots. Each push stays connected and
+    // idle; the client never closes it.
+    let mut idle_pushes = Vec::new();
+    for round in 0..9 {
+        let (mut push, (msg_type, reason)) = hello(&sock_path, MODE_PUSH);
+        assert_eq!(
+            msg_type,
+            MSG_ACCEPTED,
+            "push {round}: {}",
+            String::from_utf8_lossy(&reason)
+        );
+        let (mut human, (msg_type, reason)) = hello(&sock_path, MODE_TAKEOVER);
+        assert_eq!(
+            msg_type,
+            MSG_ACCEPTED,
+            "takeover {round}: {}",
+            String::from_utf8_lossy(&reason)
+        );
+
+        // The retired push is told, and its connection is closed server-side.
+        let seen = read_until_closed(&mut push);
+        let done = seen
+            .iter()
+            .find(|(t, _)| *t == MSG_INPUT_DONE)
+            .unwrap_or_else(|| panic!("push {round} got no outcome: {seen:?}"));
+        assert_eq!(
+            tender::attach_proto::parse_input_done(&done.1).map(|(s, _, _)| s),
+            Some(tender::attach_proto::INPUT_REVOKED)
+        );
+        idle_pushes.push(push);
+
+        write_msg(&mut human, MSG_DETACH, &[]);
+        let _ = read_until_closed(&mut human);
+        wait_for_pty_control(&root, "pty-push-slots", "AgentControl");
+    }
+}
+
+#[test]
+fn an_old_runs_cleanup_cannot_remove_its_replacements_breadcrumb() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-replaced",
+    };
+    let callback = root.path().join("callback.sh");
+    let started = root.path().join("callback-started");
+    let finish = root.path().join("callback-finish");
+    std::fs::write(
+        &callback,
+        b"touch \"$1\"; i=0; while [ ! -f \"$2\" ] && [ \"$i\" -lt 400 ]; do sleep 0.05; i=$((i+1)); done\n",
+    )
+    .unwrap();
+    let on_exit = format!(
+        "sh {} {} {}",
+        callback.display(),
+        started.display(),
+        finish.display()
+    );
+    let first = tender(&root)
+        .args(["start", "pty-replaced", "--pty", "--stdin", "--on-exit"])
+        .arg(&on_exit)
+        .args(["--", "cat"])
+        .output()
+        .unwrap();
+    let old_run: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let old_run_id = old_run["run_id"].as_str().unwrap().to_owned();
+    harness::wait_running(&root, "pty-replaced");
+    let old_socket = wait_for_attach_socket(&root, "pty-replaced");
+
+    // End the old run; its exit callback runs after the session lock is released.
+    tender(&root)
+        .args(["kill", "pty-replaced", "--force"])
+        .output()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !started.exists() {
+        assert!(Instant::now() < deadline, "exit callback never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // A replacement starts while the old sidecar is still in its callback.
+    tender(&root)
+        .args([
+            "start",
+            "pty-replaced",
+            "--replace",
+            "--pty",
+            "--stdin",
+            "--",
+            "cat",
+        ])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-replaced");
+    let new_socket = wait_for_attach_socket(&root, "pty-replaced");
+    assert_ne!(old_socket, new_socket);
+
+    // Let the old sidecar finish: its callback record is written afterwards.
+    std::fs::write(&finish, b"").unwrap();
+    let record = root
+        .path()
+        .join(format!(".tender/callbacks/{old_run_id}.json"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !record.exists() {
+        assert!(Instant::now() < deadline, "old sidecar never finished");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let session = root.path().join(".tender/sessions/default/pty-replaced");
+    assert!(!old_socket.exists(), "the old run's socket is gone");
+    assert_eq!(
+        tender::attach_proto::read_sock_path(&session),
+        Some(new_socket),
+        "the old run's cleanup removed the replacement's breadcrumb"
     );
 }

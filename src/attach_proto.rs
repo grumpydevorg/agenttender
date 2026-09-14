@@ -114,9 +114,13 @@ pub fn parse_resize(payload: &[u8]) -> Option<(u16, u16)> {
 /// There is no fallback location: a session without a breadcrumb has no
 /// attachable listener.
 pub fn read_sock_path(session_dir: &Path) -> Option<PathBuf> {
+    read_breadcrumb(session_dir).filter(|path| path.exists())
+}
+
+/// The socket path the session's breadcrumb names, whether or not it exists.
+pub fn read_breadcrumb(session_dir: &Path) -> Option<PathBuf> {
     let content = std::fs::read_to_string(session_dir.join("a.sock.path")).ok()?;
-    let path = PathBuf::from(content.trim());
-    path.exists().then_some(path)
+    Some(PathBuf::from(content.trim()))
 }
 
 #[cfg(test)]

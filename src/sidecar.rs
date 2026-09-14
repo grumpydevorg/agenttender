@@ -136,20 +136,23 @@ struct PtyInput {
 #[cfg(not(unix))]
 type PtyInput = std::convert::Infallible;
 
-/// Removes a run's attach socket and its breadcrumb when the sidecar finishes,
-/// whichever way it finishes. Both are this run's own files: the socket name is
-/// derived from the run identity and binding refused any pre-existing path.
+/// Removes a run's attach socket, and its breadcrumb while it still names that
+/// socket, when dropped. The run drops it before releasing the session lock, and
+/// on every early exit. The socket is this run's own: its name derives from the
+/// run identity and binding refused any pre-existing path.
 #[cfg(unix)]
 struct AttachSocketCleanup {
     socket: PathBuf,
-    breadcrumb: PathBuf,
+    session_dir: PathBuf,
 }
 
 #[cfg(unix)]
 impl Drop for AttachSocketCleanup {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket);
-        let _ = std::fs::remove_file(&self.breadcrumb);
+        if crate::attach_proto::read_breadcrumb(&self.session_dir).as_ref() == Some(&self.socket) {
+            let _ = std::fs::remove_file(self.session_dir.join("a.sock.path"));
+        }
     }
 }
 
@@ -1009,12 +1012,12 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     // child exists, so a PTY session never runs without its listener. The guard
     // removes the socket and breadcrumb on every exit path.
     #[cfg(unix)]
-    let (mut attach_socket, _attach_socket_cleanup) = if is_pty {
+    let (mut attach_socket, attach_socket_cleanup) = if is_pty {
         match crate::attach_socket::bind_for_session(session_dir, run_id) {
             Ok(bound) => {
                 let cleanup = AttachSocketCleanup {
                     socket: bound.path.clone(),
-                    breadcrumb: session_dir.join("a.sock.path"),
+                    session_dir: session_dir.to_path_buf(),
                 };
                 (Some(bound), Some(cleanup))
             }
@@ -1255,6 +1258,12 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     lifecycle.emit(&mut meta, true);
     test_abort_point("before_terminal_meta");
     session::write_meta_atomic(&session, &meta)?;
+
+    // Retire this run's attach endpoint while still holding the session lock: a
+    // replacement cannot start until the lock is released, so it cannot publish
+    // a breadcrumb this cleanup would then remove.
+    #[cfg(unix)]
+    drop(attach_socket_cleanup);
 
     // --- Release lock: session is now available for --replace ---
     drop(lock);
@@ -1562,12 +1571,25 @@ impl crate::pty_input::WritablePty for UnixPtyInput {
     }
 }
 
-/// A live attach connection: its framed writer (shared with the output tee) and
-/// a descriptor used only to shut the socket down.
+/// A live attach-socket connection: a descriptor used only to shut the socket
+/// down, and how to retire it when a takeover supersedes it.
 #[cfg(unix)]
 struct Registered {
-    conn: Arc<Mutex<Box<dyn Write + Send>>>,
     control: std::os::unix::net::UnixStream,
+    retirement: Retirement,
+}
+
+/// How a superseded connection is retired.
+#[cfg(unix)]
+enum Retirement {
+    /// An attach client: told with `MSG_RETIRED` through its framed writer
+    /// (shared with its output sender), then shut down.
+    Viewer {
+        conn: Arc<Mutex<Box<dyn Write + Send>>>,
+    },
+    /// A push: flagged revoked and its read side shut down, which wakes a handler
+    /// waiting for the next frame; the handler then reports the outcome itself.
+    Push { revoked: Arc<AtomicBool> },
 }
 
 /// Live attach connections by controller identity, so a takeover can retire
@@ -1633,19 +1655,31 @@ impl crate::pty_input::ControlHooks for SidecarControlHooks {
         kind: crate::model::pty_control::ControllerKind,
         epoch: crate::model::pty_control::ControllerEpoch,
     ) {
-        if kind != crate::model::pty_control::ControllerKind::Human {
-            // Agent pushes learn of revocation from their write outcomes.
-            return;
-        }
         // Forget the connection now, on the writer thread, before the successor
-        // is granted control: from here on it can never install a viewer.
+        // is granted control: from here on it can never install a viewer. An
+        // unregistered holder (a FIFO exec forwarder) learns of revocation from
+        // its write outcomes.
+        let _ = kind;
         let Some(entry) = self.registry.remove(holder) else {
             return;
         };
-        // Notifying and shutting down may wait on a stalled connection; never
-        // block the writer with that.
-        let sink = Arc::clone(&self.attach_sink);
-        std::thread::spawn(move || retire_connection(holder, epoch, entry, &sink));
+        match entry.retirement {
+            Retirement::Push { revoked } => {
+                // Nonblocking: interrupt a handler idling on its next frame. A
+                // handler waiting on a PTY write gets a NotAuthorized outcome.
+                revoked.store(true, Ordering::SeqCst);
+                let _ = entry.control.shutdown(std::net::Shutdown::Read);
+            }
+            Retirement::Viewer { conn } => {
+                // Notifying and shutting down may wait on a stalled connection;
+                // never block the writer with that.
+                let sink = Arc::clone(&self.attach_sink);
+                let control = entry.control;
+                std::thread::spawn(move || {
+                    retire_connection(holder, epoch, &conn, &control, &sink)
+                });
+            }
+        }
     }
 
     fn input_revoked(
@@ -1668,16 +1702,15 @@ impl crate::pty_input::ControlHooks for SidecarControlHooks {
 fn retire_connection(
     holder: crate::model::pty_control::HolderId,
     epoch: crate::model::pty_control::ControllerEpoch,
-    entry: Registered,
+    conn: &Mutex<Box<dyn Write + Send>>,
+    control: &std::os::unix::net::UnixStream,
     sink: &AttachSink,
 ) {
     use crate::attach_proto;
 
-    let _ = entry
-        .control
-        .set_write_timeout(Some(std::time::Duration::from_millis(200)));
+    let _ = control.set_write_timeout(Some(std::time::Duration::from_millis(200)));
     for _ in 0..20 {
-        if let Ok(mut conn) = entry.conn.try_lock() {
+        if let Ok(mut conn) = conn.try_lock() {
             let _ = attach_proto::write_msg(
                 &mut *conn,
                 attach_proto::MSG_RETIRED,
@@ -1687,7 +1720,7 @@ fn retire_connection(
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    let _ = entry.control.shutdown(std::net::Shutdown::Both);
+    let _ = control.shutdown(std::net::Shutdown::Both);
     let mut viewer = lock(sink);
     if viewer.as_ref().is_some_and(|v| v.holder == holder) {
         if let Some(v) = viewer.take() {
@@ -1700,20 +1733,53 @@ fn retire_connection(
 /// received frame before reading the next (so the client feels the PTY's
 /// backpressure), and report exactly what was written.
 ///
-/// The claim is released only after all input is written. A push superseded by
-/// a takeover, or whose PTY stops accepting input, stops at once and reports
-/// how far it got; a client that vanishes mid-push has its input cancelled.
+/// The claim is released only after all input is written. Neither of the
+/// handler's two waits can hold control hostage:
+///
+/// - **waiting for the next frame:** a takeover retires the registered push,
+///   which flags it revoked and shuts its read side down; the handler wakes and
+///   reports `revoked`;
+/// - **waiting for a PTY write:** a takeover makes the write outcome
+///   `NotAuthorized`; a client that vanishes is noticed by polling for hang-up,
+///   and its input is cancelled.
+///
+/// A push that stops early reports how far it got. A vanished client gets no
+/// report; its connection is simply gone.
 #[cfg(unix)]
 fn handle_push_connection(
     mut stream: std::os::unix::net::UnixStream,
     writer: &crate::pty_input::InputWriter,
+    registry: &ConnectionRegistry,
 ) {
     use crate::attach_proto::{self, INPUT_CLOSED, INPUT_REVOKED, INPUT_WRITTEN};
     use crate::model::pty_control::{ControllerKind, IncompleteReason, InputOutcome};
 
-    let handle = match writer.claim(writer.next_holder(), ControllerKind::Agent) {
+    let holder = writer.next_holder();
+    let revoked = Arc::new(AtomicBool::new(false));
+    let Ok(control) = stream.try_clone() else {
+        return;
+    };
+    // Register before claiming, so a takeover right after the grant retires it.
+    registry.insert(
+        holder,
+        Registered {
+            control,
+            retirement: Retirement::Push {
+                revoked: Arc::clone(&revoked),
+            },
+        },
+    );
+    let handle = match writer.claim(holder, ControllerKind::Agent) {
         Ok(handle) => handle,
-        Err(e) => return reject_connection(&mut stream, &e.to_string()),
+        Err(e) => {
+            registry.remove(holder);
+            return reject_connection(&mut stream, &e.to_string());
+        }
+    };
+    let gone = |stream: &std::os::unix::net::UnixStream| {
+        registry.remove(holder);
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        writer.disconnect(handle);
     };
     if attach_proto::write_msg(
         &mut stream,
@@ -1722,7 +1788,7 @@ fn handle_push_connection(
     )
     .is_err()
     {
-        return writer.disconnect(handle);
+        return gone(&stream);
     }
 
     let (mut accepted, mut received) = (0u64, 0u64);
@@ -1730,9 +1796,14 @@ fn handle_push_connection(
         match attach_proto::read_msg(&mut stream) {
             Ok((attach_proto::MSG_DATA, payload)) => {
                 received += payload.len() as u64;
-                match writer.write(handle, payload) {
-                    Some(InputOutcome::Accepted { bytes, .. }) => accepted += bytes as u64,
-                    Some(InputOutcome::Incomplete {
+                let Some(outcome) = writer.submit(handle, payload) else {
+                    continue; // an empty frame writes nothing
+                };
+                match await_push_write(&outcome, &stream, &revoked, writer, handle) {
+                    PushWrite::Done(InputOutcome::Accepted { bytes, .. }) => {
+                        accepted += bytes as u64;
+                    }
+                    PushWrite::Done(InputOutcome::Incomplete {
                         accepted: partial,
                         reason,
                         ..
@@ -1744,12 +1815,13 @@ fn handle_push_connection(
                             INPUT_CLOSED
                         };
                     }
-                    // Empty frames write nothing; a gone writer means no PTY.
-                    None if received == accepted => {}
-                    None => break INPUT_CLOSED,
+                    PushWrite::WriterGone => break INPUT_CLOSED,
+                    PushWrite::ClientGone => return gone(&stream),
                 }
             }
             Ok((attach_proto::MSG_DETACH, _)) => {
+                // Every earlier frame was written before the next was read, so
+                // nothing is queued: the release happens at once.
                 break if writer.end_of_input_and_wait(handle) {
                     INPUT_WRITTEN
                 } else {
@@ -1757,15 +1829,14 @@ fn handle_push_connection(
                 };
             }
             Ok(_) => {}
-            Err(_) => {
-                // The client vanished or broke the protocol: cancel its input.
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-                return writer.disconnect(handle);
-            }
+            Err(_) if revoked.load(Ordering::SeqCst) => break INPUT_REVOKED,
+            // The client vanished or broke the protocol: cancel its input.
+            Err(_) => return gone(&stream),
         }
     };
+    registry.remove(holder);
     if status != INPUT_WRITTEN {
-        writer.disconnect(handle); // release if still held; cancel nothing else
+        writer.disconnect(handle); // release if still held; nothing else is queued
     }
     let _ = attach_proto::write_msg(
         &mut stream,
@@ -1773,6 +1844,46 @@ fn handle_push_connection(
         &attach_proto::input_done_payload(status, accepted, received),
     );
     let _ = stream.shutdown(std::net::Shutdown::Both);
+}
+
+/// How waiting for one push write ended.
+#[cfg(unix)]
+enum PushWrite {
+    Done(crate::model::pty_control::InputOutcome),
+    WriterGone,
+    ClientGone,
+}
+
+/// Wait for a push write's outcome, watching for the client to vanish. A
+/// vanished client's input is cancelled before returning, so the wait cannot
+/// outlast the PTY accepting nothing.
+#[cfg(unix)]
+fn await_push_write(
+    outcome: &std::sync::mpsc::Receiver<crate::model::pty_control::InputOutcome>,
+    stream: &std::os::unix::net::UnixStream,
+    revoked: &AtomicBool,
+    writer: &crate::pty_input::InputWriter,
+    handle: crate::model::pty_control::ControllerHandle,
+) -> PushWrite {
+    use std::sync::mpsc::RecvTimeoutError;
+
+    loop {
+        match outcome.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(done) => return PushWrite::Done(done),
+            Err(RecvTimeoutError::Disconnected) => return PushWrite::WriterGone,
+            // A retired push shut its own read side down; its write outcome
+            // (NotAuthorized) is what ends the wait, not a hang-up.
+            Err(RecvTimeoutError::Timeout)
+                if !revoked.load(Ordering::SeqCst)
+                    && crate::attach_socket::peer_hung_up(stream) =>
+            {
+                writer.disconnect(handle); // cancels this write
+                let _ = outcome.recv();
+                return PushWrite::ClientGone;
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
 }
 
 /// Install `viewer` unless its connection has been retired.
@@ -1873,7 +1984,7 @@ fn handle_attach_connection(
     };
     let _ = stream.set_read_timeout(None);
     if mode == MODE_PUSH {
-        return handle_push_connection(stream, writer);
+        return handle_push_connection(stream, writer, registry);
     }
 
     let (Ok(conn_stream), Ok(control)) = (stream.try_clone(), stream.try_clone()) else {
@@ -1886,8 +1997,10 @@ fn handle_attach_connection(
     registry.insert(
         holder,
         Registered {
-            conn: Arc::clone(&conn),
             control,
+            retirement: Retirement::Viewer {
+                conn: Arc::clone(&conn),
+            },
         },
     );
     let granted = if mode == MODE_TAKEOVER {
@@ -2023,7 +2136,9 @@ mod tests {
         registry.insert(
             old,
             Registered {
-                conn: Arc::new(Mutex::new(Box::new(old_conn.try_clone().unwrap()))),
+                retirement: Retirement::Viewer {
+                    conn: Arc::new(Mutex::new(Box::new(old_conn.try_clone().unwrap()))),
+                },
                 control: old_conn,
             },
         );
