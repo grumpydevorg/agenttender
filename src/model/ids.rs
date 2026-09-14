@@ -31,6 +31,13 @@ impl RunId {
     pub fn from_uuid(uuid: uuid::Uuid) -> Self {
         Self(uuid)
     }
+
+    /// Adopt a decoded UUID as a run identity. `None` unless it is version 7,
+    /// the same rule deserialization enforces.
+    #[must_use]
+    pub fn from_v7(uuid: uuid::Uuid) -> Option<Self> {
+        (uuid.get_version_num() == 7).then_some(Self(uuid))
+    }
 }
 
 impl fmt::Display for RunId {
