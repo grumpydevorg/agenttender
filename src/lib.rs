@@ -38,6 +38,8 @@
 //!   from it.
 //! - [`exec_frame`] / [`exec_request`] — the framed `exec` request/response
 //!   that rides SSH stdin instead of the remote argv.
+//! - `attach_socket` (Unix) — private, peer-verified attach sockets under the
+//!   state root.
 //! - [`pty_input`] — the sidecar's single PTY input writer and its control
 //!   queue (claim, takeover, release).
 //! - [`recording`] — the exact PTY recording codec (versioned binary segments).
@@ -62,6 +64,8 @@
 
 pub mod annotation;
 pub mod attach_proto;
+#[cfg(unix)]
+pub mod attach_socket;
 pub mod directive;
 pub mod events;
 pub mod exec_frame;

@@ -1093,6 +1093,129 @@ fn stalled_viewer_cannot_block_output_capture() {
 }
 
 #[test]
+fn attach_socket_is_private_and_under_the_state_root() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-private",
+    };
+    let sock_path = start_cat(&root, "pty-private");
+
+    let sockets = root.path().join(".tender").join("sockets");
+    assert_eq!(
+        sock_path
+            .parent()
+            .map(std::fs::canonicalize)
+            .transpose()
+            .unwrap(),
+        Some(std::fs::canonicalize(&sockets).unwrap()),
+        "socket lives in the state root's private directory, not shared temp"
+    );
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&sockets), 0o700);
+    assert_eq!(mode(&sock_path), 0o600);
+}
+
+#[test]
+fn oversized_attach_frame_closes_the_connection_and_releases_control() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-bigframe",
+    };
+    let sock_path = start_cat(&root, "pty-bigframe");
+
+    let mut human = attach_as_human(&sock_path);
+    wait_for_pty_control(&root, "pty-bigframe", "HumanControl");
+    // Declare a 1 GiB payload; the sidecar must not wait for or allocate it.
+    human
+        .write_all(&[MSG_DATA, 0x40, 0x00, 0x00, 0x00])
+        .unwrap();
+    let _ = read_until_closed(&mut human);
+    wait_for_pty_control(&root, "pty-bigframe", "AgentControl");
+
+    // The session is unaffected.
+    push(&root, "pty-bigframe", b"still-running\n");
+    wait_log_contains(&root, "pty-bigframe", "still-running");
+}
+
+#[test]
+fn a_trickled_hello_is_cut_off_at_the_overall_deadline() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-slowhello",
+    };
+    let sock_path = start_cat(&root, "pty-slowhello");
+
+    // A well-formed hello sent one byte per second: every individual read is
+    // quick, but the whole handshake takes 7 s, past the 5 s deadline.
+    let mut slow = UnixStream::connect(&sock_path).unwrap();
+    let hello = [MSG_HELLO, 0, 0, 0, 2, PROTOCOL_VERSION, MODE_ATTACH];
+    let started = Instant::now();
+    for byte in hello {
+        if slow.write_all(&[byte]).is_err() {
+            break; // already closed by the sidecar
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    let seen = read_until_closed(&mut slow);
+    assert!(
+        seen.iter().all(|(t, _)| *t != MSG_ACCEPTED),
+        "a hello past its deadline must not be accepted: {seen:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(12),
+        "closed promptly after the deadline"
+    );
+    let status = tender(&root)
+        .args(["status", "pty-slowhello"])
+        .output()
+        .unwrap();
+    let meta: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(meta["pty"]["control"], "AgentControl");
+}
+
+#[test]
+fn an_unsafe_socket_directory_fails_start_loudly() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-unsafe",
+    };
+    let elsewhere = root.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::create_dir_all(root.path().join(".tender")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, root.path().join(".tender/sockets")).unwrap();
+
+    let output = tender(&root)
+        .args(["start", "pty-unsafe", "--pty", "--stdin", "--", "cat"])
+        .output()
+        .unwrap();
+    let meta = harness::wait_terminal(&root, "pty-unsafe");
+    assert_eq!(
+        meta["status"],
+        "SpawnFailed",
+        "a PTY session must not run without its private listener; start said: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let warnings = meta["warnings"].to_string();
+    assert!(
+        warnings.contains("socket"),
+        "the failure names the socket: {warnings}"
+    );
+    assert!(
+        std::fs::read_dir(&elsewhere).unwrap().next().is_none(),
+        "nothing was created through the symlink"
+    );
+}
+
+#[test]
 fn detach_releases_control_even_when_pty_input_is_full() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();

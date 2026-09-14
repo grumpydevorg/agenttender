@@ -29,6 +29,10 @@ pub const MODE_TAKEOVER: u8 = 2;
 /// How long the sidecar waits for a connection's hello.
 pub const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Largest payload any attach frame may carry. [`read_msg`] rejects a larger
+/// length before allocating for it.
+pub const MAX_FRAME_PAYLOAD: usize = 64 * 1024;
+
 pub fn write_msg(w: &mut impl Write, msg_type: u8, payload: &[u8]) -> io::Result<()> {
     let len = payload.len() as u32;
     w.write_all(&[msg_type])?;
@@ -42,6 +46,12 @@ pub fn read_msg(r: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
     r.read_exact(&mut header)?;
     let msg_type = header[0];
     let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
+    if len > MAX_FRAME_PAYLOAD {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("attach frame declares {len} bytes; the limit is {MAX_FRAME_PAYLOAD}"),
+        ));
+    }
     let mut payload = vec![0u8; len];
     if len > 0 {
         r.read_exact(&mut payload)?;
@@ -65,45 +75,46 @@ pub fn parse_resize(payload: &[u8]) -> Option<(u16, u16)> {
     Some((rows, cols))
 }
 
-/// Compute the attach socket path for a session directory.
-///
-/// Unix domain sockets have a path length limit (104 bytes on macOS, 108 on Linux).
-/// Session directories under temp dirs can easily exceed this limit. To stay safe,
-/// we hash the session dir path and place the socket in the system temp directory.
-///
-/// The socket file is: `<tmp>/tender-<hash>.sock`
-/// A breadcrumb `a.sock.path` in the session dir records the socket location.
-pub fn sock_path(session_dir: &Path) -> PathBuf {
-    use sha2::{Digest, Sha256};
-
-    let dir_str = session_dir.to_string_lossy();
-    let mut hasher = Sha256::new();
-    hasher.update(dir_str.as_bytes());
-    let hash = hasher.finalize();
-    let short_hash: String = hash.iter().take(8).map(|b| format!("{b:02x}")).collect();
-
-    std::env::temp_dir().join(format!("tender-{short_hash}.sock"))
-}
-
-/// Write a breadcrumb in the session dir pointing to the actual socket path.
-pub fn write_sock_breadcrumb(session_dir: &Path, sock: &Path) {
-    let breadcrumb = session_dir.join("a.sock.path");
-    let _ = std::fs::write(&breadcrumb, sock.to_string_lossy().as_bytes());
-}
-
-/// Read the socket path from the session dir breadcrumb, falling back to inline path.
+/// Read the attach socket path from the session's breadcrumb (`a.sock.path`),
+/// which the sidecar publishes atomically after binding its private socket.
+/// There is no fallback location: a session without a breadcrumb has no
+/// attachable listener.
 pub fn read_sock_path(session_dir: &Path) -> Option<PathBuf> {
-    let breadcrumb = session_dir.join("a.sock.path");
-    if let Ok(content) = std::fs::read_to_string(&breadcrumb) {
-        let p = PathBuf::from(content.trim());
-        if p.exists() {
-            return Some(p);
-        }
+    let content = std::fs::read_to_string(session_dir.join("a.sock.path")).ok()?;
+    let path = PathBuf::from(content.trim());
+    path.exists().then_some(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(msg_type: u8, declared_len: u32, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![msg_type];
+        out.extend_from_slice(&declared_len.to_be_bytes());
+        out.extend_from_slice(payload);
+        out
     }
-    // Fallback: check inline socket (works when path is short enough)
-    let inline = session_dir.join("a.sock");
-    if inline.exists() {
-        return Some(inline);
+
+    #[test]
+    fn a_frame_at_the_payload_limit_is_read() {
+        let payload = vec![7u8; MAX_FRAME_PAYLOAD];
+        let bytes = frame(MSG_DATA, MAX_FRAME_PAYLOAD as u32, &payload);
+        let (msg_type, got) = read_msg(&mut bytes.as_slice()).unwrap();
+        assert_eq!(msg_type, MSG_DATA);
+        assert_eq!(got.len(), MAX_FRAME_PAYLOAD);
     }
-    None
+
+    #[test]
+    fn an_oversized_frame_is_rejected_before_allocation() {
+        // A 4 GiB declared length with no payload behind it: reading must fail
+        // on the length alone, not try to allocate or wait for the bytes.
+        let bytes = frame(MSG_DATA, u32::MAX, &[]);
+        let err = read_msg(&mut bytes.as_slice()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+
+        let just_over = frame(MSG_DATA, MAX_FRAME_PAYLOAD as u32 + 1, &[]);
+        let err = read_msg(&mut just_over.as_slice()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
 }

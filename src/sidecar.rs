@@ -136,6 +136,23 @@ struct PtyInput {
 #[cfg(not(unix))]
 type PtyInput = std::convert::Infallible;
 
+/// Removes a run's attach socket and its breadcrumb when the sidecar finishes,
+/// whichever way it finishes. Both are this run's own files: the socket name is
+/// derived from the run identity and binding refused any pre-existing path.
+#[cfg(unix)]
+struct AttachSocketCleanup {
+    socket: PathBuf,
+    breadcrumb: PathBuf,
+}
+
+#[cfg(unix)]
+impl Drop for AttachSocketCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.socket);
+        let _ = std::fs::remove_file(&self.breadcrumb);
+    }
+}
+
 /// Run the sidecar process. Called from the `_sidecar` subcommand.
 ///
 /// Contract:
@@ -988,6 +1005,34 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     let is_pty = meta.launch_spec().io_mode == IoMode::Pty;
     let stdin_piped = meta.launch_spec().stdin_mode == StdinMode::Pipe;
 
+    // A PTY session's private attach socket is bound and published before the
+    // child exists, so a PTY session never runs without its listener. The guard
+    // removes the socket and breadcrumb on every exit path.
+    #[cfg(unix)]
+    let (mut attach_socket, _attach_socket_cleanup) = if is_pty {
+        match crate::attach_socket::bind_for_session(session_dir, run_id) {
+            Ok(bound) => {
+                let cleanup = AttachSocketCleanup {
+                    socket: bound.path.clone(),
+                    breadcrumb: session_dir.join("a.sock.path"),
+                };
+                (Some(bound), Some(cleanup))
+            }
+            Err(e) => {
+                meta.add_warning(format!("attach socket unavailable: {e}"));
+                meta.transition_spawn_failed(EpochTimestamp::now())?;
+                lifecycle.emit(&mut meta, true);
+                session::write_meta_atomic(&session, &meta)?;
+                if !has_deps {
+                    signal_meta_snapshot(ready, &meta)?;
+                }
+                return Ok(());
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     let mut child = if is_pty {
         match Current::spawn_child_pty(
             meta.launch_spec().argv(),
@@ -1110,13 +1155,11 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
 
     // --- Attach listener for PTY sessions (Unix only) ---
     #[cfg(unix)]
-    if let Some(input) = &pty_input {
-        let sock_path = crate::attach_proto::sock_path(session_dir);
-        crate::attach_proto::write_sock_breadcrumb(session_dir, &sock_path);
+    if let (Some(input), Some(bound)) = (&pty_input, attach_socket.take()) {
         let writer = input.writer.clone();
         let registry = input.registry.clone();
         let sink = Arc::clone(&attach_sink);
-        std::thread::spawn(move || run_attach_listener(&sock_path, &writer, &registry, &sink));
+        std::thread::spawn(move || run_attach_listener(&bound.listener, &writer, &registry, &sink));
     }
 
     // --- Transition to Running + readiness signal ---
@@ -1198,13 +1241,6 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
 
     // Clean up breadcrumb -- no longer needed, meta has the child identity
     let _ = std::fs::remove_file(session_dir.join("child_pid"));
-
-    // Clean up attach socket and breadcrumb
-    if is_pty {
-        let sock = crate::attach_proto::sock_path(session_dir);
-        let _ = std::fs::remove_file(&sock);
-        let _ = std::fs::remove_file(session_dir.join("a.sock.path"));
-    }
 
     for warning in collect_warnings(session_dir, &stdin_errors) {
         meta.add_warning(warning);
@@ -1679,27 +1715,24 @@ fn install_viewer(registry: &ConnectionRegistry, sink: &AttachSink, viewer: Atta
 
 #[cfg(unix)]
 fn run_attach_listener(
-    sock_path: &Path,
+    listener: &std::os::unix::net::UnixListener,
     writer: &crate::pty_input::InputWriter,
     registry: &ConnectionRegistry,
     attach_sink: &AttachSink,
 ) {
-    use std::os::unix::net::UnixListener;
     use std::sync::atomic::AtomicUsize;
-
-    // Remove stale socket if exists
-    let _ = std::fs::remove_file(sock_path);
-
-    let listener = match UnixListener::bind(sock_path) {
-        Ok(l) => l,
-        Err(_) => return,
-    };
 
     let active = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else {
             continue;
         };
+        // Only the run owner's own processes may attach. The socket directory
+        // is already owner-only; this checks the connecting process itself.
+        if crate::attach_socket::verify_peer(&stream).is_err() {
+            reject_connection(&mut stream, "peer identity rejected");
+            continue;
+        }
         if active.fetch_add(1, Ordering::SeqCst) >= MAX_ATTACH_CONNECTIONS {
             active.fetch_sub(1, Ordering::SeqCst);
             reject_connection(&mut stream, "too many attach connections");
@@ -1738,8 +1771,13 @@ fn handle_attach_connection(
     use crate::attach_proto::{self, MODE_ATTACH, MODE_TAKEOVER, MSG_HELLO, PROTOCOL_VERSION};
     use crate::model::pty_control::ControllerKind;
 
-    let _ = stream.set_read_timeout(Some(attach_proto::HELLO_TIMEOUT));
-    let mode = match attach_proto::read_msg(&mut stream) {
+    // One overall deadline for the whole hello: a client trickling bytes cannot
+    // hold a connection slot open by keeping each individual read short.
+    let hello = attach_proto::read_msg(&mut crate::attach_socket::DeadlineReader {
+        stream: &stream,
+        deadline: std::time::Instant::now() + attach_proto::HELLO_TIMEOUT,
+    });
+    let mode = match hello {
         Ok((MSG_HELLO, p))
             if p.len() == 2
                 && p[0] == PROTOCOL_VERSION
@@ -1823,8 +1861,10 @@ fn handle_attach_connection(
         }
     }
 
-    // Detach, disconnect, or retirement: release ahead of queued input and
-    // cancel what this client still has queued.
+    // Detach, disconnect, retirement, or a protocol violation such as an
+    // oversized frame: close the connection, release ahead of queued input,
+    // and cancel what this client still has queued.
+    let _ = stream.shutdown(std::net::Shutdown::Both);
     writer.disconnect(handle);
     registry.remove(holder);
     let mut viewer = lock(attach_sink);

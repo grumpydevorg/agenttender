@@ -43,6 +43,10 @@ pub fn cmd_attach(name: &str, namespace: &Namespace, takeover: bool) -> anyhow::
         }
 
         let mut stream = UnixStream::connect(&sock_path)?;
+        // Keystrokes go only to a listener run by this same user: a spoofed
+        // socket owned by someone else is refused before the hello.
+        tender::attach_socket::verify_peer(&stream)
+            .map_err(|e| anyhow::anyhow!("refusing attach socket {}: {e}", sock_path.display()))?;
         handshake(&mut stream, takeover)?;
         relay(stream)
     }

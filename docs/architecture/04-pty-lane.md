@@ -8,8 +8,8 @@ Tender has two execution lanes:
 This file describes the current PTY implementation, including the parts of
 [cloud PTY control and replay](../plans/active/00_cloud-pty-control.md) that
 have shipped: sidecar-enforced input ownership with controller epochs, the
-attach handshake, takeover, and bounded viewer delivery. Recording, private
-sockets, and the screen extension are still planned there.
+attach handshake, takeover, bounded viewer delivery, and private peer-verified
+attach sockets. Recording and the screen extension are still planned there.
 
 ```mermaid
 stateDiagram-v2
@@ -37,6 +37,12 @@ Current PTY rules:
   receives `MSG_RETIRED` and is disconnected
 - input queued by a superseded controller is never written; a revoked push is
   drained and recorded as `pty.input_revoked`
+- the attach socket is bound in `~/.tender/sockets` (owner-only directory,
+  `0600` socket, short run-derived name) and its breadcrumb published before the
+  child is spawned; an unsafe directory, overlong path, or pre-existing path fails
+  the start as `SpawnFailed` rather than running without a listener
+- both ends verify the peer's user id; the hello must complete within one overall
+  deadline, and any frame declaring more than 64 KiB closes the connection
 - while a human is attached, `push` is rejected
 - PTY output is merged and recorded as `O` lines in `output.log`; capture only
   offers output to the attached viewer's bounded queue (8 MiB), drained by that
@@ -69,8 +75,8 @@ Planned but not yet implemented (see the cloud PTY plan):
 
 - exact output recording and replay, including catch-up for a disconnected
   viewer
-- private, peer-verified attach sockets (the socket still lives in the system
-  temporary directory)
+- runtime-directory and protected-temporary socket locations (only the
+  persistent state root is implemented; other locations fail closed)
 - push over the attach socket with acknowledged outcomes, so `push` can report a
   revocation
 - continuous resize forwarding and a detach escape in the `attach` CLI
