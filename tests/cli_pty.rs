@@ -2084,6 +2084,10 @@ fn a_recording_size_limit_stops_recording_but_not_the_session() {
         session: "pty-rec-limit",
     };
 
+    // A small record first: how the PTY coalesces the flood into reads (and so
+    // whether any of it fits under the limit) differs between platforms.
+    push(&root, "pty-rec-limit", b"first\n");
+    wait_log_contains(&root, "pty-rec-limit", "first");
     let line = format!("{}\n", "x".repeat(59));
     push(&root, "pty-rec-limit", line.repeat(50).as_bytes());
 

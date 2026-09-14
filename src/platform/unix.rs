@@ -146,14 +146,15 @@ impl Platform for UnixPlatform {
         };
         // SAFETY: openpty writes valid fds into master_fd/slave_fd on success.
         // Null pointers for name/termios are explicitly allowed; `size` is a
-        // valid winsize that outlives the call.
+        // valid winsize that outlives the call. A raw pointer fits both the
+        // const (glibc) and mut (BSD) declarations.
         let ret = unsafe {
             libc::openpty(
                 &mut master_fd,
                 &mut slave_fd,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &mut size,
+                &raw mut size,
             )
         };
         if ret != 0 {
