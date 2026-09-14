@@ -819,7 +819,7 @@ fn forward_pty_stdin(
         if let Some(handle) = handle {
             // Release only after this push's input is done, so the next push can
             // claim; a revoked handle releases nothing.
-            writer.end_of_input_and_wait(handle);
+            let _ = writer.end_of_input_and_wait(handle);
         }
     }
 }
@@ -1696,6 +1696,85 @@ fn retire_connection(
     }
 }
 
+/// One acknowledged agent push: claim control if nobody holds it, write each
+/// received frame before reading the next (so the client feels the PTY's
+/// backpressure), and report exactly what was written.
+///
+/// The claim is released only after all input is written. A push superseded by
+/// a takeover, or whose PTY stops accepting input, stops at once and reports
+/// how far it got; a client that vanishes mid-push has its input cancelled.
+#[cfg(unix)]
+fn handle_push_connection(
+    mut stream: std::os::unix::net::UnixStream,
+    writer: &crate::pty_input::InputWriter,
+) {
+    use crate::attach_proto::{self, INPUT_CLOSED, INPUT_REVOKED, INPUT_WRITTEN};
+    use crate::model::pty_control::{ControllerKind, IncompleteReason, InputOutcome};
+
+    let handle = match writer.claim(writer.next_holder(), ControllerKind::Agent) {
+        Ok(handle) => handle,
+        Err(e) => return reject_connection(&mut stream, &e.to_string()),
+    };
+    if attach_proto::write_msg(
+        &mut stream,
+        attach_proto::MSG_ACCEPTED,
+        &handle.epoch().get().to_be_bytes(),
+    )
+    .is_err()
+    {
+        return writer.disconnect(handle);
+    }
+
+    let (mut accepted, mut received) = (0u64, 0u64);
+    let status = loop {
+        match attach_proto::read_msg(&mut stream) {
+            Ok((attach_proto::MSG_DATA, payload)) => {
+                received += payload.len() as u64;
+                match writer.write(handle, payload) {
+                    Some(InputOutcome::Accepted { bytes, .. }) => accepted += bytes as u64,
+                    Some(InputOutcome::Incomplete {
+                        accepted: partial,
+                        reason,
+                        ..
+                    }) => {
+                        accepted += partial as u64;
+                        break if matches!(reason, IncompleteReason::NotAuthorized(_)) {
+                            INPUT_REVOKED
+                        } else {
+                            INPUT_CLOSED
+                        };
+                    }
+                    // Empty frames write nothing; a gone writer means no PTY.
+                    None if received == accepted => {}
+                    None => break INPUT_CLOSED,
+                }
+            }
+            Ok((attach_proto::MSG_DETACH, _)) => {
+                break if writer.end_of_input_and_wait(handle) {
+                    INPUT_WRITTEN
+                } else {
+                    INPUT_REVOKED
+                };
+            }
+            Ok(_) => {}
+            Err(_) => {
+                // The client vanished or broke the protocol: cancel its input.
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return writer.disconnect(handle);
+            }
+        }
+    };
+    if status != INPUT_WRITTEN {
+        writer.disconnect(handle); // release if still held; cancel nothing else
+    }
+    let _ = attach_proto::write_msg(
+        &mut stream,
+        attach_proto::MSG_INPUT_DONE,
+        &attach_proto::input_done_payload(status, accepted, received),
+    );
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+}
+
 /// Install `viewer` unless its connection has been retired.
 ///
 /// The registry check and the install happen under the sink lock. Combined
@@ -1768,7 +1847,9 @@ fn handle_attach_connection(
     registry: &ConnectionRegistry,
     attach_sink: &AttachSink,
 ) {
-    use crate::attach_proto::{self, MODE_ATTACH, MODE_TAKEOVER, MSG_HELLO, PROTOCOL_VERSION};
+    use crate::attach_proto::{
+        self, MODE_ATTACH, MODE_PUSH, MODE_TAKEOVER, MSG_HELLO, PROTOCOL_VERSION,
+    };
     use crate::model::pty_control::ControllerKind;
 
     // One overall deadline for the whole hello: a client trickling bytes cannot
@@ -1781,7 +1862,7 @@ fn handle_attach_connection(
         Ok((MSG_HELLO, p))
             if p.len() == 2
                 && p[0] == PROTOCOL_VERSION
-                && matches!(p[1], MODE_ATTACH | MODE_TAKEOVER) =>
+                && matches!(p[1], MODE_ATTACH | MODE_TAKEOVER | MODE_PUSH) =>
         {
             p[1]
         }
@@ -1791,6 +1872,9 @@ fn handle_attach_connection(
         _ => return reject_connection(&mut stream, "attach requires a protocol hello"),
     };
     let _ = stream.set_read_timeout(None);
+    if mode == MODE_PUSH {
+        return handle_push_connection(stream, writer);
+    }
 
     let (Ok(conn_stream), Ok(control)) = (stream.try_clone(), stream.try_clone()) else {
         return;

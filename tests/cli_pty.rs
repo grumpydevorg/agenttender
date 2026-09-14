@@ -990,9 +990,19 @@ fn takeover_revokes_queued_agent_input() {
     let revoked = harness::wait_event_kind(&root, "pty-revoke", "pty.input_revoked");
     assert_eq!(revoked["data"]["kind"], "Agent");
 
+    // The revoked push itself reports it: no false success.
     drop(human);
     feeder.join().unwrap();
-    let _ = agent.wait();
+    let pushed = agent.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&pushed.stderr);
+    assert!(
+        !pushed.status.success(),
+        "a push revoked by takeover must not exit 0; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("revoked"),
+        "the failure says the push was revoked: {stderr}"
+    );
     tender(&root)
         .args(["kill", "pty-revoke", "--force"])
         .output()
@@ -1090,6 +1100,71 @@ fn stalled_viewer_cannot_block_output_capture() {
     // and with it went its control.
     let _ = read_until_closed(&mut stalled);
     wait_for_pty_control(&root, "pty-stalled", "AgentControl");
+}
+
+#[test]
+fn a_second_push_is_refused_while_one_holds_the_terminal() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = KillOnDrop {
+        root: &root,
+        session: "pty-twopush",
+    };
+    let go = root.path().join("go");
+    // The child consumes exactly 1 KiB of the first push, reports READY, then
+    // reads nothing until the go file exists: the first push stays in flight.
+    let script = "stty raw -echo; head -c 1024 >/dev/null; printf READY; \
+                  while [ ! -f \"$GO\" ]; do sleep 0.05; done; exec cat";
+    tender(&root)
+        .args(["start", "pty-twopush", "--pty", "--stdin"])
+        .arg("--env")
+        .arg(format!("GO={}", go.display()))
+        .args(["--", "sh", "-c", script])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-twopush");
+
+    let mut first = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+        .args(["push", "pty-twopush"])
+        .env("HOME", root.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first_stdin = first.stdin.take().unwrap();
+    let feeder = std::thread::spawn(move || {
+        let _ = first_stdin.write_all(&vec![b'a'; 1 << 20]);
+    });
+    // Barrier: the first push holds the terminal and its input is flowing.
+    wait_log_contains(&root, "pty-twopush", "READY");
+
+    let second = tender(&root)
+        .args(["push", "pty-twopush"])
+        .write_stdin(b"SECOND-PUSH\n".to_vec())
+        .timeout(Duration::from_secs(20))
+        .output()
+        .expect("a second push must return promptly, not block behind the first");
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        !second.status.success(),
+        "a concurrent push must be refused, not interleaved: {stderr}"
+    );
+    assert!(
+        stderr.contains("owned"),
+        "the refusal names the owner: {stderr}"
+    );
+
+    std::fs::write(&go, b"").unwrap();
+    feeder.join().unwrap();
+    let first = first.wait_with_output().unwrap();
+    assert!(
+        first.status.success(),
+        "the first push completes: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let log = wait_log_contains(&root, "pty-twopush", "aaaa");
+    assert!(!log.contains("SECOND-PUSH"), "refused bytes were written");
 }
 
 #[test]

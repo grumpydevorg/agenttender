@@ -31,12 +31,17 @@ Current PTY rules:
 - one sidecar input writer owns the run's `InputArbiter` and the PTY input; every
   write is authorized against the current controller epoch on that thread, and
   control requests are served before queued input
-- `push` claims control as an agent for the duration of one push connection
+- `push` connects to the attach socket in push mode (`MODE_PUSH`), claims control
+  as an agent (refused if anyone holds it, so concurrent pushes never
+  interleave), streams frames written one at a time, and ends with
+  `MSG_INPUT_DONE {written | revoked | closed, accepted, received}`; the CLI
+  exits non-zero with the byte counts unless every byte was written
 - `attach` must open with a v1 hello (`MSG_HELLO`); a plain attach is refused
   while a human holds control, and `--takeover` supersedes the holder, which
   receives `MSG_RETIRED` and is disconnected
-- input queued by a superseded controller is never written; a revoked push is
-  drained and recorded as `pty.input_revoked`
+- input queued by a superseded controller is never written and is recorded as
+  `pty.input_revoked`; PTY `exec` frames still arrive over the stdin FIFO, whose
+  forwarder is arbitrated the same way but cannot report an outcome
 - the attach socket is bound in `~/.tender/sockets` (owner-only directory,
   `0600` socket, short run-derived name) and its breadcrumb published before the
   child is spawned; an unsafe directory, overlong path, or pre-existing path fails
@@ -53,9 +58,10 @@ PTY-specific I/O shape:
 
 ```mermaid
 flowchart LR
-    Push["tender push"] --> FIFO["stdin.pipe"]
-    FIFO --> Forwarder["push forwarder (agent claim)"]
-    Human["human terminal"] --> Attach["attach socket connections (hello, claim/takeover)"]
+    Push["tender push"] --> Attach
+    Exec["tender exec (python-repl)"] --> FIFO["stdin.pipe"]
+    FIFO --> Forwarder["FIFO forwarder (agent claim)"]
+    Human["human terminal"] --> Attach["attach socket connections (hello: attach, takeover, push)"]
     Forwarder --> Writer["input writer (arbiter, epochs)"]
     Attach --> Writer
     Writer --> PTY["PTY master"]
@@ -77,6 +83,4 @@ Planned but not yet implemented (see the cloud PTY plan):
   viewer
 - runtime-directory and protected-temporary socket locations (only the
   persistent state root is implemented; other locations fail closed)
-- push over the attach socket with acknowledged outcomes, so `push` can report a
-  revocation
 - continuous resize forwarding and a detach escape in the `attach` CLI

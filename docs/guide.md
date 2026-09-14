@@ -163,9 +163,11 @@ knowing:
   while another client holds the terminal.
 - **`tender attach <name> --takeover`** takes the terminal anyway: the previous
   client is disconnected and any input it (or an in-flight `push`) had queued is
-  dropped, never written. Use it to reconnect after a dropped SSH session. On a
-  PTY session, pushed bytes dropped this way are recorded as a
-  `pty.input_revoked` event; the `push` command itself cannot report it yet.
+  dropped, never written. Use it to reconnect after a dropped SSH session.
+- On a PTY session, `push` holds the terminal for its duration and succeeds only
+  once every byte has been written to it. It fails, reporting how many bytes
+  were written, if another client holds the terminal or takes it over mid-push;
+  a second concurrent push is refused rather than interleaved.
 
 ## Observe long-running work
 

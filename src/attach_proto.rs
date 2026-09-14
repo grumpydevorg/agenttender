@@ -25,6 +25,40 @@ pub const PROTOCOL_VERSION: u8 = 1;
 pub const MODE_ATTACH: u8 = 1;
 /// [`MSG_HELLO`] mode: take control, retiring any current controller.
 pub const MODE_TAKEOVER: u8 = 2;
+/// [`MSG_HELLO`] mode: an agent push. Claims control only if nobody holds it,
+/// streams input as [`MSG_DATA`], ends it with [`MSG_DETACH`], and receives a
+/// [`MSG_INPUT_DONE`] outcome. No output is sent to a push connection.
+pub const MODE_PUSH: u8 = 3;
+
+/// Sidecar → push client: the push's outcome, then the connection closes.
+/// Payload: `[status u8][accepted u64 BE][received u64 BE]`, where `accepted`
+/// counts bytes written to the PTY and `received` counts bytes the sidecar read.
+pub const MSG_INPUT_DONE: u8 = 0x08;
+/// [`MSG_INPUT_DONE`] status: every received byte was written.
+pub const INPUT_WRITTEN: u8 = 0;
+/// [`MSG_INPUT_DONE`] status: control was taken over; the rest was dropped.
+pub const INPUT_REVOKED: u8 = 1;
+/// [`MSG_INPUT_DONE`] status: the PTY stopped accepting input.
+pub const INPUT_CLOSED: u8 = 2;
+
+/// Encode a [`MSG_INPUT_DONE`] payload.
+#[must_use]
+pub fn input_done_payload(status: u8, accepted: u64, received: u64) -> [u8; 17] {
+    let mut buf = [0u8; 17];
+    buf[0] = status;
+    buf[1..9].copy_from_slice(&accepted.to_be_bytes());
+    buf[9..17].copy_from_slice(&received.to_be_bytes());
+    buf
+}
+
+/// Decode a [`MSG_INPUT_DONE`] payload into `(status, accepted, received)`.
+#[must_use]
+pub fn parse_input_done(payload: &[u8]) -> Option<(u8, u64, u64)> {
+    let bytes: &[u8; 17] = payload.try_into().ok()?;
+    let accepted = u64::from_be_bytes(bytes[1..9].try_into().ok()?);
+    let received = u64::from_be_bytes(bytes[9..17].try_into().ok()?);
+    Some((bytes[0], accepted, received))
+}
 
 /// How long the sidecar waits for a connection's hello.
 pub const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);

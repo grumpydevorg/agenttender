@@ -89,7 +89,8 @@ enum InputItem {
     },
     End {
         handle: ControllerHandle,
-        done: Option<SyncSender<()>>,
+        /// Receives whether the holder still held control and was released.
+        done: Option<SyncSender<bool>>,
     },
 }
 
@@ -224,14 +225,17 @@ impl InputWriter {
         self.push_control(Control::Disconnect { handle });
     }
 
-    /// Like [`InputWriter::end_of_input`], but wait until the release happened.
-    pub fn end_of_input_and_wait(&self, handle: ControllerHandle) {
+    /// Like [`InputWriter::end_of_input`], but wait for the release. `true` only
+    /// if `handle` still held control when its input ended, so every byte it
+    /// queued before this call was authorized; `false` if it had been superseded
+    /// or its input was cancelled.
+    pub fn end_of_input_and_wait(&self, handle: ControllerHandle) -> bool {
         let (done, rx) = sync_channel(1);
         self.push_input(InputItem::End {
             handle,
             done: Some(done),
         });
-        let _ = rx.recv();
+        rx.recv().unwrap_or(false)
     }
 
     fn request(&self, handle: ControllerHandle, bytes: Vec<u8>) -> Option<PendingInput> {
@@ -327,9 +331,9 @@ fn writer_loop<P: WritablePty, H: ControlHooks>(
         }
 
         if let Some(InputItem::End { handle, done }) = next_end {
-            release(&mut arbiter, &mut kinds, handle, &mut hooks);
+            let released = release(&mut arbiter, &mut kinds, handle, &mut hooks);
             if let Some(done) = done {
-                let _ = done.send(());
+                let _ = done.send(released);
             }
             continue;
         }
@@ -387,7 +391,7 @@ fn disconnect<P: WritablePty, H: ControlHooks>(
 ) {
     let holder = handle.holder();
     let kind = kinds.get(&holder).copied();
-    release(arbiter, kinds, handle, hooks);
+    let _ = release(arbiter, kinds, handle, hooks);
 
     let belongs = |item: &InputItem| match item {
         InputItem::Write { request, .. } => request.handle().holder() == holder,
@@ -432,7 +436,8 @@ fn disconnect<P: WritablePty, H: ControlHooks>(
             }
             InputItem::End { done, .. } => {
                 if let Some(done) = done {
-                    let _ = done.send(());
+                    // Cancelled by a disconnect: its input did not complete.
+                    let _ = done.send(false);
                 }
             }
         }
@@ -494,13 +499,14 @@ fn apply_control<P: WritablePty, H: ControlHooks>(
 }
 
 /// End of a holder's input: release if it still authorizes, and forget the
-/// holder either way (it queues nothing after its end marker).
+/// holder either way (it queues nothing after its end marker). Returns whether
+/// the holder was still current and has now been released.
 fn release<H: ControlHooks>(
     arbiter: &mut InputArbiter,
     kinds: &mut HashMap<HolderId, ControllerKind>,
     handle: ControllerHandle,
     hooks: &mut H,
-) {
+) -> bool {
     let human_owned = matches!(
         arbiter.state(),
         ControllerState::Owned {
@@ -515,6 +521,7 @@ fn release<H: ControlHooks>(
     if released && human_owned {
         hooks.human_released();
     }
+    released
 }
 
 #[cfg(test)]
@@ -649,7 +656,10 @@ mod tests {
         writer.write_nowait(agent, b"first".to_vec());
         writer.write_nowait(agent, b"second".to_vec());
 
-        writer.end_of_input_and_wait(agent);
+        assert!(
+            writer.end_of_input_and_wait(agent),
+            "released while current"
+        );
 
         assert_eq!(pty.0.lock().unwrap().as_slice(), b"firstsecond");
         assert!(
@@ -657,6 +667,20 @@ mod tests {
                 .claim(writer.next_holder(), ControllerKind::Agent)
                 .is_ok(),
             "released once its input was written"
+        );
+    }
+
+    #[test]
+    fn end_of_input_reports_a_superseded_holder_as_not_released() {
+        let writer = InputWriter::spawn(RunId::new(), SlowPty::default(), Recorded::default());
+        let agent = writer
+            .claim(writer.next_holder(), ControllerKind::Agent)
+            .unwrap();
+        writer.takeover(writer.next_holder()).unwrap();
+
+        assert!(
+            !writer.end_of_input_and_wait(agent),
+            "a push whose control was taken over must not be reported complete"
         );
     }
 }
