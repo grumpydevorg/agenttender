@@ -19,6 +19,7 @@ tender guide
 tender guide install
 tender guide exec
 tender guide remote
+tender guide cgroup
 tender guide python
 tender guide duckdb
 tender guide powershell

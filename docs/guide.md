@@ -259,6 +259,78 @@ jq -cn --rawfile sql query.sql '{v:1, session:"ddb", cmd:[$sql], timeout:300}' \
   | tender exec --frame-from-stdin
 ```
 
+## Cap a session's memory
+
+A supervised session that runs away — a listing that accumulates in RAM, a load
+that balloons — can take the whole host down, not just itself. It is worst on a
+box with **no swap**: once memory is exhausted the kernel can't even `fork()`, so
+new `ssh` logins start failing and you lose the very access you'd use to kill the
+job, until the OOM killer reaps something. When you leave long-running work on a
+remote box, bound it so a runaway dies *inside its own limit* and the host stays
+reachable.
+
+**Linux — cgroup v2 (the real thing).** With systemd this needs **no root** when
+the `memory` controller is delegated to your user slice — check with:
+
+```bash
+cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/cgroup.controllers   # must list "memory"
+```
+
+One-time setup: enable lingering (so the user manager and its jobs survive
+logout) and define a capped slice:
+
+```bash
+loginctl enable-linger
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/tender.slice <<'EOF'
+[Slice]
+MemoryHigh=2G      # soft — reclaim/throttle before the wall
+MemoryMax=3G       # hard — OOM-kill inside the slice past this
+MemorySwapMax=0
+EOF
+systemctl --user daemon-reload
+```
+
+Launch Tender inside the slice; the detached sidecar and its child inherit the
+cgroup:
+
+```bash
+systemd-run --user --slice=tender.slice --scope --quiet \
+  tender run --detach --replace ./job.sh
+```
+
+The child's *own* scope reports `memory.max = max` — that's expected. cgroup v2
+enforces the tightest limit among **all** ancestors, so `tender.slice` bounds the
+aggregate of every session in it; a single runaway is OOM-killed within the slice
+and the host is untouched. Three things to know: the cap is on the *slice*, so
+concurrent sessions share its budget (size for the sum); system-level
+`systemd-run` (without `--user`) needs root/polkit — the `--user` path above does
+not; and persistence across a full reboot is host-dependent (some locked-down
+NAS/appliance OSes reset the linger marker or user units — reapply on boot if so).
+
+### Windows and macOS
+
+**Windows** has a true equivalent: a **Job Object** with
+`JOB_OBJECT_LIMIT_JOB_MEMORY` caps the committed memory of every process in the
+job, and an over-limit allocation simply fails. There is no clean built-in CLI —
+today it takes native code / P-Invoke (or a helper) to call
+`SetInformationJobObject` then `AssignProcessToJobObject` on the child. Under
+**WSL2** you get the Linux path above instead, under a VM-wide ceiling set in
+`%UserProfile%\.wslconfig` (`[wsl2]` → `memory=`).
+
+**macOS** has no host-level cgroup, but it isn't empty-handed. A native
+per-process kill limit *does* exist — **jetsam** (the `memorystatus` framework
+shared with iOS): the undocumented `JetsamMemoryLimit` launchd key makes the
+kernel kill a process that overruns N MB. It's private, launchd-plist-only, and
+barely exercised on the desktop, so it's not something to hang a job on. The
+portable knobs are weak too — `ulimit -v` (address space) is coarse and
+unreliable, `ulimit -m` (RSS) a no-op on modern kernels. The saving grace is
+dynamic swap: a Mac *degrades* (thrash, slow) rather than hard-deadlocking like a
+swapless Linux box. For a dependable hard bound, run the job in a memory-capped
+Linux VM and use the cgroup path inside it — via Apple's own **`container`** tool
+(macOS 26+, a lightweight VM per container) or OrbStack / Colima / Lima / Docker
+Desktop.
+
 ## Record where a session runs — `--boundary`
 
 Optionally tag a session with the environment it runs in (host, container, VM,
