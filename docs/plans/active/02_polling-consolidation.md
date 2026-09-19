@@ -7,6 +7,9 @@ links:
 
 # Test Polling Consolidation — one `poll_until` primitive, centralized deadline policy
 
+Queue position moved behind cloud PTY control and remote frame transport on
+2026-09-14. This cleanup is not a prerequisite for either feature.
+
 The fudge-sleep campaign (#52–#62) left ~33 legitimate `thread::sleep` calls in
 `tests/`, all the same shape: probe a condition, return on success, fail on a
 deadline, sleep an interval, repeat. They are spread across ~17 files, each

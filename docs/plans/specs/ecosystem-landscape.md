@@ -31,6 +31,15 @@ codes, durability, or remote. The tools bisect the space today. The
 positioning risk is trajectory, not overlap: Coder has distribution and
 motive to grow toward structured results.
 
+## Decision revision (2026-09-14)
+
+The [cloud PTY plan](../active/00_cloud-pty-control.md) now supplies a named
+consumer for a Rust screen satellite. It revises the Boo-only screen routing
+below: an optional external `tender-screen` may serve screen commands delegated
+by Tender. Core retains PTY ownership and recording without libghostty. Earlier
+ecosystem observations in this document are dated evidence, not current upstream
+capability claims; the new plan governs this consumer and the active queue.
+
 ## State of our own docs (as of 2026-07-06)
 
 The 2026-05 block-runtime doc wave (tender-as-block-runtime,
