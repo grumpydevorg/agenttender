@@ -21,6 +21,7 @@ blocked by it).
 |---|---|---|
 | Process supervision, durable transcripts, structured exec results, deps/hooks, remote, Windows | **tender** (shipped) | files-as-truth, sidecar-per-session, no daemon |
 | Live TUI screen state for agents (send/peek/wait, rendered screen) | **boo** (coder/boo, shipped) | in-memory only, no exit codes, no events, POSIX-only — see [boo-integration](../backlog/boo-integration.md) |
+| Agent multiplexer: panes hosting interactive agents, with per-pane working/blocked/idle from agent lifecycle hooks | **herdr** (herdrdev/herdr, shipped) | composes above tender: agents live in herdr panes, the processes they start live in tender; measured 2026-09-25, see `tender guide herdr` |
 | Embeddable VT/grid engine | **libghostty-vt** (ghostty-org/ghostty) | real and good; main-branch-only, unstable C API; third-party Rust crate exists (`libghostty-vt` on crates.io) |
 | Block-style terminal UX | Warp (closed); any future Tender consumer is downstream | consumer policy, never Tender core |
 | Structured event protocol between supervision and presentation | **tender** (shipped) | daemonless event log, replay/follow/cursors, and DuckDB analytics |
@@ -30,6 +31,15 @@ well-engineered screen-state-as-truth with **no** structured events, exit
 codes, durability, or remote. The tools bisect the space today. The
 positioning risk is trajectory, not overlap: Coder has distribution and
 motive to grow toward structured results.
+
+## Decision revision (2026-09-14)
+
+The [cloud PTY plan](../active/00_cloud-pty-control.md) now supplies a named
+consumer for a Rust screen satellite. It revises the Boo-only screen routing
+below: an optional external `tender-screen` may serve screen commands delegated
+by Tender. Core retains PTY ownership and recording without libghostty. Earlier
+ecosystem observations in this document are dated evidence, not current upstream
+capability claims; the new plan governs this consumer and the active queue.
 
 ## State of our own docs (as of 2026-07-06)
 

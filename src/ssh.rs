@@ -183,12 +183,16 @@ pub fn exec_ssh_frame(host: &str, frame: Option<&[u8]>) -> Result<i32, SshError>
         .spawn()
         .map_err(SshError::SpawnFailed)?;
 
-    if let Some(bytes) = frame
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        use std::io::Write;
-        let _ = stdin.write_all(bytes);
-        // Dropping stdin closes the channel — the remote sees EOF.
+    // Nested rather than a let-chain: let-chains are stable from 1.88, and the
+    // crate advertises rust-version 1.85. Published releases carry that promise
+    // and `cargo install agenttender` is a documented path, so the syntax gives
+    // way, not the contract.
+    if let Some(bytes) = frame {
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = stdin.write_all(bytes);
+            // Dropping stdin closes the channel — the remote sees EOF.
+        }
     }
 
     let status = child.wait().map_err(SshError::SpawnFailed)?;

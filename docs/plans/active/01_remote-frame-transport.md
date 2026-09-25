@@ -10,6 +10,17 @@ links:
 
 # Remote Frame Transport — Make `--host` Genuinely Cross-Platform
 
+> **Sequence revised 2026-09-14:** [Cloud PTY control and replay](00_cloud-pty-control.md)
+> is the first consumer. Its slice 1 delivers Unix reattach over the existing
+> `ssh -t` path; slice 3 extracts the minimal typed `ssh -T` PTY bridge from
+> this plan's step 5 and implements it before the general migration in steps
+> 1–4. That bridge needs its own bounded, versioned handshake and constant remote
+> entrypoint, but does not require the full `RemoteOperation` enum. Share the
+> codec and validation with the later migration. Windows target/client work
+> stays here; do not imply that the Unix bridge delivers ConPTY support.
+> The numbered sequence below is the original general-transport migration;
+> the cloud plan governs the earlier PTY slices. Step 0 remains shipped.
+
 Promote the `exec` frame transport's principle from one operation to the whole
 remote surface: every `--host` command travels as a typed request over SSH
 stdin, so **no user- or host-derived value is ever reconstructed into a remote

@@ -25,6 +25,13 @@ pub enum Evidence {
     /// Reconciliation: the sidecar's own terminal event was found in the
     /// event log; meta was healed from it (spec §3.6).
     EventLogTerminal,
+    /// The sidecar failed while supervising, killed the child, and recorded
+    /// `SidecarFailed` itself.
+    SupervisionFailed,
+    /// Reconciliation: the child a gone sidecar left behind (a lost sidecar's,
+    /// or one whose healed `SidecarFailed` record names it) was still alive,
+    /// its identity verified, and it was killed.
+    OrphanKilled,
 }
 
 /// Provenance of a lifecycle transition.

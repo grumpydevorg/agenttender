@@ -10,6 +10,23 @@ links:
 
 # boo Integration — compose with, learn from, route around
 
+## Decision revision — 2026-09-14
+
+[Cloud PTY control and replay](../active/00_cloud-pty-control.md) revises the
+2026-07-09 path-5 decision below. The concrete consumer is a Ghostty user and
+an agent sharing a Claude PTY on an SSH-accessible exe.dev VM. Tender retains
+PTY/process ownership, exact recording, and transport. An optional, separately
+packaged Rust `tender-screen` executable owns VT state and uses libghostty.
+`tender pty snapshot` / screen waits may explicitly dispatch to that executable
+on PATH through a versioned contract. Core builds, including crates.io and
+Windows CI, do not acquire a Ghostty or Zig dependency.
+
+This is a deliberate external extension, not an in-core renderer or an implicit
+claim that the old decision already permitted CLI delegation. Boo remains an
+alternative composition to validate; it is no longer the exclusive planned
+screen authority. The review and recipes below are historical evidence at the
+stated revision, not prerequisites or current upstream compatibility guarantees.
+
 [coder/boo](https://github.com/coder/boo) is a GNU-screen-style terminal
 multiplexer built on libghostty-vt, by Coder Technologies (agent-infrastructure
 company). Reviewed in depth 2026-07-06 at v0.6.4 (HEAD 39245a7); facts below
@@ -133,7 +150,7 @@ boo has no remote story. Remote exec parity shipped 2026-07-08
 structured remote screen reads. Tender's remote lane is a distribution
 advantage over boo rather than a parallel effort.
 
-### 5. Native rendered-state reads in tender — rejected for core
+### 5. Historical 2026-07-09 decision — revised above on 2026-09-14
 
 The sharpest confirmed gap: tender waits only on exit; boo waits on screen
 content/quiescence. It is tempting to give tender's PTY lane `peek`/`wait --text`
