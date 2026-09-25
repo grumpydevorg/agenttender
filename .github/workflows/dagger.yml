@@ -70,23 +70,29 @@ jobs:
           fi
           echo "no route out of the sandbox, as intended"
 
+      # Every dagger invocation appends to one log, which the last step
+      # inspects for any sign of Dagger Cloud.
       - name: Start engine
-        run: echo '{ version }' | .github/dagger-sandboxed.sh query
+        run: |
+          set -o pipefail
+          echo '{ version }' | .github/dagger-sandboxed.sh query 2>&1 | tee -a "$RUNNER_TEMP/dagger.log"
 
       - name: Load module
-        run: .github/dagger-sandboxed.sh check -l
+        run: |
+          set -o pipefail
+          .github/dagger-sandboxed.sh check -l 2>&1 | tee -a "$RUNNER_TEMP/dagger.log"
 
       - name: Checks (${{ matrix.checks }})
         run: |
           set -o pipefail
           .github/dagger-sandboxed.sh --progress=plain check ${{ matrix.checks }} 2>&1 \
-            | tee "$RUNNER_TEMP/dagger-check.log"
+            | tee -a "$RUNNER_TEMP/dagger.log"
 
       - name: Assert no Dagger Cloud trace
         if: always()
         run: |
-          log="$RUNNER_TEMP/dagger-check.log"
-          test -s "$log" || { echo "::error::no check log to inspect"; exit 1; }
+          log="$RUNNER_TEMP/dagger.log"
+          test -s "$log" || { echo "::error::no dagger log to inspect"; exit 1; }
           # An uploaded trace prints "Full trace at https://dagger.cloud/...".
           if grep -q 'Full trace at' "$log"; then
             echo "::error::a Dagger Cloud trace was uploaded"; exit 1
