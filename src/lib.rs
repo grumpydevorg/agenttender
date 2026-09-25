@@ -71,3 +71,18 @@ pub mod reconcile;
 pub mod session;
 pub mod sidecar;
 pub mod ssh;
+
+// PILOT FAILURE INJECTION (throwaway, never merged): one clippy finding and
+// one failing test, to prove failures propagate through the Dagger lanes.
+#[allow(dead_code)]
+fn pilot_clippy_finding(v: &Vec<u8>) -> usize {
+    v.len()
+}
+
+#[cfg(test)]
+mod pilot_failure {
+    #[test]
+    fn pilot_deliberate_failure() {
+        assert_eq!(1 + 1, 3, "deliberate failure for the Dagger pilot");
+    }
+}
