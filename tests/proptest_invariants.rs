@@ -1,6 +1,6 @@
 use proptest::prelude::*;
-use tender::log::LogLine;
-use tender::model::ids::{EpochTimestamp, SessionName, SessionNameError};
+use tendr::log::LogLine;
+use tendr::model::ids::{EpochTimestamp, SessionName, SessionNameError};
 
 // --- LogLine JSONL roundtrip ---
 
@@ -116,10 +116,10 @@ proptest! {
             0..8,
         ),
     ) {
-        let token = tender::events::encode_cursor(&streams);
+        let token = tendr::events::encode_cursor(&streams);
         // Opaque but URL-safe: survives query strings and shell args.
         prop_assert!(token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
-        let decoded = tender::events::decode_cursor(&token).unwrap();
+        let decoded = tendr::events::decode_cursor(&token).unwrap();
         prop_assert_eq!(decoded, streams);
     }
 }

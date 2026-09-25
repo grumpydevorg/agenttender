@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use tender::model::event::EventTimestamp;
-use tender::model::ids::{Namespace, Source};
+use tendr::model::event::EventTimestamp;
+use tendr::model::ids::{Namespace, Source};
 
 mod commands;
 
@@ -36,7 +36,7 @@ enum AttachEscape {
     None,
 }
 
-impl From<CliExecTarget> for tender::model::spec::ExecTarget {
+impl From<CliExecTarget> for tendr::model::spec::ExecTarget {
     fn from(c: CliExecTarget) -> Self {
         match c {
             CliExecTarget::PosixShell => Self::PosixShell,
@@ -50,7 +50,7 @@ impl From<CliExecTarget> for tender::model::spec::ExecTarget {
 
 #[derive(Parser)]
 #[command(
-    name = "tender",
+    name = "tendr",
     about = "Agent process sitter",
     version = env!("CARGO_PKG_VERSION")
 )]
@@ -111,14 +111,14 @@ enum Commands {
         any_exit: bool,
         /// Declared execution boundary as KIND:LABEL (host, container, vm, pod)
         #[arg(long, value_name = "KIND:LABEL")]
-        boundary: Option<tender::model::boundary::Boundary>,
+        boundary: Option<tendr::model::boundary::Boundary>,
         /// Ancestry boundary as KIND:LABEL (repeatable; outermost last)
         #[arg(
             long = "boundary-parent",
             value_name = "KIND:LABEL",
             requires = "boundary"
         )]
-        boundary_parent: Vec<tender::model::boundary::Boundary>,
+        boundary_parent: Vec<tendr::model::boundary::Boundary>,
         /// Command and arguments
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<String>,
@@ -133,7 +133,7 @@ enum Commands {
         /// Return immediately after start (don't wait for exit)
         #[arg(long, conflicts_with = "foreground")]
         detach: bool,
-        /// Force foreground mode (overrides #tender: detach directive)
+        /// Force foreground mode (overrides #tendr: detach directive)
         #[arg(long, conflicts_with = "detach")]
         foreground: bool,
         /// Namespace for session grouping
@@ -284,10 +284,10 @@ enum Commands {
     },
     /// Run a command and record an annotation in the session's event log
     Wrap {
-        /// Session name (defaults to TENDER_SESSION env var)
+        /// Session name (defaults to TENDR_SESSION env var)
         #[arg(long)]
         session: Option<String>,
-        /// Namespace (defaults to TENDER_NAMESPACE env var)
+        /// Namespace (defaults to TENDR_NAMESPACE env var)
         #[arg(long)]
         namespace: Option<String>,
         /// Annotation source (e.g. "cmux.claude-hook")
@@ -361,13 +361,13 @@ enum Commands {
         /// Drop into a DuckDB shell with the `events` view pre-registered
         #[arg(long, conflicts_with_all = ["sql", "file"])]
         shell: bool,
-        /// Print the DuckDB version tender will use, then exit
+        /// Print the DuckDB version tendr will use, then exit
         #[arg(long = "version", conflicts_with_all = ["sql", "file", "shell", "namespace"])]
         version: bool,
     },
     /// Append an event to a session's event log
     Emit {
-        /// Event kind (dotted, e.g. "hook.post_tool_use"; tender-owned
+        /// Event kind (dotted, e.g. "hook.post_tool_use"; tendr-owned
         /// prefixes like "run." are reserved)
         #[arg(long)]
         kind: String,
@@ -380,7 +380,7 @@ enum Commands {
         /// Read JSON object payload from stdin
         #[arg(long = "data-stdin", group = "data_src")]
         data_stdin: bool,
-        /// Semantic emitter (default: "user.emit"; "tender.*" is reserved)
+        /// Semantic emitter (default: "user.emit"; "tendr.*" is reserved)
         #[arg(long)]
         source: Option<String>,
         /// Target session as <namespace>/<name> or bare <name> (default
@@ -430,14 +430,14 @@ enum Commands {
     },
     /// Print the usage guide (embedded), optionally a single topic
     ///
-    /// `tender guide` prints the whole guide; `tender guide <topic>` prints one
+    /// `tendr guide` prints the whole guide; `tendr guide <topic>` prints one
     /// section. Topics: exec, remote, python, duckdb, powershell, boundary.
     /// Local-only.
     Guide {
         /// Topic to print (omit for the whole guide)
         topic: Option<String>,
     },
-    /// Manage the embedded `using-tender` agent skill stub
+    /// Manage the embedded `using-tendr` agent skill stub
     ///
     /// Print the stub, install it as a Claude Code skill file, or show where
     /// install would write. Local-only.
@@ -453,7 +453,7 @@ enum Commands {
     },
 }
 
-/// Subcommands of `tender skill`.
+/// Subcommands of `tendr skill`.
 #[derive(Subcommand)]
 enum SkillAction {
     /// Print the embedded skill stub to stdout
@@ -681,7 +681,7 @@ impl Commands {
     }
 
     /// Reconstruct CLI args for local-only commands that can offer a pre-filled
-    /// `ssh <host> 'tender …'` fallback when `--host` is rejected. Reconstructed
+    /// `ssh <host> 'tendr …'` fallback when `--host` is rejected. Reconstructed
     /// from clap-parsed state — never raw argv, which would corrupt child args
     /// after `--`. Returns `None` for commands that keep the generic rejection.
     fn local_fallback_args(&self) -> Option<Vec<String>> {
@@ -742,7 +742,7 @@ impl Commands {
                 args.push(script.display().to_string());
                 // clap consumed the user's first `--` (later ones stay in
                 // the captured args) — re-insert exactly one so hyphen
-                // script args don't re-parse as tender flags on paste.
+                // script args don't re-parse as tendr flags on paste.
                 if !script_args.is_empty() {
                     args.push("--".to_string());
                 }
@@ -911,7 +911,7 @@ fn main() {
         // The destination is a bare positional argument to the local ssh, so an
         // empty or option-shaped value (e.g. `-oProxyCommand=<cmd>`) would run a
         // local command. Reject it at the boundary before any ssh spawn (exit 2).
-        if let Err(e) = tender::ssh::validate_destination(host) {
+        if let Err(e) = tendr::ssh::validate_destination(host) {
             eprintln!("error: {e}");
             std::process::exit(2);
         }
@@ -931,8 +931,8 @@ fn main() {
             // inherit it straight through. Otherwise build the frame
             // from the parsed args.
             let frame = (!frame_from_stdin).then(|| {
-                tender::exec_request::ExecRequestFrame {
-                    v: tender::exec_request::EXEC_FRAME_VERSION,
+                tendr::exec_request::ExecRequestFrame {
+                    v: tendr::exec_request::EXEC_FRAME_VERSION,
                     session: name.clone().expect("clap: name required without frame"),
                     namespace: namespace.clone(),
                     cmd: cmd.clone(),
@@ -940,7 +940,7 @@ fn main() {
                 }
                 .to_json()
             });
-            match tender::ssh::exec_ssh_frame(host, frame.as_deref()) {
+            match tendr::ssh::exec_ssh_frame(host, frame.as_deref()) {
                 Ok(code) => std::process::exit(code),
                 Err(e) => {
                     eprintln!("{e}");
@@ -949,13 +949,13 @@ fn main() {
             }
         }
         let cmd_name = cli.command.name();
-        if !tender::ssh::is_remote_supported(cmd_name) {
+        if !tendr::ssh::is_remote_supported(cmd_name) {
             // The local-only verbs are a usage error (exit 2) with a
             // pre-filled, copy-pasteable fallback — rejected before any
             // connection or side effect (2026-07-08-remote-exec-host-parity.md
             // slice 1).
             if let Some(args) = cli.command.local_fallback_args() {
-                let mut full = vec!["tender".to_string()];
+                let mut full = vec!["tendr".to_string()];
                 full.extend(args);
                 let remote_cmd = shell_words::join(&full);
                 eprintln!(
@@ -971,13 +971,13 @@ fn main() {
                  Supported remote commands: {}.\n\
                  Some local-only commands rely on local FIFO, process context,\n\
                  or filesystem state that cannot tunnel through ssh -T.",
-                tender::ssh::REMOTE_COMMANDS.join(", ")
+                tendr::ssh::REMOTE_COMMANDS.join(", ")
             );
             std::process::exit(1);
         }
         let args = cli.command.remote_args();
         let allocate_tty = cmd_name == "attach";
-        match tender::ssh::exec_ssh(host, &args, allocate_tty) {
+        match tendr::ssh::exec_ssh(host, &args, allocate_tty) {
             Ok(code) => std::process::exit(code),
             Err(e) => {
                 eprintln!("{e}");
@@ -1004,7 +1004,7 @@ fn main() {
             boundary,
             boundary_parent,
         } => resolve_namespace(namespace).and_then(|ns| {
-            let boundary_ctx = boundary.map(|current| tender::model::boundary::BoundaryContext {
+            let boundary_ctx = boundary.map(|current| tendr::model::boundary::BoundaryContext {
                 current,
                 parents: boundary_parent,
             });
@@ -1021,7 +1021,7 @@ fn main() {
                 any_exit,
                 &ns,
                 pty,
-                exec_target.map(tender::model::spec::ExecTarget::from),
+                exec_target.map(tendr::model::spec::ExecTarget::from),
                 boundary_ctx,
             )
         }),
@@ -1191,11 +1191,11 @@ fn main() {
             cmd,
         } => {
             let session = session
-                .or_else(|| std::env::var("TENDER_SESSION").ok())
+                .or_else(|| std::env::var("TENDR_SESSION").ok())
                 .ok_or_else(|| {
-                    anyhow::anyhow!("--session required (or set TENDER_SESSION env var)")
+                    anyhow::anyhow!("--session required (or set TENDR_SESSION env var)")
                 });
-            let namespace = namespace.or_else(|| std::env::var("TENDER_NAMESPACE").ok());
+            let namespace = namespace.or_else(|| std::env::var("TENDR_NAMESPACE").ok());
             let source = Source::new(&source).map_err(anyhow::Error::from);
             match (session, resolve_namespace(namespace), source) {
                 (Ok(s), Ok(ns), Ok(src)) => commands::cmd_wrap(&s, &ns, &src, &event, cmd),
@@ -1209,8 +1209,8 @@ fn main() {
             escape,
         } => resolve_namespace(namespace).and_then(|ns| {
             let mode = match escape {
-                AttachEscape::CtrlBackslash => tender::attach_escape::EscapeMode::CtrlBackslash,
-                AttachEscape::None => tender::attach_escape::EscapeMode::Disabled,
+                AttachEscape::CtrlBackslash => tendr::attach_escape::EscapeMode::CtrlBackslash,
+                AttachEscape::None => tendr::attach_escape::EscapeMode::Disabled,
             };
             commands::cmd_attach(&name, &ns, takeover, mode)
         }),

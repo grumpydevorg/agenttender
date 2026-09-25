@@ -28,8 +28,8 @@ use crate::model::event::{DataRef, ENVELOPE_VERSION, Event, EventTimestamp, Kind
 use crate::model::ids::{Namespace, RunId, SessionName, Source};
 use crate::model::state::{ExitReason, RunStatus};
 
-/// Poll interval for every follow surface — `tender events --follow`,
-/// `tender watch`, log follow. One constant, no configuration surface
+/// Poll interval for every follow surface — `tendr events --follow`,
+/// `tendr watch`, log follow. One constant, no configuration surface
 /// (spec §5.1; the disk is the buffer).
 pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -44,7 +44,7 @@ pub const MAX_PREVIEW_BYTES: usize = 4 * 1024;
 #[derive(Debug, Clone)]
 pub struct EventDraft {
     /// Caller-supplied pre-minted event id; `None` = stamp at append.
-    /// wrap pre-mints so `TENDER_PARENT_EVENT_ID` can name the event it
+    /// wrap pre-mints so `TENDR_PARENT_EVENT_ID` can name the event it
     /// will write (spec §2).
     pub id: Option<Uuid7>,
     pub kind: Kind,
@@ -201,17 +201,17 @@ pub fn env_uuid7(var: &str) -> Option<Uuid7> {
     match value.parse::<Uuid7>() {
         Ok(id) => Some(id),
         Err(e) => {
-            eprintln!("tender: ignoring malformed {var}: {e}");
+            eprintln!("tendr: ignoring malformed {var}: {e}");
             None
         }
     }
 }
 
 /// The ambient causal parent (spec §2 chaining rule):
-/// `TENDER_PARENT_EVENT_ID` > `TENDER_BLOCK_ID`.
+/// `TENDR_PARENT_EVENT_ID` > `TENDR_BLOCK_ID`.
 #[must_use]
 pub fn env_parent_chain() -> Option<Uuid7> {
-    env_uuid7("TENDER_PARENT_EVENT_ID").or_else(|| env_uuid7("TENDER_BLOCK_ID"))
+    env_uuid7("TENDR_PARENT_EVENT_ID").or_else(|| env_uuid7("TENDR_BLOCK_ID"))
 }
 
 /// The caller's structured preview when it fits `MAX_PREVIEW_BYTES`,
@@ -522,7 +522,7 @@ pub enum CursorError {
     Base64(#[from] base64::DecodeError),
     #[error("cursor payload is not valid JSON")]
     Json(#[from] serde_json::Error),
-    #[error("unknown cursor version {0} (this tender speaks v{CURSOR_VERSION})")]
+    #[error("unknown cursor version {0} (this tendr speaks v{CURSOR_VERSION})")]
     UnknownVersion(u32),
 }
 
@@ -650,19 +650,19 @@ pub fn project_log_line(
         "namespace": namespace,
         "session": session,
         "run_id": run_id,
-        "source": "tender.sidecar",
+        "source": "tendr.sidecar",
         "data": {"content": line.format_raw()},
     }))
 }
 
-/// Append a fully-addressed event to `<tender-root>/lost+found/events.jsonl`
+/// Append a fully-addressed event to `<tendr-root>/lost+found/events.jsonl`
 /// (spec §7): emits from a process whose session dir was pruned or replaced
 /// keep their data without resurrecting the session dir. Swept by `prune`.
 ///
 /// # Errors
 /// Returns IO errors from creating or appending to the lost+found log.
-pub fn append_lost_found(tender_root: &Path, event: &Event) -> io::Result<()> {
-    let dir = tender_root.join("lost+found");
+pub fn append_lost_found(tendr_root: &Path, event: &Event) -> io::Result<()> {
+    let dir = tendr_root.join("lost+found");
     std::fs::create_dir_all(&dir)?;
 
     let mut line = serde_json::to_string(event).map_err(io::Error::other)?;

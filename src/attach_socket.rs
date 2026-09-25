@@ -1,8 +1,8 @@
 //! Private, peer-verified attach sockets (Unix).
 //!
 //! A PTY session's attach endpoint must stay within the run owner's account.
-//! The socket lives in `sockets/` under Tender's persistent state root
-//! (`~/.tender/sockets`), an owner-only directory that survives logout, with a
+//! The socket lives in `sockets/` under Tendr's persistent state root
+//! (`~/.tendr/sockets`), an owner-only directory that survives logout, with a
 //! short name derived from the session and run. Both ends verify the peer's
 //! user id before any terminal bytes flow. Specified in
 //! `docs/plans/active/00_cloud-pty-control.md` ("Local socket identity and
@@ -22,7 +22,7 @@ pub const SOCKET_DIR: &str = "sockets";
 
 #[derive(Debug, Error)]
 pub enum SocketError {
-    #[error("cannot locate the tender state root for {0}")]
+    #[error("cannot locate the tendr state root for {0}")]
     NoStateRoot(PathBuf),
     #[error("socket directory {path} is not a private directory owned by this user: {reason}")]
     UnsafeDirectory { path: PathBuf, reason: &'static str },
@@ -48,8 +48,8 @@ pub struct BoundSocket {
     pub path: PathBuf,
 }
 
-/// The state root (`…/.tender`) for a session directory
-/// (`…/.tender/sessions/<namespace>/<name>`).
+/// The state root (`…/.tendr`) for a session directory
+/// (`…/.tendr/sessions/<namespace>/<name>`).
 #[must_use]
 pub fn state_root_for(session_dir: &Path) -> Option<PathBuf> {
     session_dir
@@ -316,7 +316,7 @@ mod tests {
     }
 
     fn fake_session(root: &Path) -> PathBuf {
-        let dir = root.join(".tender/sessions/default/work");
+        let dir = root.join(".tendr/sessions/default/work");
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -325,7 +325,7 @@ mod tests {
     fn state_root_is_the_parent_of_the_sessions_directory() {
         let tmp = tempfile::tempdir().unwrap();
         let session = fake_session(tmp.path());
-        assert_eq!(state_root_for(&session), Some(tmp.path().join(".tender")));
+        assert_eq!(state_root_for(&session), Some(tmp.path().join(".tendr")));
         assert_eq!(state_root_for(Path::new("/no/session/dir/here")), None);
     }
 
@@ -367,7 +367,7 @@ mod tests {
     fn socket_path_is_short_stable_per_run_and_distinct_across_runs() {
         let tmp = tempfile::tempdir().unwrap();
         let session = fake_session(tmp.path());
-        let root = tmp.path().join(".tender");
+        let root = tmp.path().join(".tendr");
         let run = RunId::new();
         let a = socket_path(&root, &session, run).unwrap();
         assert_eq!(a, socket_path(&root, &session, run).unwrap());

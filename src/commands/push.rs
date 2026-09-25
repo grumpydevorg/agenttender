@@ -1,9 +1,9 @@
-use tender::model::ids::{Namespace, SessionName};
-use tender::model::pty::PtyControl;
-use tender::model::spec::StdinMode;
-use tender::model::state::RunStatus;
-use tender::platform::{Current, Platform};
-use tender::session::{self, SessionRoot};
+use tendr::model::ids::{Namespace, SessionName};
+use tendr::model::pty::PtyControl;
+use tendr::model::spec::StdinMode;
+use tendr::model::state::RunStatus;
+use tendr::platform::{Current, Platform};
+use tendr::session::{self, SessionRoot};
 
 pub fn cmd_push(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
     let session_name = SessionName::new(name)?;
@@ -69,12 +69,12 @@ pub fn cmd_push(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
 fn push_over_attach_socket(session_dir: &std::path::Path) -> anyhow::Result<()> {
     use std::io::Read;
     use std::os::unix::net::UnixStream;
-    use tender::attach_proto::{self, INPUT_CLOSED, INPUT_REVOKED, INPUT_WRITTEN};
+    use tendr::attach_proto::{self, INPUT_CLOSED, INPUT_REVOKED, INPUT_WRITTEN};
 
     let sock_path = attach_proto::read_sock_path(session_dir)
         .ok_or_else(|| anyhow::anyhow!("attach socket not found"))?;
     let mut stream = UnixStream::connect(&sock_path)?;
-    tender::attach_socket::verify_peer(&stream)
+    tendr::attach_socket::verify_peer(&stream)
         .map_err(|e| anyhow::anyhow!("refusing attach socket {}: {e}", sock_path.display()))?;
 
     stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;

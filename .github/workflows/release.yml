@@ -1,8 +1,8 @@
 name: release
 
 # Cut a release by pushing a version tag, e.g. `git tag v0.2.0 && git push --tags`.
-# Builds a per-target binary, packages it as `agenttender-<target>.tar.gz` (the
-# name `cargo binstall agenttender` expects — see [package.metadata.binstall] in
+# Builds a per-target binary, packages it as `tendr-<target>.tar.gz` (the
+# name `cargo binstall tendr` expects — see [package.metadata.binstall] in
 # Cargo.toml), attaches a SHA256 sidecar, attests build provenance (keyless SLSA),
 # and uploads everything to the GitHub Release for the tag.
 #
@@ -68,9 +68,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.zig }}" = "true" ]; then
-            cargo zigbuild --release --target ${{ matrix.target }} --bin tender
+            cargo zigbuild --release --target ${{ matrix.target }} --bin tendr
           else
-            cargo build --release --target ${{ matrix.target }} --bin tender
+            cargo build --release --target ${{ matrix.target }} --bin tendr
           fi
 
       - name: Package
@@ -78,8 +78,8 @@ jobs:
         shell: bash
         run: |
           ext=""; [[ "${{ matrix.target }}" == *windows* ]] && ext=".exe"
-          archive="agenttender-${{ matrix.target }}.tar.gz"
-          tar -czf "$archive" -C "target/${{ matrix.target }}/release" "tender${ext}"
+          archive="tendr-${{ matrix.target }}.tar.gz"
+          tar -czf "$archive" -C "target/${{ matrix.target }}/release" "tendr${ext}"
           # sha256sum on Linux/Git-Bash; shasum on macOS.
           (sha256sum "$archive" || shasum -a 256 "$archive") > "$archive.sha256"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"

@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "agenttender"
+name = "tendr"
 version = "0.2.1"
 dependencies = [
  "anyhow",

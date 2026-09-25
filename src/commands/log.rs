@@ -1,6 +1,6 @@
-use tender::log::{LogQuery, follow_log, parse_since, query_log};
-use tender::model::ids::{Namespace, SessionName};
-use tender::session::{self, SessionRoot};
+use tendr::log::{LogQuery, follow_log, parse_since, query_log};
+use tendr::model::ids::{Namespace, SessionName};
+use tendr::session::{self, SessionRoot};
 
 pub fn cmd_log(
     name: &str,

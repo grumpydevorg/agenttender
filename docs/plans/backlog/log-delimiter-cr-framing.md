@@ -9,7 +9,7 @@ links:
 
 Give pipe sessions a typed, generic way to split records on a lone carriage
 return, so `\r`-framed progress meters are visible in `output.log` while the child
-is still running — without a PTY, without command-specific policy in Tender.
+is still running — without a PTY, without command-specific policy in Tendr.
 
 > **Status: not started. Written 2026-07-27 from a live incident.**
 
@@ -85,7 +85,7 @@ records a best-effort transcript split at arbitrary 4096-byte read boundaries, a
 is **not implemented on Windows** (`src/platform/windows.rs:184` — "PTY not
 supported on Windows yet"). A Windows user has no workaround at all today.
 
-**Recognising programs.** Tender must not learn that `rsync --info=progress2`
+**Recognising programs.** Tendr must not learn that `rsync --info=progress2`
 behaves one way and `curl` another. That list is unbounded, drifts with every tool
 release, and puts policy in the wrong layer. The delimiter is the actual
 abstraction.
@@ -171,7 +171,7 @@ A regression test should assert hash stability for a default-valued spec.
 ### Framing provenance, and collapse as a derived view
 
 A `\r` meter updates several times per second, so a two-hour transfer becomes tens
-of thousands of near-identical records. Left raw, `tender log --tail 50` returns
+of thousands of near-identical records. Left raw, `tendr log --tail 50` returns
 fifty renderings of the same progress line and buries any real stdout or stderr —
 the command fails at exactly the moment you reach for it.
 
@@ -234,17 +234,17 @@ The rejected alternatives are worth recording:
 - **Keyed replacement/update events**, so a follower can supersede a record it
   already sent — coherent, but a protocol change well beyond this plan.
 - **Terminal overwrite** (re-render in place on `-f`) — conflicts with
-  machine-readable pipes and crosses Tender's "not a renderer" boundary. Tender
+  machine-readable pipes and crosses Tendr's "not a renderer" boundary. Tendr
   owns the process and the record; screens belong to Boo.
 
 Accept the honest asymmetry:
 
 | Surface | Behaviour | Opt-out |
 |---|---|---|
-| `tender log` (historical) | collapse each CR run to its last record | `--all-updates` |
-| `tender log --tail N` | collapse **first**, then take the last N | `--all-updates` |
+| `tendr log` (historical) | collapse each CR run to its last record | `--all-updates` |
+| `tendr log --tail N` | collapse **first**, then take the last N | `--all-updates` |
 | event replay (`events --include-logs`, not following) | collapse | `--all-updates` |
-| `tender log -f` | every update, no collapse — cannot know the last | n/a |
+| `tendr log -f` | every update, no collapse — cannot know the last | n/a |
 | `watch --logs` (`src/commands/watch.rs:196`) | every update, no collapse | n/a |
 | followed events | every update, no collapse | n/a |
 
@@ -267,7 +267,7 @@ This plan makes the fix *possible*; it does not make the failure *self-evident*.
 Closing that loop needs a signal rather than a flag — buffered-byte and
 last-record-age telemetry, generic enough to catch a wedged child too. That is a
 separate feature with a separate problem (the sidecar and the CLI are different
-processes, so an in-memory counter is invisible to `tender status`), and it is
+processes, so an in-memory counter is invisible to `tendr status`), and it is
 tracked as [partial-line-telemetry](partial-line-telemetry.md). Neither blocks the
 other; shipping both is what actually closes the loop.
 
@@ -340,18 +340,18 @@ Platform:
 ## Documentation
 
 The failure was reachable only by reading the architecture doc or the source.
-`tender guide` has **zero** mentions of PTY, TTY, or progress framing; so does
-`README.md`; so does the embedded `using-tender` skill. `--pty` appears only in
-`tender start --help`, described as "Interactive pseudo-terminal mode" — which
+`tendr guide` has **zero** mentions of PTY, TTY, or progress framing; so does
+`README.md`; so does the embedded `using-tendr` skill. `--pty` appears only in
+`tendr start --help`, described as "Interactive pseudo-terminal mode" — which
 reads as *for humans*, not *required to see progress*.
 
-- Add a `tender guide pty` topic: the two lanes, what each captures, and how to
+- Add a `tendr guide pty` topic: the two lanes, what each captures, and how to
   choose for a progress-emitting child.
 - Add the partial-line rule to `docs/guide.md` where long-running work is
   discussed — the log holds partial lines until a delimiter.
-- Add one line to `.claude/skills/using-tender/SKILL.md`: check `tender log <name>`
+- Add one line to `.claude/skills/using-tendr/SKILL.md`: check `tendr log <name>`
   within 60 s of starting a long session; an empty log means you are blind.
-- Fix while there: the topic list in `tender guide`'s CLI help
+- Fix while there: the topic list in `tendr guide`'s CLI help
   (`src/main.rs:415`) is hand-maintained and has drifted from `TOPICS`
   (`src/commands/guide.rs`). It omits `install`, which works, and will omit
   `cgroup` once the in-flight `docs/guide-cgroup-memory` branch lands. Derive the
@@ -361,11 +361,11 @@ reads as *for humans*, not *required to see progress*.
 
 There is a stopgap outside this repo, in one user's Claude Code install
 (`~/.claude/hooks/tender-pty-guard.py`, a `PreToolUse`/`Bash` hook). Recorded here
-because Tender's own docs are where someone will look for it, and the file itself
+because Tendr's own docs are where someone will look for it, and the file itself
 is not visible from this repo:
 
-- **Denies** a Bash call whose command segment starts a tender session
-  (`tender` … `start`), requests an rsync `\r` meter (`--progress` or
+- **Denies** a Bash call whose command segment starts a tendr session
+  (`tendr` … `start`), requests an rsync `\r` meter (`--progress` or
   `--info=*progress*`), and has no `--pty`.
 - **Segment-scoped**, not whole-command: `--pty` belonging to a different command in
   a compound line does not count. It is a matcher, not a shell parser — quoting,
@@ -396,12 +396,12 @@ Remove the hook when **any one** of these is true:
 
 1. CR-aware framing becomes the default for new sessions, so omission is no longer
    possible.
-2. Tender detects the condition itself and surfaces it reliably — e.g.
+2. Tendr detects the condition itself and surfaces it reliably — e.g.
    [partial-line-telemetry](partial-line-telemetry.md) landing somewhere an operator
    or agent actually reads, not merely being queryable.
 3. A cross-agent enforcement mechanism replaces it — something every caller
    resolves, not one agent's config.
 
 Until then the narrow rsync hook stays alongside the documented flag. Its pattern
-list must not migrate into Tender in any case: per-command knowledge belongs in
+list must not migrate into Tendr in any case: per-command knowledge belongs in
 neither.

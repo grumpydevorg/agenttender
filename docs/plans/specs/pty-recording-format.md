@@ -7,12 +7,12 @@ links:
 
 # PTY recording format — version 1
 
-**This document is the wire-format authority.** The `tender::recording` rustdoc
+**This document is the wire-format authority.** The `tendr::recording` rustdoc
 describes the Rust API and links here; it does not restate the layout. The golden
 fixture `tests/fixtures/recording/v1-segment0.hex` guards compatibility: a change
 that alters its bytes is a format change and needs a new version number.
 
-A recording is the exact, ordered record of what a Tender PTY owner observed and
+A recording is the exact, ordered record of what a Tendr PTY owner observed and
 applied for one run: output bytes, geometry, and (only when enabled at launch)
 accepted input bytes. It is separate from `output.log` (a lossy readable
 transcript) and from the lifecycle event log.

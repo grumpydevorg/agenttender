@@ -1,6 +1,6 @@
-# Tender Architecture
+# Tendr Architecture
 
-This directory maps the current Tender system as implemented on `main`.
+This directory maps the current Tendr system as implemented on `main`.
 
 It is architecture-level documentation: process boundaries, session storage, lifecycle state, PTY control, key flows, and transport boundaries. It intentionally does not duplicate every struct field or every helper function.
 
@@ -9,7 +9,7 @@ For the review doctrine that should shape new features, see [../design-principle
 Read these in order:
 
 1. [01-system-context.md](01-system-context.md) — what the running system is, who talks to it, and where responsibility sits
-2. [02-session-storage.md](02-session-storage.md) — what Tender persists on disk, what is durable, and what is transient
+2. [02-session-storage.md](02-session-storage.md) — what Tendr persists on disk, what is durable, and what is transient
 3. [03-run-lifecycle.md](03-run-lifecycle.md) — the run state machine and who is allowed to write it
 4. [04-pty-lane.md](04-pty-lane.md) — the PTY execution lane and current human/agent control model
 5. [05-key-flows.md](05-key-flows.md) — the load-bearing sequences: `start`, `exec`, `kill`, and `attach`

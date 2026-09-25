@@ -2,31 +2,31 @@
 //! recovers with a visible warning, or ends the run with the child stopped and
 //! `Exited { reason: SidecarFailed { step } }` recorded, loud everywhere:
 //! meta, the `run.sidecar_failed` event, `wait`'s exit code 5 and the
-//! `--on-exit` hooks (`TENDER_EXIT_REASON=SidecarFailed`).
+//! `--on-exit` hooks (`TENDR_EXIT_REASON=SidecarFailed`).
 //!
-//! Faults are injected by the debug-only `TENDER_TEST_FAIL=<point>[,…]` and
-//! `TENDER_TEST_PANIC=<point>` hooks. `TENDER_TEST_FAULT_GATE` holds a named
+//! Faults are injected by the debug-only `TENDR_TEST_FAIL=<point>[,…]` and
+//! `TENDR_TEST_PANIC=<point>` hooks. `TENDR_TEST_FAULT_GATE` holds a named
 //! fault until a file exists, so on Unix a row can wait for the child's own
 //! child (a grandchild in the same process group) before the fault fires, and
 //! then prove the whole group was stopped. No timing races.
 
 mod harness;
 
-use harness::{echo_env_cmd, read_events, tender, touch_cmd};
+use harness::{echo_env_cmd, read_events, tendr, touch_cmd};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-use tender::model::ids::{Namespace, ProcessIdentity, SessionName};
-use tender::platform::{Current, Platform, ProcessStatus};
-use tender::session::{self, LockGuard, SessionRoot};
+use tendr::model::ids::{Namespace, ProcessIdentity, SessionName};
+use tendr::platform::{Current, Platform, ProcessStatus};
+use tendr::session::{self, LockGuard, SessionRoot};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn session_dir(root: &TempDir, session: &str) -> PathBuf {
     root.path()
-        .join(format!(".tender/sessions/default/{session}"))
+        .join(format!(".tendr/sessions/default/{session}"))
 }
 
 /// How the fault is injected.
@@ -36,22 +36,22 @@ enum Inject {
     Panic(&'static str),
 }
 
-/// `tender start` in the background, so a row can act while the client is
+/// `tendr start` in the background, so a row can act while the client is
 /// still blocked on readiness.
 fn spawn_start(root: &TempDir, inject: Inject, gate: &Path, args: &[&str]) -> Child {
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"));
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"));
     cmd.arg("start")
         .args(args)
         .env("HOME", root.path())
-        .env("TENDER_TEST_FAULT_GATE", gate)
+        .env("TENDR_TEST_FAULT_GATE", gate)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     match inject {
-        Inject::Fail(points) => cmd.env("TENDER_TEST_FAIL", points),
-        Inject::Panic(point) => cmd.env("TENDER_TEST_PANIC", point),
+        Inject::Fail(points) => cmd.env("TENDR_TEST_FAIL", points),
+        Inject::Panic(point) => cmd.env("TENDR_TEST_PANIC", point),
     };
-    // Mirror harness::tender: Git-for-Windows coreutils for `sh`/`sleep`.
+    // Mirror harness::tendr: Git-for-Windows coreutils for `sh`/`sleep`.
     #[cfg(windows)]
     {
         let git_usr_bin = Path::new(r"C:\Program Files\Git\usr\bin");
@@ -60,7 +60,7 @@ fn spawn_start(root: &TempDir, inject: Inject, gate: &Path, args: &[&str]) -> Ch
             cmd.env("PATH", format!("{};{path}", git_usr_bin.display()));
         }
     }
-    cmd.spawn().expect("spawn tender start")
+    cmd.spawn().expect("spawn tendr start")
 }
 
 fn wait_for_file(path: &Path, what: &str) {
@@ -92,7 +92,7 @@ fn finish_client(mut client: Child) -> (Option<i32>, String, String) {
 /// Wait until the sidecar has let go of the session (its lock is ours) and
 /// return the meta it left, holding the lock so the observation is stable.
 fn wait_sidecar_gone(root: &TempDir, session: &str) -> (serde_json::Value, LockGuard) {
-    let session_root = SessionRoot::new(root.path().join(".tender/sessions"));
+    let session_root = SessionRoot::new(root.path().join(".tendr/sessions"));
     let namespace = Namespace::new("default").unwrap();
     let name = SessionName::new(session).unwrap();
     let dir = session::open(&session_root, &namespace, &name)
@@ -196,7 +196,7 @@ fn wait_file_content(path: &Path) -> String {
 }
 
 /// Everything a `SidecarFailed { step }` must show: meta, event, `wait`'s exit
-/// code, the hook's `TENDER_EXIT_REASON`, a stopped child, no breadcrumb.
+/// code, the hook's `TENDR_EXIT_REASON`, a stopped child, no breadcrumb.
 fn assert_sidecar_failed(root: &TempDir, session: &str, step: &str, error: &str, hook_out: &Path) {
     let (meta, lock) = wait_sidecar_gone(root, session);
     assert_eq!(meta["status"], "Exited", "{meta}");
@@ -246,7 +246,7 @@ fn assert_sidecar_failed(root: &TempDir, session: &str, step: &str, error: &str,
     let hook = wait_file_content(hook_out);
     assert_eq!(hook.trim(), format!("{session} default SidecarFailed"));
 
-    tender(root)
+    tendr(root)
         .args(["wait", "--timeout", "5", session])
         .assert()
         .code(5);
@@ -475,7 +475,7 @@ fn failure_record_failure_still_stops_the_child_and_says_so() {
         "Running was never published and the failure was not recorded"
     );
 
-    let lost = std::fs::read_to_string(root.path().join(".tender/lost+found/events.jsonl"))
+    let lost = std::fs::read_to_string(root.path().join(".tendr/lost+found/events.jsonl"))
         .expect("the failure is salvaged to lost+found");
     let record: serde_json::Value = lost
         .lines()
@@ -499,7 +499,7 @@ fn failure_record_failure_still_stops_the_child_and_says_so() {
 fn failure_record_failure_on_the_after_path_heals_to_sidecar_failed() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "dep", "--", "true"])
         .assert()
         .success();
@@ -542,7 +542,7 @@ fn failure_record_failure_on_the_after_path_heals_to_sidecar_failed() {
         status["transition_provenance"]["evidence"],
         serde_json::json!(["event_log_terminal"])
     );
-    tender(&root)
+    tendr(&root)
         .args(["wait", "--timeout", "5", "job"])
         .assert()
         .code(5);
@@ -604,7 +604,7 @@ fn output_log_failure_drains_output_and_recovers() {
         &[
             "sh",
             "-c",
-            "yes tender | head -c 2000000; yes tender | head -c 2000000 >&2",
+            "yes tendr | head -c 2000000; yes tendr | head -c 2000000 >&2",
         ],
     );
     assert_exited_ok(&meta);
@@ -642,7 +642,7 @@ fn terminal_meta_failure_still_runs_hooks_and_heals() {
     wait_for_file(&marker, "the --on-exit hook");
 
     assert!(event_kinds(&root, "s1").iter().any(|k| k == "run.exited"));
-    let output = tender(&root).args(["status", "s1"]).output().unwrap();
+    let output = tendr(&root).args(["status", "s1"]).output().unwrap();
     let healed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_exited_ok(&healed);
     assert_eq!(
@@ -650,7 +650,7 @@ fn terminal_meta_failure_still_runs_hooks_and_heals() {
         serde_json::json!(["event_log_terminal"])
     );
 
-    let lost = std::fs::read_to_string(root.path().join(".tender/lost+found/events.jsonl"))
+    let lost = std::fs::read_to_string(root.path().join(".tendr/lost+found/events.jsonl"))
         .expect("a copy of the terminal record is salvaged");
     assert!(lost.contains("meta_write_error"), "{lost}");
 }
@@ -681,7 +681,7 @@ fn pty_group_kill_reaches_the_session_leader_and_its_children() {
     let (argv, gpid) = family_child(root.path(), false);
     let mut args = vec!["start", "s1", "--pty", "--timeout", "1", "--"];
     args.extend(argv.iter().map(String::as_str));
-    tender(&root).args(&args).assert().success();
+    tendr(&root).args(&args).assert().success();
     wait_for_file(&gpid, "the grandchild to start");
 
     let (meta, _lock) = wait_sidecar_gone(&root, "s1");
@@ -692,11 +692,11 @@ fn pty_group_kill_reaches_the_session_leader_and_its_children() {
 
 // === Abrupt sidecar death: the guard cannot run, reconciliation closes it ===
 
-/// Start with `TENDER_TEST_ABORT=<point>` (a true crash), then return the meta
+/// Start with `TENDR_TEST_ABORT=<point>` (a true crash), then return the meta
 /// the dead sidecar left, with the lock released again for reconciliation.
 fn crash_at(root: &TempDir, point: &str, args: &[&str]) -> serde_json::Value {
-    tender(root)
-        .env("TENDER_TEST_ABORT", point)
+    tendr(root)
+        .env("TENDR_TEST_ABORT", point)
         .args(["start"])
         .args(args)
         .assert()
@@ -707,7 +707,7 @@ fn crash_at(root: &TempDir, point: &str, args: &[&str]) -> serde_json::Value {
 }
 
 fn status_of(root: &TempDir, session: &str) -> serde_json::Value {
-    let output = tender(root).args(["status", session]).output().unwrap();
+    let output = tendr(root).args(["status", session]).output().unwrap();
     assert!(output.status.success(), "{output:?}");
     serde_json::from_slice(&output.stdout).unwrap()
 }
@@ -781,7 +781,7 @@ fn crash_while_running_leaves_an_orphan_that_status_kills() {
 fn crash_before_running_is_found_through_the_breadcrumb() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "dep", "--", "true"])
         .assert()
         .success();

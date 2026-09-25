@@ -1,4 +1,4 @@
-//! `tender skill {print, install, path}` — manage the embedded agent skill stub.
+//! `tendr skill {print, install, path}` — manage the embedded agent skill stub.
 //!
 //! The stub's single source of truth is `src/embedded/SKILL.md`, embedded at
 //! build time. `install` lands it as a Claude Code skill file so an agent picks
@@ -15,7 +15,7 @@ const SKILL_STUB: &str = include_str!("../embedded/SKILL.md");
 
 /// Install location relative to the chosen root (the project cwd, or `$HOME`
 /// with `--global`).
-const SKILL_SUBPATH: &str = ".claude/skills/using-tender/SKILL.md";
+const SKILL_SUBPATH: &str = ".claude/skills/using-tendr/SKILL.md";
 
 /// Print the embedded skill stub to stdout.
 pub fn cmd_skill_print() -> anyhow::Result<()> {
@@ -65,7 +65,7 @@ pub fn cmd_skill_install(global: bool, force: bool) -> anyhow::Result<()> {
 
 /// Resolve the install path. `global` roots it at `$HOME`; otherwise at the
 /// current working directory. `$HOME` resolution matches `SessionRoot` — no new
-/// dependency, and consistent with how tender already finds the home directory.
+/// dependency, and consistent with how tendr already finds the home directory.
 fn skill_path(global: bool) -> anyhow::Result<PathBuf> {
     let root = if global {
         let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;

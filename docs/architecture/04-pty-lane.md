@@ -1,6 +1,6 @@
 # PTY Lane
 
-Tender has two execution lanes:
+Tendr has two execution lanes:
 
 - pipe sessions: machine-friendly, `push` + `exec`, separate stdout/stderr
 - PTY sessions: terminal-friendly, merged transcript, `push` + `attach`, no generic shell `exec`
@@ -14,7 +14,7 @@ planned there.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> AgentControl: tender start --pty
+    [*] --> AgentControl: tendr start --pty
 
     AgentControl --> HumanControl: attach (hello, mode attach)\nwhile no human holds control
     HumanControl --> HumanControl: attach --takeover\nretires the previous client
@@ -43,7 +43,7 @@ Current PTY rules:
 - input queued by a superseded controller is never written and is recorded as
   `pty.input_revoked`; PTY `exec` frames still arrive over the stdin FIFO, whose
   forwarder is arbitrated the same way but cannot report an outcome
-- the attach socket is bound in `~/.tender/sockets` (owner-only directory,
+- the attach socket is bound in `~/.tendr/sockets` (owner-only directory,
   `0600` socket, short run-derived name) and its breadcrumb published before the
   child is spawned; an unsafe directory, overlong path, or pre-existing path fails
   the start as `SpawnFailed` rather than running without a listener. After
@@ -87,8 +87,8 @@ PTY-specific I/O shape:
 
 ```mermaid
 flowchart LR
-    Push["tender push"] --> Attach
-    Exec["tender exec (python-repl)"] --> FIFO["stdin.pipe"]
+    Push["tendr push"] --> Attach
+    Exec["tendr exec (python-repl)"] --> FIFO["stdin.pipe"]
     FIFO --> Forwarder["FIFO forwarder (agent claim)"]
     Human["human terminal"] --> Attach["attach socket connections (hello: attach, takeover, push)"]
     Forwarder --> Writer["input writer (arbiter, epochs)"]

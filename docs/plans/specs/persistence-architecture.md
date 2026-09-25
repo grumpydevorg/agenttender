@@ -14,7 +14,7 @@ doc.
 **Date:** 2026-05-23  
 **Composes with:** [tender-as-block-runtime.md](tender-as-block-runtime.md), [content-addressable-storage](../backlog/content-addressable-storage.md), [event-log-analytics](../completed/2026-07-09-event-log-analytics-v1.md)
 
-How Tender stores and queries every kind of state it accumulates. Three primitives, two file formats, **no transactional database**.
+How Tendr stores and queries every kind of state it accumulates. Three primitives, two file formats, **no transactional database**.
 
 ## Principle
 
@@ -57,11 +57,11 @@ If a cache is lost, it can be rebuilt by replaying the log. If the log is intact
 └───────────────────────────────────────────────────────────────┘
 ```
 
-The existing per-session `meta.json` files under `namespaces/<name>/sessions/<id>/` are kept unchanged — current Tender code keeps working without modification.
+The existing per-session `meta.json` files under `namespaces/<name>/sessions/<id>/` are kept unchanged — current Tendr code keeps working without modification.
 
 ## Why no transactional DB
 
-Considered SQLite for live state. Rejected for Tender's scale and shape:
+Considered SQLite for live state. Rejected for Tendr's scale and shape:
 
 | Property | SQLite blocks.db | In-memory index + log |
 |---|---|---|
@@ -73,7 +73,7 @@ Considered SQLite for live state. Rejected for Tender's scale and shape:
 | List in namespace (1k results) | < 10 ms | < 1 ms |
 | Code to maintain | ~500 lines | ~150 lines |
 
-Tender is one daemon per host. Block counts are small (~10k/year for heavy users). Restart cost from log replay is ~50–100 ms for 100k events. SQLite earns nothing here.
+Tendr is one daemon per host. Block counts are small (~10k/year for heavy users). Restart cost from log replay is ~50–100 ms for 100k events. SQLite earns nothing here.
 
 DuckDB handles analytical queries (multi-namespace, time-range, joins, aggregation) without writes — see [event-log-analytics](../completed/2026-07-09-event-log-analytics-v1.md). No need for a transactional DB for analytics either.
 
@@ -92,9 +92,9 @@ One JSON object per line. Fields:
 | `type` | string | Subtype within kind (`lifecycle:exited`, `tool-start`, `tag-added`, …) |
 | `block_id` | ULID string | Which block this event belongs to |
 | `parent_block_id` | ULID string \| null | Causality link |
-| `actor` | string | What emitted (`claude-code`, `tender`, …) |
+| `actor` | string | What emitted (`claude-code`, `tendr`, …) |
 | `host` | string | Stable host id |
-| `payload` | JSON object | Type-specific; opaque to Tender |
+| `payload` | JSON object | Type-specific; opaque to Tendr |
 | `payload_blob` | sha256 ref \| null | Set if payload exceeded 256 KiB inline cap |
 
 Total order within a namespace is by `monotonic_seq`. Cross-namespace order is best-effort via `ts` (clocks may skew).
@@ -179,17 +179,17 @@ In-memory state index updates on each. Audit trail is automatic — the log show
 3. A test fixture proving forward conversion preserves semantics
 4. Documentation of breaking-vs-additive changes
 
-**Rule**: Tender accepts events with `schema_version <= current`. Newer events from a fresher Tender process are rejected by older readers (forward compatibility is opt-in). Same shape as [boundary-metadata](../completed/2026-07-10-boundary-metadata.md)'s discipline.
+**Rule**: Tendr accepts events with `schema_version <= current`. Newer events from a fresher Tendr process are rejected by older readers (forward compatibility is opt-in). Same shape as [boundary-metadata](../completed/2026-07-10-boundary-metadata.md)'s discipline.
 
 ## Storage scaling shape
 
 | Scale | Event log | Index | Blobs |
 |---|---|---|---|
 | **Single user** | JSONL + occasional Parquet rollover | in-memory HashMap | local filesystem |
-| **Heavy use** | JSONL + daily Parquet rollover + `tender prune` | in-memory + snapshot checkpoints | local filesystem |
+| **Heavy use** | JSONL + daily Parquet rollover + `tendr prune` | in-memory + snapshot checkpoints | local filesystem |
 | **Fleet / cloud** | Parquet in object storage; DuckDB reads via `httpfs` | per-host in-memory | S3-compatible object storage |
 
-Tender's first delivery is single-machine; later backends are opt-in. Same interfaces.
+Tendr's first delivery is single-machine; later backends are opt-in. Same interfaces.
 
 ## What this design rejects
 
@@ -205,9 +205,9 @@ Tender's first delivery is single-machine; later backends are opt-in. Same inter
 1. **Checkpoint snapshot format.** Bincode is fast and small but Rust-specific. CBOR is portable but larger. JSON is huge. Recommend bincode for v1; revisit if non-Rust tools want to read snapshots (they shouldn't — they'd replay the log).
 2. **Snapshot cadence.** Every N events vs every M minutes vs both. Recommend both with conservative defaults; user-tunable.
 3. **Atomic multi-event writes.** If a state transition involves multiple events (e.g. block exit + on_exit callback fire + annotation), do we need transactional semantics? Recommend no — each event is independent and order-stable; consumers reason about state from the event stream's order.
-4. **Reader catch-up after disconnect.** Subscribers with persistent state (e.g. a dashboard) need to know "where I left off." Recommend exposing `monotonic_seq` in `tender watch` output so consumers can checkpoint.
+4. **Reader catch-up after disconnect.** Subscribers with persistent state (e.g. a dashboard) need to know "where I left off." Recommend exposing `monotonic_seq` in `tendr watch` output so consumers can checkpoint.
 5. **Multi-writer on one host.** Use file locking (`flock`) per namespace; single-writer guarantee. Concurrent reads are fine.
-6. **Encryption at rest.** Rely on OS / full-disk encryption. Tender doesn't encrypt in-process. Document the trust boundary.
+6. **Encryption at rest.** Rely on OS / full-disk encryption. Tendr doesn't encrypt in-process. Document the trust boundary.
 7. **Federation across hosts.** A block on host A might reference a parent on host B. Out of scope for this plan; opaque ID references. Federation = a separate plan when needed.
 
 ## How this composes with existing backlog
@@ -218,7 +218,7 @@ Tender's first delivery is single-machine; later backends are opt-in. Same inter
 | [event-log-analytics](../completed/2026-07-09-event-log-analytics-v1.md) | DuckDB read-side over ① event log; no writes through DuckDB |
 | [boundary-metadata](../completed/2026-07-10-boundary-metadata.md) | Adds `boundary_kind` / `boundary_label` as event fields; reflected in in-memory index |
 | [provenance-on-lifecycle-transitions](../completed/2026-04-16-provenance-on-lifecycle-transitions.md) | Adds `transition_provenance` as event field |
-| [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md) | Defines the JSONL schema and `tender emit` / `tender events` surfaces |
+| [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md) | Defines the JSONL schema and `tendr emit` / `tendr events` surfaces |
 
 No existing plan is invalidated. The persistence model knits them together.
 
@@ -228,8 +228,8 @@ These would be sliced as concrete backlog items if/when work begins:
 
 1. **JSONL writer + in-memory index** — the foundation. Replaces the implicit "live state lives in process memory" with an explicit log-backed model.
 2. **Snapshot/restore** — checkpoint mechanism for fast restart.
-3. **`tender emit` / `tender events`** — shipped in [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md).
+3. **`tendr emit` / `tendr events`** — shipped in [event-emit-primitive](../completed/2026-07-07-event-emit-primitive.md).
 4. **CAS blob store** — separate plan, separate work.
-5. **Parquet rollover** — deferred v2/v3 direction now that `tender query` shipped as the JSONL read-side.
+5. **Parquet rollover** — deferred v2/v3 direction now that `tendr query` shipped as the JSONL read-side.
 
 Existing per-session `meta.json` continues to work throughout; this work is additive.

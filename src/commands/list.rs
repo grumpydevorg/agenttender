@@ -1,5 +1,5 @@
-use tender::model::ids::Namespace;
-use tender::session::{self, SessionRoot};
+use tendr::model::ids::Namespace;
+use tendr::session::{self, SessionRoot};
 
 pub fn cmd_list(namespace: Option<&Namespace>) -> anyhow::Result<()> {
     let root = SessionRoot::default_path()?;

@@ -1,10 +1,10 @@
-use tender::attach_escape::EscapeMode;
+use tendr::attach_escape::EscapeMode;
 #[cfg(unix)]
-use tender::attach_proto;
-use tender::model::ids::{Namespace, SessionName};
-use tender::model::pty::PtyControl;
-use tender::model::state::RunStatus;
-use tender::session::{self, SessionRoot};
+use tendr::attach_proto;
+use tendr::model::ids::{Namespace, SessionName};
+use tendr::model::pty::PtyControl;
+use tendr::model::state::RunStatus;
+use tendr::session::{self, SessionRoot};
 
 pub fn cmd_attach(
     name: &str,
@@ -53,7 +53,7 @@ pub fn cmd_attach(
         let mut stream = std::os::unix::net::UnixStream::connect(&sock_path)?;
         // Keystrokes go only to a listener run by this same user: a spoofed
         // socket owned by someone else is refused before the hello.
-        tender::attach_socket::verify_peer(&stream)
+        tendr::attach_socket::verify_peer(&stream)
             .map_err(|e| anyhow::anyhow!("refusing attach socket {}: {e}", sock_path.display()))?;
         handshake(&mut stream, takeover)?;
         unix_relay::relay(stream, escape)
@@ -112,8 +112,8 @@ mod unix_relay {
     use std::sync::{Arc, Condvar, Mutex, MutexGuard};
     use std::time::{Duration, Instant};
 
-    use tender::attach_escape::{Escape, EscapeMode, EscapeParser};
-    use tender::attach_proto;
+    use tendr::attach_escape::{Escape, EscapeMode, EscapeParser};
+    use tendr::attach_proto;
 
     /// Keystrokes that may wait for a session that is not accepting input.
     /// Beyond this, further keystrokes are dropped (and reported) rather than
@@ -200,11 +200,11 @@ mod unix_relay {
         // detach, whose terminal may be the thing that is blocked.
         if ending != Ending::Detached {
             if retired.load(Ordering::SeqCst) {
-                eprintln!("tender: another client took over this session");
+                eprintln!("tendr: another client took over this session");
             }
             if dropped > 0 {
                 eprintln!(
-                    "tender: {dropped} typed bytes were dropped while the session was not accepting input"
+                    "tendr: {dropped} typed bytes were dropped while the session was not accepting input"
                 );
             }
         }

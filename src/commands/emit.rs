@@ -1,4 +1,4 @@
-//! `tender emit` — the write surface of the event protocol (spec §6, §7).
+//! `tendr emit` — the write surface of the event protocol (spec §6, §7).
 //!
 //! Exit codes are granular so agents can branch on integers:
 //! 0 ok · 2 usage · 3 no session context · 5 session not found ·
@@ -8,10 +8,10 @@
 use std::io::Read;
 use std::path::PathBuf;
 
-use tender::events::{self, EventDraft, EventWriter};
-use tender::model::event::{Kind, Uuid7};
-use tender::model::ids::{Namespace, RunId, SessionName, Source};
-use tender::session::{self, SessionError, SessionRoot};
+use tendr::events::{self, EventDraft, EventWriter};
+use tendr::model::event::{Kind, Uuid7};
+use tendr::model::ids::{Namespace, RunId, SessionName, Source};
+use tendr::session::{self, SessionError, SessionRoot};
 
 pub struct EmitOptions {
     pub kind: String,
@@ -41,7 +41,7 @@ pub fn cmd_emit(opts: EmitOptions) -> anyhow::Result<()> {
     match emit_inner(&opts) {
         Ok(()) => Ok(()),
         Err(failure) => {
-            eprintln!("tender emit: {}", failure.message);
+            eprintln!("tendr emit: {}", failure.message);
             if opts.best_effort {
                 Ok(())
             } else {
@@ -71,23 +71,23 @@ fn emit_inner(opts: &EmitOptions) -> Result<(), EmitFailure> {
         .transpose()?;
 
     // Ambient causality — one chaining rule (spec §2, §6): block_id from
-    // TENDER_BLOCK_ID; parent_id from --parent > TENDER_PARENT_EVENT_ID >
-    // TENDER_BLOCK_ID. Ambient env never hard-fails: malformed values warn
+    // TENDR_BLOCK_ID; parent_id from --parent > TENDR_PARENT_EVENT_ID >
+    // TENDR_BLOCK_ID. Ambient env never hard-fails: malformed values warn
     // and are ignored.
-    let block_id = events::env_uuid7("TENDER_BLOCK_ID");
+    let block_id = events::env_uuid7("TENDR_BLOCK_ID");
     let parent_id = parent_id
-        .or_else(|| events::env_uuid7("TENDER_PARENT_EVENT_ID"))
+        .or_else(|| events::env_uuid7("TENDR_PARENT_EVENT_ID"))
         .or(block_id);
 
     // 3: session context from --session or the supervised-run environment.
     let (namespace, session_name, from_env) = resolve_context(opts)?;
 
-    // Identity from the environment when supervised. TENDER_RUN_ID may name
+    // Identity from the environment when supervised. TENDR_RUN_ID may name
     // a prior generation after --replace — correct, not an error (spec §1).
-    let env_run_id = std::env::var("TENDER_RUN_ID")
+    let env_run_id = std::env::var("TENDR_RUN_ID")
         .ok()
         .and_then(|s| serde_json::from_value::<RunId>(serde_json::Value::String(s)).ok());
-    let env_generation = std::env::var("TENDER_GENERATION")
+    let env_generation = std::env::var("TENDR_GENERATION")
         .ok()
         .and_then(|s| s.parse::<u64>().ok());
 
@@ -121,14 +121,14 @@ fn emit_inner(opts: &EmitOptions) -> Result<(), EmitFailure> {
                     preview: None,
                 };
                 let event = events::stamp_orphan_event(draft);
-                let tender_root = root
+                let tendr_root = root
                     .path()
                     .parent()
                     .map(std::path::Path::to_path_buf)
                     .ok_or_else(|| fail(1, "session root has no parent"))?;
-                events::append_lost_found(&tender_root, &event)
+                events::append_lost_found(&tendr_root, &event)
                     .map_err(|e| fail(1, format!("lost+found append failed: {e}")))?;
-                eprintln!("tender emit: session dir gone; event preserved in lost+found");
+                eprintln!("tendr emit: session dir gone; event preserved in lost+found");
                 return Ok(());
             }
         }
@@ -202,7 +202,7 @@ fn read_data(opts: &EmitOptions) -> Result<Option<serde_json::Value>, EmitFailur
 }
 
 /// Session context: `--session <ns>/<name>` (bare name → default namespace),
-/// else the `TENDER_SESSION`/`TENDER_NAMESPACE` environment of a supervised
+/// else the `TENDR_SESSION`/`TENDR_NAMESPACE` environment of a supervised
 /// run. The bool reports whether context came from the environment.
 fn resolve_context(opts: &EmitOptions) -> Result<(Namespace, SessionName, bool), EmitFailure> {
     if let Some(spec) = &opts.session {
@@ -216,12 +216,12 @@ fn resolve_context(opts: &EmitOptions) -> Result<(Namespace, SessionName, bool),
             SessionName::new(name).map_err(|e| fail(2, format!("invalid --session name: {e}")))?;
         return Ok((namespace, session, false));
     }
-    if let Ok(session) = std::env::var("TENDER_SESSION") {
-        let ns = std::env::var("TENDER_NAMESPACE").unwrap_or_else(|_| "default".to_owned());
+    if let Ok(session) = std::env::var("TENDR_SESSION") {
+        let ns = std::env::var("TENDR_NAMESPACE").unwrap_or_else(|_| "default".to_owned());
         let namespace =
-            Namespace::new(&ns).map_err(|e| fail(3, format!("invalid TENDER_NAMESPACE: {e}")))?;
+            Namespace::new(&ns).map_err(|e| fail(3, format!("invalid TENDR_NAMESPACE: {e}")))?;
         let session = SessionName::new(&session)
-            .map_err(|e| fail(3, format!("invalid TENDER_SESSION: {e}")))?;
+            .map_err(|e| fail(3, format!("invalid TENDR_SESSION: {e}")))?;
         return Ok((namespace, session, true));
     }
     Err(fail(

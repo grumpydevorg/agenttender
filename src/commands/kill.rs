@@ -1,7 +1,7 @@
-use tender::model::ids::{Namespace, SessionName};
-use tender::model::meta::Meta;
-use tender::platform::{Current, Platform};
-use tender::session::{self, SessionDir, SessionRoot};
+use tendr::model::ids::{Namespace, SessionName};
+use tendr::model::meta::Meta;
+use tendr::platform::{Current, Platform};
+use tendr::session::{self, SessionDir, SessionRoot};
 
 /// Write a kill_request file and wait for the sidecar to write terminal state.
 /// Returns `Some(meta)` if the sidecar responded, `None` if it didn't within the timeout.

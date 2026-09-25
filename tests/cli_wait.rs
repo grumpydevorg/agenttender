@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{DeadlineAssertExt, tender, wait_running, wait_terminal};
+use harness::{DeadlineAssertExt, tendr, wait_running, wait_terminal};
 use predicates::prelude::*;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -12,14 +12,14 @@ fn wait_returns_terminal_state() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "wait-ok", "true"])
         .assert()
         .success();
     wait_terminal(&root, "wait-ok");
 
     // Output is now a JSON array (even for single session).
-    tender(&root)
+    tendr(&root)
         .args(["wait", "wait-ok"])
         .assert()
         .success()
@@ -33,14 +33,14 @@ fn wait_blocks_until_exit() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "wait-block", "sleep", "2"])
         .assert()
         .success();
     wait_running(&root, "wait-block");
 
     let start = std::time::Instant::now();
-    tender(&root)
+    tendr(&root)
         .args(["wait", "wait-block"])
         .assert_within_deadline()
         .success();
@@ -56,7 +56,7 @@ fn wait_timeout_expires() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "wait-timeout", "sleep", "60"])
         .assert()
         .success();
@@ -64,14 +64,14 @@ fn wait_timeout_expires() {
 
     // The failure + exit 1 + "timeout" stderr prove the product's --timeout
     // fired; the hang detector bounds the call instead of a fragile 3s cap.
-    tender(&root)
+    tendr(&root)
         .args(["wait", "--timeout", "1", "wait-timeout"])
         .assert_within_deadline()
         .failure()
         .code(1)
         .stderr(predicate::str::contains("timeout"));
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wait-timeout"])
         .assert()
         .success();
@@ -82,7 +82,7 @@ fn wait_nonexistent_session_fails() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root).args(["wait", "nope"]).assert().failure();
+    tendr(&root).args(["wait", "nope"]).assert().failure();
 }
 
 #[test]
@@ -90,13 +90,13 @@ fn wait_exit_code_42_for_nonzero_child() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "wait-err", "sh", "-c", "exit 3"])
         .assert()
         .success();
     wait_terminal(&root, "wait-err");
 
-    tender(&root).args(["wait", "wait-err"]).assert().code(42);
+    tendr(&root).args(["wait", "wait-err"]).assert().code(42);
 }
 
 #[test]
@@ -104,13 +104,13 @@ fn wait_exit_code_2_for_spawn_failed() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "wait-spawn", "/nonexistent/binary"])
         .output()
         .unwrap(); // exit 2 from start is expected
     wait_terminal(&root, "wait-spawn");
 
-    tender(&root).args(["wait", "wait-spawn"]).assert().code(2);
+    tendr(&root).args(["wait", "wait-spawn"]).assert().code(2);
 }
 
 // --- New multi-session tests ---
@@ -120,18 +120,18 @@ fn wait_all_multiple_sessions() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "multi-a", "true"])
         .assert()
         .success();
-    tender(&root)
+    tendr(&root)
         .args(["start", "multi-b", "true"])
         .assert()
         .success();
     wait_terminal(&root, "multi-a");
     wait_terminal(&root, "multi-b");
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["wait", "multi-a", "multi-b"])
         .output()
         .unwrap();
@@ -150,18 +150,18 @@ fn wait_any_returns_on_first_terminal() {
     let root = TempDir::new().unwrap();
 
     // One fast, one slow.
-    tender(&root)
+    tendr(&root)
         .args(["start", "any-fast", "true"])
         .assert()
         .success();
-    tender(&root)
+    tendr(&root)
         .args(["start", "any-slow", "sleep", "60"])
         .assert()
         .success();
     wait_terminal(&root, "any-fast");
     wait_running(&root, "any-slow");
 
-    let assert = tender(&root)
+    let assert = tendr(&root)
         .args(["wait", "--any", "any-fast", "any-slow"])
         .assert_within_deadline()
         .success();
@@ -175,7 +175,7 @@ fn wait_any_returns_on_first_terminal() {
     assert!(arr.iter().any(|m| m["session"] == "any-fast"));
 
     // Cleanup the slow session.
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "any-slow"])
         .assert()
         .success();
@@ -187,18 +187,18 @@ fn wait_mixed_exit_codes() {
     let root = TempDir::new().unwrap();
 
     // One success, one failure.
-    tender(&root)
+    tendr(&root)
         .args(["start", "mix-ok", "true"])
         .assert()
         .success();
-    tender(&root)
+    tendr(&root)
         .args(["start", "mix-fail", "sh", "-c", "exit 1"])
         .assert()
         .success();
     wait_terminal(&root, "mix-ok");
     wait_terminal(&root, "mix-fail");
 
-    tender(&root)
+    tendr(&root)
         .args(["wait", "mix-ok", "mix-fail"])
         .assert()
         .code(42);
@@ -209,13 +209,13 @@ fn wait_single_session_emits_array_of_one() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "single-arr", "true"])
         .assert()
         .success();
     wait_terminal(&root, "single-arr");
 
-    let output = tender(&root).args(["wait", "single-arr"]).output().unwrap();
+    let output = tendr(&root).args(["wait", "single-arr"]).output().unwrap();
     assert!(output.status.success());
 
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -229,14 +229,14 @@ fn wait_not_found_among_multiple() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "exists-ok", "true"])
         .assert()
         .success();
     wait_terminal(&root, "exists-ok");
 
     // One valid, one nonexistent -- should fail immediately.
-    tender(&root)
+    tendr(&root)
         .args(["wait", "exists-ok", "does-not-exist"])
         .assert()
         .failure()
@@ -248,11 +248,11 @@ fn wait_multiple_timeout() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "mt-slow1", "sleep", "60"])
         .assert()
         .success();
-    tender(&root)
+    tendr(&root)
         .args(["start", "mt-slow2", "sleep", "60"])
         .assert()
         .success();
@@ -261,7 +261,7 @@ fn wait_multiple_timeout() {
 
     // As above: the failure + exit 1 + "timeout" stderr prove the product
     // timeout fired; the hang detector bounds the call, not a fragile 3s cap.
-    tender(&root)
+    tendr(&root)
         .args(["wait", "--timeout", "1", "mt-slow1", "mt-slow2"])
         .assert_within_deadline()
         .failure()
@@ -269,11 +269,11 @@ fn wait_multiple_timeout() {
         .stderr(predicate::str::contains("timeout"));
 
     // Cleanup.
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "mt-slow1"])
         .assert()
         .success();
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "mt-slow2"])
         .assert()
         .success();
@@ -285,13 +285,13 @@ fn wait_dep_timed_out_exits_124() {
     let root = TempDir::new().unwrap();
 
     // job1 runs forever; job2 depends on it with a 2s timeout.
-    tender(&root)
+    tendr(&root)
         .args(["start", "dep-slow", "sleep", "60"])
         .assert()
         .success();
     wait_running(&root, "dep-slow");
 
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "dep-waiter",
@@ -306,12 +306,9 @@ fn wait_dep_timed_out_exits_124() {
         .success();
     wait_terminal(&root, "dep-waiter");
 
-    tender(&root)
-        .args(["wait", "dep-waiter"])
-        .assert()
-        .code(124);
+    tendr(&root).args(["wait", "dep-waiter"]).assert().code(124);
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "dep-slow"])
         .assert()
         .success();
@@ -323,13 +320,13 @@ fn wait_killed_during_dep_wait_exits_137() {
     let root = TempDir::new().unwrap();
 
     // job1 runs forever; job2 depends on it.
-    tender(&root)
+    tendr(&root)
         .args(["start", "dep-block", "sleep", "60"])
         .assert()
         .success();
     wait_running(&root, "dep-block");
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "dep-victim", "--after", "dep-block", "--", "true"])
         .assert()
         .success();
@@ -338,18 +335,12 @@ fn wait_killed_during_dep_wait_exits_137() {
     // request written now persists on disk until the poll loop consumes it.
 
     // Kill the waiting session.
-    tender(&root)
-        .args(["kill", "dep-victim"])
-        .assert()
-        .success();
+    tendr(&root).args(["kill", "dep-victim"]).assert().success();
     wait_terminal(&root, "dep-victim");
 
-    tender(&root)
-        .args(["wait", "dep-victim"])
-        .assert()
-        .code(137);
+    tendr(&root).args(["wait", "dep-victim"]).assert().code(137);
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "dep-block"])
         .assert()
         .success();
@@ -361,13 +352,13 @@ fn wait_dep_failed_beats_nonzero_in_multi() {
     let root = TempDir::new().unwrap();
 
     // One non-zero exit, one dependency failure.
-    tender(&root)
+    tendr(&root)
         .args(["start", "dep-upstream", "false"])
         .assert()
         .success();
     wait_terminal(&root, "dep-upstream");
 
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "dep-downstream",
@@ -380,14 +371,14 @@ fn wait_dep_failed_beats_nonzero_in_multi() {
         .success();
     wait_terminal(&root, "dep-downstream");
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "plain-fail", "sh", "-c", "exit 1"])
         .assert()
         .success();
     wait_terminal(&root, "plain-fail");
 
     // Dep failed (4) is more severe than non-zero exit (42).
-    tender(&root)
+    tendr(&root)
         .args(["wait", "plain-fail", "dep-downstream"])
         .assert()
         .code(4);
@@ -398,14 +389,14 @@ fn wait_duplicate_session_names() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "dup-test", "true"])
         .assert()
         .success();
     wait_terminal(&root, "dup-test");
 
     // Passing the same name twice should emit one entry, not two.
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["wait", "dup-test", "dup-test"])
         .output()
         .unwrap();
@@ -422,11 +413,11 @@ fn wait_spawn_failed_beats_nonzero_exit() {
     let root = TempDir::new().unwrap();
 
     // One non-zero exit, one spawn failure.
-    tender(&root)
+    tendr(&root)
         .args(["start", "sev-exit", "sh", "-c", "exit 1"])
         .assert()
         .success();
-    tender(&root)
+    tendr(&root)
         .args(["start", "sev-spawn", "/nonexistent/binary"])
         .output()
         .unwrap();
@@ -434,7 +425,7 @@ fn wait_spawn_failed_beats_nonzero_exit() {
     wait_terminal(&root, "sev-spawn");
 
     // Spawn failure (2) is more severe than non-zero exit (42).
-    tender(&root)
+    tendr(&root)
         .args(["wait", "sev-exit", "sev-spawn"])
         .assert()
         .code(2);

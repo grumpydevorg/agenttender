@@ -1,6 +1,6 @@
 //! Boundary descriptor — where a session runs, for legibility only.
 //!
-//! Tender *describes* boundaries (host, container, VM, pod); it never manages
+//! Tendr *describes* boundaries (host, container, VM, pod); it never manages
 //! them. The boundary is authoritative in `LaunchSpec` / `meta.json`; lifecycle
 //! events carry a denormalized immutable snapshot for historical analytics
 //! (see docs/plans/completed/2026-07-10-boundary-metadata.md).
@@ -44,7 +44,7 @@ impl fmt::Display for BoundaryKind {
 }
 
 /// A single boundary: its kind and a user-supplied label (e.g. host name,
-/// image tag, VM id). The label is opaque to Tender.
+/// image tag, VM id). The label is opaque to Tendr.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Boundary {
     pub kind: BoundaryKind,

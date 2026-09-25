@@ -2,13 +2,13 @@
 
 mod harness;
 
-use harness::tender;
+use harness::tendr;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-use tender::attach_proto::{
+use tendr::attach_proto::{
     MODE_ATTACH, MODE_PUSH, MODE_TAKEOVER, MSG_ACCEPTED, MSG_DATA, MSG_DETACH, MSG_HELLO,
     MSG_INPUT_DONE, MSG_REJECTED, MSG_RESIZE, MSG_RETIRED, PROTOCOL_VERSION, read_msg,
     resize_payload,
@@ -31,7 +31,7 @@ fn start_pty_flag_sets_io_mode() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["start", "pty-test", "--pty", "--", "echo", "hello"])
         .output()
         .unwrap();
@@ -51,14 +51,14 @@ fn start_pty_session_captures_output() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-echo", "--pty", "--", "echo", "pty-hello"])
         .output()
         .unwrap();
 
     harness::wait_terminal(&root, "pty-echo");
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["log", "pty-echo", "--raw"])
         .output()
         .unwrap();
@@ -75,14 +75,14 @@ fn start_pty_session_shows_pty_metadata() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-meta", "--pty", "--", "echo", "hi"])
         .output()
         .unwrap();
 
     harness::wait_terminal(&root, "pty-meta");
 
-    let output = tender(&root).args(["status", "pty-meta"]).output().unwrap();
+    let output = tendr(&root).args(["status", "pty-meta"]).output().unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let meta: serde_json::Value = serde_json::from_str(&stdout).unwrap();
@@ -96,7 +96,7 @@ fn exec_rejected_on_pty_session() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "pty-shell",
@@ -110,7 +110,7 @@ fn exec_rejected_on_pty_session() {
         .unwrap();
     harness::wait_running(&root, "pty-shell");
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["exec", "pty-shell", "--", "echo", "test"])
         .output()
         .unwrap();
@@ -122,7 +122,7 @@ fn exec_rejected_on_pty_session() {
         "should reject exec on PTY: {stderr}"
     );
 
-    tender(&root).args(["kill", "pty-shell"]).output().ok();
+    tendr(&root).args(["kill", "pty-shell"]).output().ok();
 }
 
 #[test]
@@ -130,13 +130,13 @@ fn attach_to_non_pty_session_fails() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "pipe-session", "--", "sleep", "60"])
         .output()
         .unwrap();
     harness::wait_running(&root, "pipe-session");
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["attach", "pipe-session"])
         .output()
         .unwrap();
@@ -148,7 +148,7 @@ fn attach_to_non_pty_session_fails() {
         "should reject attach on non-PTY: {stderr}"
     );
 
-    tender(&root).args(["kill", "pipe-session"]).output().ok();
+    tendr(&root).args(["kill", "pipe-session"]).output().ok();
 }
 
 #[test]
@@ -156,7 +156,7 @@ fn attach_socket_exists_for_pty_session() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-attach", "--pty", "--", "sleep", "60"])
         .output()
         .unwrap();
@@ -164,7 +164,7 @@ fn attach_socket_exists_for_pty_session() {
 
     let breadcrumb = root
         .path()
-        .join(".tender/sessions/default/pty-attach/a.sock.path");
+        .join(".tendr/sessions/default/pty-attach/a.sock.path");
 
     // The attach listener thread may not have written the breadcrumb yet.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -187,7 +187,7 @@ fn attach_socket_exists_for_pty_session() {
         "socket file should exist at {sock_path}"
     );
 
-    tender(&root).args(["kill", "pty-attach"]).output().ok();
+    tendr(&root).args(["kill", "pty-attach"]).output().ok();
 }
 
 #[test]
@@ -196,14 +196,14 @@ fn push_to_pty_session_delivers_input() {
     let root = TempDir::new().unwrap();
 
     // Start a PTY cat session with stdin
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-push", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
     harness::wait_running(&root, "pty-push");
 
     // Push some input
-    tender(&root)
+    tendr(&root)
         .args(["push", "pty-push"])
         .write_stdin(b"hello-from-push\n")
         .output()
@@ -212,7 +212,7 @@ fn push_to_pty_session_delivers_input() {
     // Poll the log until the pushed input echoes through the PTY (no fixed sleep).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        let output = tender(&root)
+        let output = tendr(&root)
             .args(["log", "pty-push", "--raw"])
             .output()
             .unwrap();
@@ -227,7 +227,7 @@ fn push_to_pty_session_delivers_input() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 
-    tender(&root).args(["kill", "pty-push"]).output().ok();
+    tendr(&root).args(["kill", "pty-push"]).output().ok();
 }
 
 /// Python REPL exec works on PTY sessions.
@@ -236,7 +236,7 @@ fn exec_python_pty() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "py-pty",
@@ -253,7 +253,7 @@ fn exec_python_pty() {
     // No sleep: exec buffers the frame and waits for the result file, so the
     // REPL not being input-ready yet is a delay, not a lost command (PR #55).
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args([
             "exec",
             "py-pty",
@@ -274,7 +274,7 @@ fn exec_python_pty() {
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert!(result["stdout"].as_str().unwrap().contains("pty hello"));
 
-    let _ = tender(&root).args(["kill", "py-pty", "--force"]).assert();
+    let _ = tendr(&root).args(["kill", "py-pty", "--force"]).assert();
 }
 
 /// PTY exec is still rejected for shell targets.
@@ -283,7 +283,7 @@ fn exec_pty_still_rejected_for_shells() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "pty-shell",
@@ -298,22 +298,20 @@ fn exec_pty_still_rejected_for_shells() {
         .success();
     harness::wait_running(&root, "pty-shell");
 
-    tender(&root)
+    tendr(&root)
         .args(["exec", "pty-shell", "--", "echo", "test"])
         .assert()
         .failure()
         .stderr(predicates::str::contains("not supported on PTY"));
 
-    let _ = tender(&root)
-        .args(["kill", "pty-shell", "--force"])
-        .assert();
+    let _ = tendr(&root).args(["kill", "pty-shell", "--force"]).assert();
 }
 
 /// Wait for the attach socket breadcrumb and return the socket path.
 fn wait_for_attach_socket(root: &TempDir, session: &str) -> std::path::PathBuf {
     let breadcrumb = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/a.sock.path"));
+        .join(format!(".tendr/sessions/default/{session}/a.sock.path"));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if let Ok(content) = std::fs::read_to_string(&breadcrumb) {
@@ -360,11 +358,11 @@ fn attach_as_human(sock_path: &std::path::Path) -> UnixStream {
     stream
 }
 
-/// Poll `tender log --raw` until it contains `needle`.
+/// Poll `tendr log --raw` until it contains `needle`.
 fn wait_log_contains(root: &TempDir, session: &str, needle: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
-        let output = tender(root)
+        let output = tendr(root)
             .args(["log", session, "--raw"])
             .output()
             .unwrap();
@@ -406,7 +404,7 @@ fn read_until_closed(stream: &mut UnixStream) -> Vec<(u8, Vec<u8>)> {
 fn wait_for_pty_control(root: &TempDir, session: &str, expected: &str) {
     let meta_path = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/meta.json"));
+        .join(format!(".tendr/sessions/default/{session}/meta.json"));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if let Ok(content) = std::fs::read_to_string(&meta_path) {
@@ -429,7 +427,7 @@ fn push_rejected_during_human_control() {
     let root = TempDir::new().unwrap();
 
     // Start a PTY session with stdin
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-hc", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
@@ -442,7 +440,7 @@ fn push_rejected_during_human_control() {
     wait_for_pty_control(&root, "pty-hc", "HumanControl");
 
     // Push should be rejected
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["push", "pty-hc"])
         .write_stdin(b"rejected\n")
         .output()
@@ -460,7 +458,7 @@ fn push_rejected_during_human_control() {
     wait_for_pty_control(&root, "pty-hc", "AgentControl");
 
     // Push should work again
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["push", "pty-hc"])
         .write_stdin(b"accepted\n")
         .output()
@@ -472,7 +470,7 @@ fn push_rejected_during_human_control() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    tender(&root).args(["kill", "pty-hc"]).output().ok();
+    tendr(&root).args(["kill", "pty-hc"]).output().ok();
 }
 
 #[test]
@@ -480,7 +478,7 @@ fn attach_contention_rejected() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-contend", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
@@ -493,7 +491,7 @@ fn attach_contention_rejected() {
     wait_for_pty_control(&root, "pty-contend", "HumanControl");
 
     // Second attach via CLI should be rejected
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["attach", "pty-contend"])
         .output()
         .unwrap();
@@ -506,7 +504,7 @@ fn attach_contention_rejected() {
     );
 
     drop(_human);
-    tender(&root).args(["kill", "pty-contend"]).output().ok();
+    tendr(&root).args(["kill", "pty-contend"]).output().ok();
 }
 
 #[test]
@@ -515,7 +513,7 @@ fn resize_reaches_child_pty() {
     let root = TempDir::new().unwrap();
 
     // An interactive shell so we can query the child's terminal size post-resize.
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-resize", "--pty", "--stdin", "--", "sh"])
         .output()
         .unwrap();
@@ -578,7 +576,7 @@ fn resize_reaches_child_pty() {
     };
 
     // Secondary safety snapshot, taken while still under human control.
-    let status = tender(&root)
+    let status = tendr(&root)
         .args(["status", "pty-resize"])
         .output()
         .unwrap();
@@ -591,7 +589,7 @@ fn resize_reaches_child_pty() {
     write_msg(&mut stream, MSG_DETACH, &[]);
     drop(stream);
     let _ = reader.join();
-    tender(&root)
+    tendr(&root)
         .args(["kill", "pty-resize", "--force"])
         .assert()
         .success();
@@ -612,7 +610,7 @@ fn attach_detach_emit_control_changed_events() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-ev", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
@@ -647,7 +645,7 @@ fn attach_detach_emit_control_changed_events() {
         serde_json::json!({"control": "AgentControl", "trigger": "detach"})
     );
     for event in &changed {
-        assert_eq!(event["source"], "tender.sidecar");
+        assert_eq!(event["source"], "tendr.sidecar");
     }
 
     // The attach thread owns its own writer (multi-writer by design).
@@ -660,7 +658,7 @@ fn attach_detach_emit_control_changed_events() {
     assert_eq!(changed[0]["seq"], 1);
     assert_eq!(changed[1]["seq"], 2);
 
-    tender(&root).args(["kill", "pty-ev"]).output().ok();
+    tendr(&root).args(["kill", "pty-ev"]).output().ok();
 }
 
 // --- Cloud PTY control, slice 1: sidecar-enforced input authority ---
@@ -674,15 +672,15 @@ struct KillOnDrop<'a> {
 
 impl Drop for KillOnDrop<'_> {
     fn drop(&mut self) {
-        let _ = tender(self.root)
+        let _ = tendr(self.root)
             .args(["kill", self.session, "--force"])
             .output();
     }
 }
 
-/// Run the real `tender attach` CLI inside a PTY, as a terminal user would.
+/// Run the real `tendr attach` CLI inside a PTY, as a terminal user would.
 struct CliAttach {
-    child: <tender::platform::Current as tender::platform::Platform>::SupervisedChild,
+    child: <tendr::platform::Current as tendr::platform::Platform>::SupervisedChild,
     input: Option<Box<dyn Write + Send>>,
     output: Arc<Mutex<Vec<u8>>>,
     /// While set, the terminal stops reading the CLI's output, as a stalled
@@ -693,14 +691,14 @@ struct CliAttach {
 
 impl CliAttach {
     fn spawn(root: &TempDir, args: &[&str]) -> Self {
-        let mut argv = vec![tender_bin(), "attach".to_owned()];
+        let mut argv = vec![tendr_bin(), "attach".to_owned()];
         argv.extend(args.iter().map(|a| (*a).to_owned()));
         Self::spawn_argv(root, &argv)
     }
 
     fn spawn_argv(root: &TempDir, argv: &[String]) -> Self {
         use std::sync::atomic::{AtomicBool, Ordering};
-        use tender::platform::{Current, Platform};
+        use tendr::platform::{Current, Platform};
         let mut env = std::collections::BTreeMap::new();
         env.insert(
             "HOME".to_owned(),
@@ -781,7 +779,7 @@ impl CliAttach {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             self.type_bytes(line.as_bytes());
-            let output = tender(root)
+            let output = tendr(root)
                 .args(["log", session, "--raw"])
                 .output()
                 .unwrap();
@@ -804,7 +802,7 @@ impl CliAttach {
 
 impl Drop for CliAttach {
     fn drop(&mut self) {
-        use tender::platform::{Current, Platform};
+        use tendr::platform::{Current, Platform};
         self.resume_output();
         let kill = Current::child_kill_handle(&self.child);
         let _ = Current::kill_child(&kill, true);
@@ -812,13 +810,13 @@ impl Drop for CliAttach {
     }
 }
 
-fn tender_bin() -> String {
-    assert_cmd::cargo::cargo_bin("tender")
+fn tendr_bin() -> String {
+    assert_cmd::cargo::cargo_bin("tendr")
         .to_string_lossy()
         .into_owned()
 }
 
-/// `tender attach` run by a shell in the CLI's terminal, recording the terminal
+/// `tendr attach` run by a shell in the CLI's terminal, recording the terminal
 /// settings (`stty -g`) before and after it and its exit code, so tests can
 /// prove the terminal was restored however the attach ended.
 struct WrappedAttach {
@@ -834,7 +832,7 @@ impl WrappedAttach {
         std::fs::create_dir_all(&dir).unwrap();
         let q = |p: &std::path::Path| shell_words::quote(p.to_str().unwrap()).into_owned();
         let (before, after, code) = (dir.join("before"), dir.join("after"), dir.join("code"));
-        let attach: Vec<String> = std::iter::once(tender_bin())
+        let attach: Vec<String> = std::iter::once(tendr_bin())
             .chain(std::iter::once("attach".to_owned()))
             .chain(args.iter().map(|a| (*a).to_owned()))
             .map(|a| shell_words::quote(&a).into_owned())
@@ -865,13 +863,13 @@ impl WrappedAttach {
         self.code.exists()
     }
 
-    /// Wait for `tender attach` to exit and return its exit code.
+    /// Wait for `tendr attach` to exit and return its exit code.
     fn wait_exit(&self, within: Duration) -> i32 {
         let deadline = Instant::now() + within;
         while !self.code.exists() {
             assert!(
                 Instant::now() < deadline,
-                "tender attach did not exit within {within:?}; cli output: {}",
+                "tendr attach did not exit within {within:?}; cli output: {}",
                 self.cli.output()
             );
             std::thread::sleep(Duration::from_millis(20));
@@ -918,7 +916,7 @@ fn cli_escape_detaches_and_restores_the_terminal() {
 
 /// A PTY child that shows control characters: `Ctrl-\` prints as `^\`.
 fn start_visible_cat(root: &TempDir, session: &str) {
-    tender(root)
+    tendr(root)
         .args(["start", session, "--pty", "--stdin", "--"])
         .args(["sh", "-c", "stty raw -echo; exec cat -v"])
         .output()
@@ -974,7 +972,7 @@ fn cli_forwards_later_terminal_resizes() {
         root: &root,
         session: "pty-winch",
     };
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-winch", "--pty", "--stdin", "--", "sh"])
         .output()
         .unwrap();
@@ -988,7 +986,7 @@ fn cli_forwards_later_terminal_resizes() {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         cli.type_bytes(b"stty size\n");
-        let log = tender(&root)
+        let log = tendr(&root)
             .args(["log", "pty-winch", "--raw"])
             .output()
             .unwrap();
@@ -1044,7 +1042,7 @@ fn cli_session_end_restores_the_terminal() {
     wrapped
         .cli
         .type_until_logged(&root, "pty-ended", "before-end\n");
-    tender(&root)
+    tendr(&root)
         .args(["kill", "pty-ended", "--force"])
         .output()
         .unwrap();
@@ -1062,7 +1060,7 @@ fn cli_detach_is_responsive_while_session_input_is_blocked() {
         session: "pty-inblock",
     };
     // The child never reads its input, so everything typed backs up.
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-inblock", "--pty", "--stdin", "--"])
         .args([
             "sh",
@@ -1102,7 +1100,7 @@ fn cli_detach_is_responsive_while_terminal_output_is_blocked() {
         root: &root,
         session: "pty-outblock",
     };
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-outblock", "--pty", "--stdin", "--"])
         .args(["sh", "-c", "stty raw -echo; yes OUTPUT-FLOOD"])
         .output()
@@ -1168,7 +1166,7 @@ fn cli_attach_takeover_retires_the_current_controller() {
 
 /// Start `cat` under a PTY with `--stdin` and return its attach socket.
 fn start_cat(root: &TempDir, session: &str) -> std::path::PathBuf {
-    tender(root)
+    tendr(root)
         .args(["start", session, "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
@@ -1177,7 +1175,7 @@ fn start_cat(root: &TempDir, session: &str) -> std::path::PathBuf {
 }
 
 fn push(root: &TempDir, session: &str, bytes: &[u8]) {
-    let output = tender(root)
+    let output = tendr(root)
         .args(["push", session])
         .write_stdin(bytes.to_vec())
         .output()
@@ -1213,14 +1211,14 @@ fn connection_without_hello_gains_no_control_and_is_closed() {
     let log = wait_log_contains(&root, "pty-nohello", "control-marker");
     assert!(!log.contains("no-hello-marker"), "log: {log}");
 
-    let status = tender(&root)
+    let status = tendr(&root)
         .args(["status", "pty-nohello"])
         .output()
         .unwrap();
     let meta: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(meta["pty"]["control"], "AgentControl");
 
-    tender(&root).args(["kill", "pty-nohello"]).output().ok();
+    tendr(&root).args(["kill", "pty-nohello"]).output().ok();
 }
 
 #[test]
@@ -1252,7 +1250,7 @@ fn attach_is_accepted_with_an_epoch_and_a_second_attach_is_rejected() {
     wait_log_contains(&root, "pty-epoch", "first-still-owns");
 
     drop(first);
-    tender(&root).args(["kill", "pty-epoch"]).output().ok();
+    tendr(&root).args(["kill", "pty-epoch"]).output().ok();
 }
 
 #[test]
@@ -1290,7 +1288,7 @@ fn takeover_retires_the_previous_human_and_rejects_its_later_input() {
     assert!(takeover_event.is_some(), "takeover is recorded as a fact");
 
     drop(new);
-    tender(&root).args(["kill", "pty-takeover"]).output().ok();
+    tendr(&root).args(["kill", "pty-takeover"]).output().ok();
 }
 
 #[test]
@@ -1308,7 +1306,7 @@ fn takeover_revokes_queued_agent_input() {
     // stays queued behind a full PTY input buffer.
     let script = "stty raw -echo; head -c 1024 >/dev/null; printf READY; \
                   while [ ! -f \"$GO\" ]; do sleep 0.05; done; exec cat";
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-revoke", "--pty", "--stdin"])
         .arg("--env")
         .arg(format!("GO={}", go.display()))
@@ -1320,7 +1318,7 @@ fn takeover_revokes_queued_agent_input() {
 
     let mut payload = vec![b'a'; 2 << 20];
     payload.extend_from_slice(b"AGENT-TAIL\n");
-    let mut agent = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let mut agent = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["push", "pty-revoke"])
         .env("HOME", root.path())
         .stdin(std::process::Stdio::piped())
@@ -1373,7 +1371,7 @@ fn takeover_revokes_queued_agent_input() {
         stderr.contains("revoked"),
         "the failure says the push was revoked: {stderr}"
     );
-    tender(&root)
+    tendr(&root)
         .args(["kill", "pty-revoke", "--force"])
         .output()
         .ok();
@@ -1388,13 +1386,13 @@ fn takeover_after_a_silent_connection_reaches_the_same_running_process() {
         session: "pty-reconnect",
     };
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-reconnect", "--pty", "--stdin", "--", "sh"])
         .output()
         .unwrap();
     harness::wait_running(&root, "pty-reconnect");
     let sock_path = wait_for_attach_socket(&root, "pty-reconnect");
-    let status = tender(&root)
+    let status = tendr(&root)
         .args(["status", "pty-reconnect"])
         .output()
         .unwrap();
@@ -1412,7 +1410,7 @@ fn takeover_after_a_silent_connection_reaches_the_same_running_process() {
     wait_log_contains(&root, "pty-reconnect", &expected);
 
     drop(new);
-    tender(&root)
+    tendr(&root)
         .args(["kill", "pty-reconnect", "--force"])
         .output()
         .ok();
@@ -1433,7 +1431,7 @@ fn stalled_viewer_cannot_block_output_capture() {
     let script = "while [ ! -f \"$GO\" ]; do sleep 0.05; done; \
                   yes 0123456789abcdef0123456789abcdef | head -c 10485760; \
                   echo; echo ALL-OUTPUT-DONE; sleep 60";
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-stalled", "--pty"])
         .arg("--env")
         .arg(format!("GO={}", go.display()))
@@ -1448,10 +1446,10 @@ fn stalled_viewer_cannot_block_output_capture() {
     std::fs::write(&go, b"").unwrap();
 
     // Capture must keep up regardless of the stalled viewer. Read output.log
-    // directly: `tender log` would re-parse ~10 MiB on every poll.
+    // directly: `tendr log` would re-parse ~10 MiB on every poll.
     let log_path = root
         .path()
-        .join(".tender/sessions/default/pty-stalled/output.log");
+        .join(".tendr/sessions/default/pty-stalled/output.log");
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let log = std::fs::read(&log_path).unwrap_or_default();
@@ -1485,7 +1483,7 @@ fn a_second_push_is_refused_while_one_holds_the_terminal() {
     // reads nothing until the go file exists: the first push stays in flight.
     let script = "stty raw -echo; head -c 1024 >/dev/null; printf READY; \
                   while [ ! -f \"$GO\" ]; do sleep 0.05; done; exec cat";
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-twopush", "--pty", "--stdin"])
         .arg("--env")
         .arg(format!("GO={}", go.display()))
@@ -1494,7 +1492,7 @@ fn a_second_push_is_refused_while_one_holds_the_terminal() {
         .unwrap();
     harness::wait_running(&root, "pty-twopush");
 
-    let mut first = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let mut first = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["push", "pty-twopush"])
         .env("HOME", root.path())
         .stdin(std::process::Stdio::piped())
@@ -1509,7 +1507,7 @@ fn a_second_push_is_refused_while_one_holds_the_terminal() {
     // Barrier: the first push holds the terminal and its input is flowing.
     wait_log_contains(&root, "pty-twopush", "READY");
 
-    let second = tender(&root)
+    let second = tendr(&root)
         .args(["push", "pty-twopush"])
         .write_stdin(b"SECOND-PUSH\n".to_vec())
         .timeout(Duration::from_secs(20))
@@ -1548,7 +1546,7 @@ fn attach_socket_is_private_and_under_the_state_root() {
     };
     let sock_path = start_cat(&root, "pty-private");
 
-    let sockets = root.path().join(".tender").join("sockets");
+    let sockets = root.path().join(".tendr").join("sockets");
     assert_eq!(
         sock_path
             .parent()
@@ -1617,7 +1615,7 @@ fn a_trickled_hello_is_cut_off_at_the_overall_deadline() {
         started.elapsed() < Duration::from_secs(12),
         "closed promptly after the deadline"
     );
-    let status = tender(&root)
+    let status = tendr(&root)
         .args(["status", "pty-slowhello"])
         .output()
         .unwrap();
@@ -1635,10 +1633,10 @@ fn an_unsafe_socket_directory_fails_start_loudly() {
     };
     let elsewhere = root.path().join("elsewhere");
     std::fs::create_dir(&elsewhere).unwrap();
-    std::fs::create_dir_all(root.path().join(".tender")).unwrap();
-    std::os::unix::fs::symlink(&elsewhere, root.path().join(".tender/sockets")).unwrap();
+    std::fs::create_dir_all(root.path().join(".tendr")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, root.path().join(".tendr/sockets")).unwrap();
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["start", "pty-unsafe", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
@@ -1669,7 +1667,7 @@ fn detach_releases_control_even_when_pty_input_is_full() {
         session: "pty-full-detach",
     };
     // The child never reads its input, so the PTY input buffer fills.
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-full-detach", "--pty", "--stdin", "--"])
         .args(["sh", "-c", "stty raw -echo; printf READY; sleep 60"])
         .output()
@@ -1707,7 +1705,7 @@ fn a_disconnected_push_releases_control_behind_a_full_pty() {
         root: &root,
         session: "pty-push-gone",
     };
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-push-gone", "--pty", "--stdin", "--"])
         .args([
             "sh",
@@ -1782,8 +1780,8 @@ fn idle_pushes_retired_by_takeover_do_not_exhaust_connection_slots() {
             .find(|(t, _)| *t == MSG_INPUT_DONE)
             .unwrap_or_else(|| panic!("push {round} got no outcome: {seen:?}"));
         assert_eq!(
-            tender::attach_proto::parse_input_done(&done.1).map(|(s, _, _)| s),
-            Some(tender::attach_proto::INPUT_REVOKED)
+            tendr::attach_proto::parse_input_done(&done.1).map(|(s, _, _)| s),
+            Some(tendr::attach_proto::INPUT_REVOKED)
         );
         idle_pushes.push(push);
 
@@ -1815,7 +1813,7 @@ fn an_old_runs_cleanup_cannot_remove_its_replacements_breadcrumb() {
         started.display(),
         finish.display()
     );
-    let first = tender(&root)
+    let first = tendr(&root)
         .args(["start", "pty-replaced", "--pty", "--stdin", "--on-exit"])
         .arg(&on_exit)
         .args(["--", "cat"])
@@ -1827,7 +1825,7 @@ fn an_old_runs_cleanup_cannot_remove_its_replacements_breadcrumb() {
     let old_socket = wait_for_attach_socket(&root, "pty-replaced");
 
     // End the old run; its exit callback runs after the session lock is released.
-    tender(&root)
+    tendr(&root)
         .args(["kill", "pty-replaced", "--force"])
         .output()
         .unwrap();
@@ -1838,7 +1836,7 @@ fn an_old_runs_cleanup_cannot_remove_its_replacements_breadcrumb() {
     }
 
     // A replacement starts while the old sidecar is still in its callback.
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "pty-replaced",
@@ -1858,17 +1856,17 @@ fn an_old_runs_cleanup_cannot_remove_its_replacements_breadcrumb() {
     std::fs::write(&finish, b"").unwrap();
     let record = root
         .path()
-        .join(format!(".tender/callbacks/{old_run_id}.json"));
+        .join(format!(".tendr/callbacks/{old_run_id}.json"));
     let deadline = Instant::now() + Duration::from_secs(10);
     while !record.exists() {
         assert!(Instant::now() < deadline, "old sidecar never finished");
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    let session = root.path().join(".tender/sessions/default/pty-replaced");
+    let session = root.path().join(".tendr/sessions/default/pty-replaced");
     assert!(!old_socket.exists(), "the old run's socket is gone");
     assert_eq!(
-        tender::attach_proto::read_sock_path(&session),
+        tendr::attach_proto::read_sock_path(&session),
         Some(new_socket),
         "the old run's cleanup removed the replacement's breadcrumb"
     );
@@ -1879,7 +1877,7 @@ fn an_old_runs_cleanup_cannot_remove_its_replacements_breadcrumb() {
 fn session_meta(root: &TempDir, session: &str) -> serde_json::Value {
     let path = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/meta.json"));
+        .join(format!(".tendr/sessions/default/{session}/meta.json"));
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
@@ -1895,22 +1893,22 @@ fn recording_dir(root: &TempDir, session: &str) -> std::path::PathBuf {
         "one directory per run"
     );
     root.path()
-        .join(format!(".tender/sessions/default/{session}"))
+        .join(format!(".tendr/sessions/default/{session}"))
         .join(dir)
 }
 
-fn decode_session_recording(root: &TempDir, session: &str) -> tender::recording::DecodedRecording {
+fn decode_session_recording(root: &TempDir, session: &str) -> tendr::recording::DecodedRecording {
     let dir = recording_dir(root, session);
-    let files = tender::recorder::DirectoryStore::segments(&dir).unwrap();
+    let files = tendr::recorder::DirectoryStore::segments(&dir).unwrap();
     let bytes: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
-    tender::recording::decode_recording(bytes.iter().map(Vec::as_slice)).expect("recording decodes")
+    tendr::recording::decode_recording(bytes.iter().map(Vec::as_slice)).expect("recording decodes")
 }
 
-fn recorded_output(records: &[tender::recording::Record]) -> Vec<u8> {
+fn recorded_output(records: &[tendr::recording::Record]) -> Vec<u8> {
     records
         .iter()
         .filter_map(|r| match &r.kind {
-            tender::recording::RecordKind::Output(bytes) => Some(bytes.as_slice()),
+            tendr::recording::RecordKind::Output(bytes) => Some(bytes.as_slice()),
             _ => None,
         })
         .flatten()
@@ -1929,7 +1927,7 @@ fn pty_output_is_recorded_exactly_with_the_initial_geometry() {
     let root = TempDir::new().unwrap();
 
     // Escape sequences, bytes that are not UTF-8, and no trailing newline.
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "pty-rec",
@@ -1953,7 +1951,7 @@ fn pty_output_is_recorded_exactly_with_the_initial_geometry() {
         b"24 80\r\n\x1b[31mred\xff\xfetail",
         "the child starts at 24x80 and every output byte is recorded as written"
     );
-    assert_eq!(recording.end, tender::recording::SegmentEnd::Clean);
+    assert_eq!(recording.end, tendr::recording::SegmentEnd::Clean);
 
     let meta = session_meta(&root, "pty-rec");
     let header = &recording.header;
@@ -1965,7 +1963,7 @@ fn pty_output_is_recorded_exactly_with_the_initial_geometry() {
     assert!(!header.input_recorded, "input is not recorded by default");
     let expected_term = std::env::var("TERM")
         .ok()
-        .and_then(|t| tender::recording::TermName::new(t).ok())
+        .and_then(|t| tendr::recording::TermName::new(t).ok())
         .map(|t| t.as_str().to_owned())
         .unwrap_or_default();
     assert_eq!(header.term.as_str(), expected_term);
@@ -2001,7 +1999,7 @@ fn an_applied_resize_is_recorded_between_the_output_around_it() {
     wait_log_contains(&root, "pty-rec-resize", "two");
     write_msg(&mut human, MSG_DETACH, &[]);
     drop(human);
-    tender(&root)
+    tendr(&root)
         .args(["kill", "pty-rec-resize", "--force"])
         .output()
         .unwrap();
@@ -2012,16 +2010,16 @@ fn an_applied_resize_is_recorded_between_the_output_around_it() {
         .records
         .iter()
         .enumerate()
-        .filter(|(_, r)| matches!(r.kind, tender::recording::RecordKind::Resize { .. }))
+        .filter(|(_, r)| matches!(r.kind, tendr::recording::RecordKind::Resize { .. }))
         .map(|(i, _)| i)
         .collect();
     assert_eq!(resizes.len(), 1, "{:?}", recording.records);
     let at = resizes[0];
     assert_eq!(
         recording.records[at].kind,
-        tender::recording::RecordKind::Resize {
-            geometry: tender::recording::Geometry::new(30, 100).unwrap(),
-            cause: tender::recording::ResizeCause::User,
+        tendr::recording::RecordKind::Resize {
+            geometry: tendr::recording::Geometry::new(30, 100).unwrap(),
+            cause: tendr::recording::ResizeCause::User,
         }
     );
     let before = recorded_output(&recording.records[..at]);
@@ -2035,7 +2033,7 @@ fn an_applied_resize_is_recorded_between_the_output_around_it() {
 fn a_resize_with_a_zero_dimension_is_ignored() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-zero-size", "--pty", "--stdin", "--", "sh"])
         .output()
         .unwrap();
@@ -2052,7 +2050,7 @@ fn a_resize_with_a_zero_dimension_is_ignored() {
     wait_log_contains(&root, "pty-zero-size", "24 80");
     write_msg(&mut human, MSG_DETACH, &[]);
     drop(human);
-    tender(&root)
+    tendr(&root)
         .args(["kill", "pty-zero-size", "--force"])
         .output()
         .unwrap();
@@ -2063,7 +2061,7 @@ fn a_resize_with_a_zero_dimension_is_ignored() {
         !recording
             .records
             .iter()
-            .any(|r| matches!(r.kind, tender::recording::RecordKind::Resize { .. })),
+            .any(|r| matches!(r.kind, tendr::recording::RecordKind::Resize { .. })),
         "{:?}",
         recording.records
     );
@@ -2073,8 +2071,8 @@ fn a_resize_with_a_zero_dimension_is_ignored() {
 fn a_recording_size_limit_stops_recording_but_not_the_session() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
-        .env("TENDER_TEST_RECORDING_MAX_BYTES", "2048")
+    tendr(&root)
+        .env("TENDR_TEST_RECORDING_MAX_BYTES", "2048")
         .args(["start", "pty-rec-limit", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
@@ -2121,7 +2119,7 @@ fn a_recording_size_limit_stops_recording_but_not_the_session() {
     push(&root, "pty-rec-limit", b"after-stop\n");
     wait_log_contains(&root, "pty-rec-limit", "after-stop");
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "pty-rec-limit", "--force"])
         .output()
         .unwrap();
@@ -2144,7 +2142,7 @@ fn a_recording_size_limit_stops_recording_but_not_the_session() {
         b"after-stop"
     ));
     let dir = recording_dir(&root, "pty-rec-limit");
-    let total: u64 = tender::recorder::DirectoryStore::segments(&dir)
+    let total: u64 = tendr::recorder::DirectoryStore::segments(&dir)
         .unwrap()
         .iter()
         .map(|f| std::fs::metadata(f).unwrap().len())

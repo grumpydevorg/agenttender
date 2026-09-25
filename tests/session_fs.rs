@@ -1,13 +1,13 @@
 use std::num::NonZeroU32;
 use tempfile::TempDir;
-use tender::model::ids::{
+use tendr::model::ids::{
     EpochTimestamp, Generation, Namespace, ProcessIdentity, RunId, SessionName,
 };
-use tender::model::meta::Meta;
-use tender::model::spec::LaunchSpec;
+use tendr::model::meta::Meta;
+use tendr::model::spec::LaunchSpec;
 #[cfg(unix)]
-use tender::session::LockGuard;
-use tender::session::{self, SessionError, SessionRoot};
+use tendr::session::LockGuard;
+use tendr::session::{self, SessionError, SessionRoot};
 
 fn tmp_root() -> (TempDir, SessionRoot) {
     let dir = TempDir::new().unwrap();
@@ -109,7 +109,7 @@ fn list_empty_root() {
 
 #[test]
 fn list_nonexistent_root() {
-    let root = SessionRoot::new("/tmp/tender-nonexistent-test-root".into());
+    let root = SessionRoot::new("/tmp/tendr-nonexistent-test-root".into());
     let sessions = session::list(&root, None).unwrap();
     assert!(sessions.is_empty());
 }

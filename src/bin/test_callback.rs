@@ -3,7 +3,7 @@
 //! Subcommands:
 //! ```text
 //! touch <path>      — create an empty file at <path>
-//! echo-env <path>   — write "$TENDER_SESSION $TENDER_NAMESPACE $TENDER_EXIT_REASON" to <path>
+//! echo-env <path>   — write "$TENDR_SESSION $TENDR_NAMESPACE $TENDR_EXIT_REASON" to <path>
 //! print-cwd         — print the current working directory to stdout
 //! ```
 
@@ -31,9 +31,9 @@ fn main() {
                     });
                 }
                 "echo-env" => {
-                    let session = std::env::var("TENDER_SESSION").unwrap_or_default();
-                    let namespace = std::env::var("TENDER_NAMESPACE").unwrap_or_default();
-                    let exit_reason = std::env::var("TENDER_EXIT_REASON").unwrap_or_default();
+                    let session = std::env::var("TENDR_SESSION").unwrap_or_default();
+                    let namespace = std::env::var("TENDR_NAMESPACE").unwrap_or_default();
+                    let exit_reason = std::env::var("TENDR_EXIT_REASON").unwrap_or_default();
                     let content = format!("{session} {namespace} {exit_reason}\n");
                     std::fs::write(path, content).unwrap_or_else(|e| {
                         eprintln!("test_callback echo-env: {e}");

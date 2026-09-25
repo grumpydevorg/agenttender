@@ -1,10 +1,10 @@
-//! `tender start --boundary` / `--boundary-parent` — the boundary descriptor
+//! `tendr start --boundary` / `--boundary-parent` — the boundary descriptor
 //! is recorded on the session's LaunchSpec and surfaced by `status`.
 //! See docs/plans/active/01_boundary-metadata.md.
 
 mod harness;
 
-use harness::{read_events, tender, wait_terminal};
+use harness::{read_events, tendr, wait_terminal};
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -22,7 +22,7 @@ fn start_ok(root: &TempDir, session: &str, extra: &[&str]) -> Value {
     let mut args = vec!["start", session];
     args.extend_from_slice(extra);
     args.extend_from_slice(&["--", "echo", "hi"]);
-    let out = tender(root).args(&args).assert().success();
+    let out = tendr(root).args(&args).assert().success();
     let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
     serde_json::from_str(&stdout).expect("start prints meta JSON")
 }
@@ -79,7 +79,7 @@ fn status_surfaces_boundary() {
     start_ok(&root, "job", &["--boundary", "vm:builder-1"]);
     wait_terminal(&root, "job");
 
-    let out = tender(&root).args(["status", "job"]).assert().success();
+    let out = tendr(&root).args(["status", "job"]).assert().success();
     let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
     let meta: Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(meta["launch_spec"]["boundary"]["current"]["kind"], "vm");
@@ -92,7 +92,7 @@ fn status_surfaces_boundary() {
 #[test]
 fn invalid_boundary_is_rejected() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "bad", "--boundary", "host", "--", "echo", "hi"])
         .assert()
         .failure();
@@ -101,7 +101,7 @@ fn invalid_boundary_is_rejected() {
 #[test]
 fn boundary_parent_requires_boundary() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "bad",

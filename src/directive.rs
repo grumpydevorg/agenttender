@@ -1,7 +1,7 @@
-//! Parse `#tender:` directives from script headers.
+//! Parse `#tendr:` directives from script headers.
 //!
 //! Scans comment lines at the top of a script file (after an optional shebang)
-//! for `#tender: key=value` directives that configure session launch parameters.
+//! for `#tendr: key=value` directives that configure session launch parameters.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -42,7 +42,7 @@ pub enum DirectiveError {
 /// - Skip the first line if it starts with `#!` (shebang)
 /// - Continue scanning lines that are blank or start with `#`
 /// - Stop at the first line that is neither blank nor a `#` comment
-/// - Extract `#tender: key=value` or `#tender: key` (for boolean flags)
+/// - Extract `#tendr: key=value` or `#tendr: key` (for boolean flags)
 pub fn parse_directives(content: &str) -> Result<Directives, DirectiveError> {
     let mut directives = Directives::default();
     let mut lines = content.lines();
@@ -72,8 +72,8 @@ pub fn parse_directives(content: &str) -> Result<Directives, DirectiveError> {
 fn process_line(line: &str, directives: &mut Directives) -> Result<(), DirectiveError> {
     let trimmed = line.trim();
 
-    // Must match "#tender: " (with space after colon).
-    let Some(rest) = trimmed.strip_prefix("#tender: ") else {
+    // Must match "#tendr: " (with space after colon).
+    let Some(rest) = trimmed.strip_prefix("#tendr: ") else {
         return Ok(()); // Regular comment, skip.
     };
 
@@ -226,7 +226,7 @@ pub fn derive_session_name(script_path: &Path) -> Result<String, String> {
 
     if name.is_empty() {
         return Err(format!(
-            "cannot derive session name from '{basename}'; use #tender: session=NAME"
+            "cannot derive session name from '{basename}'; use #tendr: session=NAME"
         ));
     }
 
@@ -235,7 +235,7 @@ pub fn derive_session_name(script_path: &Path) -> Result<String, String> {
     match SessionName::new(&name) {
         Ok(_) => Ok(name),
         Err(e) => Err(format!(
-            "derived session name '{name}' is invalid: {e}; use #tender: session=NAME"
+            "derived session name '{name}' is invalid: {e}; use #tendr: session=NAME"
         )),
     }
 }
@@ -247,10 +247,10 @@ mod tests {
     #[test]
     fn parse_basic_directives() {
         let content = "\
-#!/usr/bin/env -S tender run
-#tender: namespace=builds
-#tender: timeout=3600
-#tender: on-exit=notify-done
+#!/usr/bin/env -S tendr run
+#tendr: namespace=builds
+#tendr: timeout=3600
+#tendr: on-exit=notify-done
 
 make -j8
 ";
@@ -263,8 +263,8 @@ make -j8
     #[test]
     fn parse_no_shebang() {
         let content = "\
-#tender: namespace=test
-#tender: timeout=60
+#tendr: namespace=test
+#tendr: timeout=60
 
 echo hello
 ";
@@ -277,10 +277,10 @@ echo hello
     fn parse_stops_at_non_comment() {
         let content = "\
 #!/bin/bash
-#tender: namespace=a
+#tendr: namespace=a
 
 echo hello
-#tender: namespace=b
+#tendr: namespace=b
 ";
         let d = parse_directives(content).unwrap();
         assert_eq!(d.namespace.as_deref(), Some("a"));
@@ -288,28 +288,28 @@ echo hello
 
     #[test]
     fn parse_unknown_directive_errors() {
-        let content = "#tender: timout=30\necho hi\n";
+        let content = "#tendr: timout=30\necho hi\n";
         let err = parse_directives(content).unwrap_err();
         assert!(matches!(err, DirectiveError::Unknown(k) if k == "timout"));
     }
 
     #[test]
     fn parse_duplicate_non_repeatable_errors() {
-        let content = "#tender: timeout=30\n#tender: timeout=60\necho hi\n";
+        let content = "#tendr: timeout=30\n#tendr: timeout=60\necho hi\n";
         let err = parse_directives(content).unwrap_err();
         assert!(matches!(err, DirectiveError::Duplicate(k) if k == "timeout"));
     }
 
     #[test]
     fn parse_repeatable_keys() {
-        let content = "#tender: on-exit=cmd1\n#tender: on-exit=cmd2\necho hi\n";
+        let content = "#tendr: on-exit=cmd1\n#tendr: on-exit=cmd2\necho hi\n";
         let d = parse_directives(content).unwrap();
         assert_eq!(d.on_exit, vec!["cmd1", "cmd2"]);
     }
 
     #[test]
     fn parse_env_with_multiple_equals() {
-        let content = "#tender: env=PATH=/usr/bin:/usr/local/bin\necho hi\n";
+        let content = "#tendr: env=PATH=/usr/bin:/usr/local/bin\necho hi\n";
         let d = parse_directives(content).unwrap();
         // The full KEY=VALUE string is stored.
         assert_eq!(
@@ -320,7 +320,7 @@ echo hello
 
     #[test]
     fn parse_boolean_flags() {
-        let content = "#tender: replace\n#tender: detach\n#tender: stdin=pipe\necho hi\n";
+        let content = "#tendr: replace\n#tendr: detach\n#tendr: stdin=pipe\necho hi\n";
         let d = parse_directives(content).unwrap();
         assert!(d.replace);
         assert!(d.detach);
@@ -329,14 +329,14 @@ echo hello
 
     #[test]
     fn parse_invalid_stdin_value() {
-        let content = "#tender: stdin=yes\necho hi\n";
+        let content = "#tendr: stdin=yes\necho hi\n";
         let err = parse_directives(content).unwrap_err();
         assert!(matches!(err, DirectiveError::InvalidStdin(_)));
     }
 
     #[test]
     fn parse_session_override() {
-        let content = "#tender: session=my-custom-name\necho hi\n";
+        let content = "#tendr: session=my-custom-name\necho hi\n";
         let d = parse_directives(content).unwrap();
         assert_eq!(d.session.as_deref(), Some("my-custom-name"));
     }
@@ -346,7 +346,7 @@ echo hello
         let content = "\
 #!/bin/bash
 # This is a regular comment
-#tender: namespace=test
+#tendr: namespace=test
 # Another comment
 
 echo hi
@@ -363,7 +363,7 @@ echo hi
 
     #[test]
     fn parse_whitespace_trimmed() {
-        let content = "#tender: namespace= builds \necho hi\n";
+        let content = "#tendr: namespace= builds \necho hi\n";
         let d = parse_directives(content).unwrap();
         assert_eq!(d.namespace.as_deref(), Some("builds"));
     }
@@ -440,28 +440,28 @@ echo hi
 
     #[test]
     fn parse_invalid_namespace_errors() {
-        let content = "#tender: namespace=bad name\necho hi\n";
+        let content = "#tendr: namespace=bad name\necho hi\n";
         let err = parse_directives(content).unwrap_err();
         assert!(matches!(err, DirectiveError::InvalidNamespace(_)));
     }
 
     #[test]
     fn parse_namespace_with_dot_errors() {
-        let content = "#tender: namespace=foo.bar\necho hi\n";
+        let content = "#tendr: namespace=foo.bar\necho hi\n";
         let err = parse_directives(content).unwrap_err();
         assert!(matches!(err, DirectiveError::InvalidNamespace(_)));
     }
 
     #[test]
     fn parse_invalid_session_name_errors() {
-        let content = "#tender: session=my.bad.name\necho hi\n";
+        let content = "#tendr: session=my.bad.name\necho hi\n";
         let err = parse_directives(content).unwrap_err();
         assert!(matches!(err, DirectiveError::InvalidSession(_)));
     }
 
     #[test]
     fn parse_session_with_whitespace_errors() {
-        let content = "#tender: session=has space\necho hi\n";
+        let content = "#tendr: session=has space\necho hi\n";
         let err = parse_directives(content).unwrap_err();
         assert!(matches!(err, DirectiveError::InvalidSession(_)));
     }

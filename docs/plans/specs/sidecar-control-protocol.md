@@ -1,6 +1,6 @@
 # Sidecar Control Protocol — Design Spec
 
-Target architecture for portable, typed control IPC between the Tender CLI and the per-session sidecar. This spec describes a future control plane shape. It does not commit to a timeline and is explicitly not a prerequisite for any current backlog item including PTY automation.
+Target architecture for portable, typed control IPC between the Tendr CLI and the per-session sidecar. This spec describes a future control plane shape. It does not commit to a timeline and is explicitly not a prerequisite for any current backlog item including PTY automation.
 
 ## Status
 
@@ -11,13 +11,13 @@ Design spec only. Not scheduled. Not blocking.
 Build the control protocol when either:
 
 - a feature needs portable correlated request/response over a boundary that files cannot serve cleanly, or
-- a required remote control flow cannot be represented cleanly as a one-shot typed Tender CLI frame over SSH stdio.
+- a required remote control flow cannot be represented cleanly as a one-shot typed Tendr CLI frame over SSH stdio.
 
 Do not build it because the file-based IPC pattern count reaches some threshold. The decision is about boundary-crossing demand, not pattern proliferation.
 
 ## The problem
 
-Tender's current IPC is file-based and local:
+Tendr's current IPC is file-based and local:
 
 - `kill_request` — atomic file write, sidecar polls, consumes
 - PTY lease IPC — per-request files under `lease/requests/` and `lease/responses/`
@@ -36,7 +36,7 @@ It does not generalize cleanly across:
 
 ## Target architecture: three layers
 
-The control protocol does not replace Tender's existing strengths. It adds a middle layer.
+The control protocol does not replace Tendr's existing strengths. It adds a middle layer.
 
 ### Layer 1 — Durable truth (unchanged)
 

@@ -1,9 +1,9 @@
 #!/bin/bash
-# Install the using-tender skill into ~/.claude/skills/
+# Install the using-tendr skill into ~/.claude/skills/
 #
-# The skill lives inside this Tender repo (.claude/skills/using-tender/) so
-# its content is versioned with Tender itself. install.sh creates a symlink
-# from ~/.claude/skills/using-tender -> this directory so Claude Code's skill
+# The skill lives inside this Tendr repo (.claude/skills/using-tendr/) so
+# its content is versioned with Tendr itself. install.sh creates a symlink
+# from ~/.claude/skills/using-tendr -> this directory so Claude Code's skill
 # loader picks it up.
 #
 # Usage:
@@ -41,7 +41,7 @@ remove_skill() {
 }
 
 check_installation() {
-    echo "Checking using-tender installation..."
+    echo "Checking using-tendr installation..."
     echo ""
     if [[ -L "$TARGET" ]]; then
         link_target="$(readlink "$TARGET")"
@@ -55,10 +55,10 @@ check_installation() {
         echo "❌ No symlink at $TARGET"
     fi
     echo ""
-    if command -v tender >/dev/null 2>&1; then
-        echo "✅ tender CLI on PATH: $(command -v tender)"
+    if command -v tendr >/dev/null 2>&1; then
+        echo "✅ tendr CLI on PATH: $(command -v tendr)"
     else
-        echo "⚠️  tender CLI not on PATH — this skill's advice won't be actionable"
+        echo "⚠️  tendr CLI not on PATH — this skill's advice won't be actionable"
         echo "   Build: cd \"$(cd "$SKILL_DIR/../../.." && pwd)\" && cargo build --release"
     fi
 }

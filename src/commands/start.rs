@@ -1,11 +1,11 @@
 use std::path::Path;
 
 use anyhow::Context;
-use tender::model::boundary::BoundaryContext;
-use tender::model::ids::{Namespace, SessionName};
-use tender::model::spec::{ExecTarget, IoMode, LaunchSpec, StdinMode};
-use tender::platform::{Current, Platform};
-use tender::session::{self, SessionRoot};
+use tendr::model::boundary::BoundaryContext;
+use tendr::model::ids::{Namespace, SessionName};
+use tendr::model::spec::{ExecTarget, IoMode, LaunchSpec, StdinMode};
+use tendr::platform::{Current, Platform};
+use tendr::session::{self, SessionRoot};
 
 #[allow(clippy::too_many_arguments)] // launch surface; bundled into StartRequest by the frame-transport work
 pub fn cmd_start(
@@ -47,9 +47,9 @@ pub fn cmd_start(
     // Exit non-zero if the run already ended in failure — agents branch on
     // exit code (the same codes as `wait`).
     match meta.status() {
-        tender::model::state::RunStatus::SpawnFailed { .. } => std::process::exit(2),
-        tender::model::state::RunStatus::Exited {
-            how: tender::model::state::ExitReason::SidecarFailed { .. },
+        tendr::model::state::RunStatus::SpawnFailed { .. } => std::process::exit(2),
+        tendr::model::state::RunStatus::Exited {
+            how: tendr::model::state::ExitReason::SidecarFailed { .. },
             ..
         } => std::process::exit(5),
         _ => {}
@@ -81,7 +81,7 @@ pub(crate) fn launch_session(
     pty: bool,
     exec_target: Option<ExecTarget>,
     boundary: Option<BoundaryContext>,
-) -> anyhow::Result<(tender::model::meta::Meta, session::SessionDir)> {
+) -> anyhow::Result<(tendr::model::meta::Meta, session::SessionDir)> {
     let session_name = SessionName::new(name)?;
     let root = SessionRoot::default_path()?;
 
@@ -129,7 +129,7 @@ pub(crate) fn launch_session(
             let dep_meta = session::read_meta(&dep_session)?;
             launch_spec
                 .after
-                .push(tender::model::spec::DependencyBinding {
+                .push(tendr::model::spec::DependencyBinding {
                     session: dep_session_name,
                     run_id: dep_meta.run_id(),
                 });
@@ -177,7 +177,7 @@ fn handle_replace(
     root: &SessionRoot,
     namespace: &Namespace,
     session_name: &SessionName,
-) -> anyhow::Result<Option<tender::model::ids::Generation>> {
+) -> anyhow::Result<Option<tendr::model::ids::Generation>> {
     let session_path = root
         .path()
         .join(namespace.as_str())
@@ -253,7 +253,7 @@ fn try_idempotent_start(
 
     if matches!(
         existing_meta.status(),
-        tender::model::state::RunStatus::Running { .. }
+        tendr::model::state::RunStatus::Running { .. }
     ) {
         // Running -- check spec match for idempotent return
         if existing_meta.launch_spec_hash() == launch_spec.canonical_hash() {
@@ -269,7 +269,7 @@ fn try_idempotent_start(
         );
     } else if matches!(
         existing_meta.status(),
-        tender::model::state::RunStatus::Starting
+        tendr::model::state::RunStatus::Starting
     ) {
         // Starting state: sidecar may be in dependency wait or still initializing.
         if session::is_locked(&existing).unwrap_or(false) {
@@ -297,7 +297,7 @@ fn try_idempotent_start(
 fn spawn_and_wait_ready_inner(
     session: &session::SessionDir,
     launch_spec: &LaunchSpec,
-) -> anyhow::Result<tender::model::meta::Meta> {
+) -> anyhow::Result<tendr::model::meta::Meta> {
     // Write launch spec for sidecar to read
     let spec_json = serde_json::to_string_pretty(launch_spec)?;
     std::fs::write(session.path().join("launch_spec.json"), &spec_json)?;
@@ -306,8 +306,8 @@ fn spawn_and_wait_ready_inner(
     let (read_end, write_end) = Current::ready_channel()?;
 
     // Spawn detached sidecar
-    let tender_bin = std::env::current_exe()?;
-    let sidecar_result = Current::spawn_sidecar(&tender_bin, session.path(), &write_end);
+    let tendr_bin = std::env::current_exe()?;
+    let sidecar_result = Current::spawn_sidecar(&tendr_bin, session.path(), &write_end);
 
     // Close write end in parent -- we only read
     drop(write_end);
@@ -345,7 +345,7 @@ fn spawn_and_wait_ready_inner(
         .ok_or_else(|| anyhow::anyhow!("unexpected readiness signal: {signal}"))?
         .trim();
 
-    let meta: tender::model::meta::Meta = serde_json::from_str(meta_json)?;
+    let meta: tendr::model::meta::Meta = serde_json::from_str(meta_json)?;
     Ok(meta)
 }
 

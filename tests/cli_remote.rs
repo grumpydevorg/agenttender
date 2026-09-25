@@ -40,7 +40,7 @@ fn host_flag_is_accepted_by_parser() {
     // Use a fake ssh shim so we don't hit real SSH (ConnectTimeout).
     let tmp = fake_ssh_noop();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["--host", "user@example.com", "list"])
         .env("PATH", tmp.path())
         .output()
@@ -60,7 +60,7 @@ fn host_flag_invokes_ssh_with_correct_remote_command() {
 
     let tmp = fake_ssh_echo();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["--host", "user@box", "list"])
         .env("PATH", tmp.path())
         .output()
@@ -71,8 +71,8 @@ fn host_flag_invokes_ssh_with_correct_remote_command() {
         .lines()
         .filter_map(|l| l.strip_prefix("ARG:"))
         .collect();
-    // Should see: -T, -o, ConnectTimeout=10, user@box, tender, list
-    assert!(args.contains(&"tender"), "should contain tender: {args:?}");
+    // Should see: -T, -o, ConnectTimeout=10, user@box, tendr, list
+    assert!(args.contains(&"tendr"), "should contain tendr: {args:?}");
     assert!(args.contains(&"list"), "should contain list: {args:?}");
     // No "--" should be passed to ssh
     assert!(
@@ -112,7 +112,7 @@ fn host_flag_exit_255_is_transport_error() {
     std::fs::write(&fake_ssh, "#!/bin/sh\nexit 255\n").unwrap();
     std::fs::set_permissions(&fake_ssh, PermissionsExt::from_mode(0o755)).unwrap();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["--host", "user@box", "list"])
         .env("PATH", tmp.path())
         .output()
@@ -139,7 +139,7 @@ fn host_flag_preserves_remote_exit_code() {
     std::fs::write(&fake_ssh, "#!/bin/sh\nexit 42\n").unwrap();
     std::fs::set_permissions(&fake_ssh, PermissionsExt::from_mode(0o755)).unwrap();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["--host", "user@box", "wait", "my-session"])
         .env("PATH", tmp.path())
         .output()
@@ -164,7 +164,7 @@ fn host_flag_passes_through_json_stdout() {
     std::fs::write(&fake_ssh, script).unwrap();
     std::fs::set_permissions(&fake_ssh, PermissionsExt::from_mode(0o755)).unwrap();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["--host", "user@box", "status", "remote-job"])
         .env("PATH", tmp.path())
         .output()
@@ -187,14 +187,14 @@ fn host_flag_passes_through_ndjson_stream() {
     let tmp = tempfile::TempDir::new().unwrap();
     let fake_ssh = tmp.path().join("ssh");
     let script = r#"#!/bin/sh
-echo '{"ts":1.0,"namespace":"default","session":"s1","run_id":"abc","source":"tender.sidecar","kind":"run","name":"run.started","data":{"status":"Running"}}'
-echo '{"ts":2.0,"namespace":"default","session":"s1","run_id":"abc","source":"tender.sidecar","kind":"run","name":"run.exited","data":{"status":"Exited","reason":"ExitedOk","exit_code":0}}'
+echo '{"ts":1.0,"namespace":"default","session":"s1","run_id":"abc","source":"tendr.sidecar","kind":"run","name":"run.started","data":{"status":"Running"}}'
+echo '{"ts":2.0,"namespace":"default","session":"s1","run_id":"abc","source":"tendr.sidecar","kind":"run","name":"run.exited","data":{"status":"Exited","reason":"ExitedOk","exit_code":0}}'
 exit 0
 "#;
     std::fs::write(&fake_ssh, script).unwrap();
     std::fs::set_permissions(&fake_ssh, PermissionsExt::from_mode(0o755)).unwrap();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["--host", "user@box", "watch", "--events"])
         .env("PATH", tmp.path())
         .output()
@@ -207,7 +207,7 @@ exit 0
     for line in &lines {
         let event: serde_json::Value = serde_json::from_str(line)
             .unwrap_or_else(|_| panic!("each line should be valid JSON: {line}"));
-        assert_eq!(event["source"], "tender.sidecar");
+        assert_eq!(event["source"], "tendr.sidecar");
     }
 
     let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
@@ -223,7 +223,7 @@ fn host_flag_ssh_not_found_gives_clear_error() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
 
     let tmp = tempfile::TempDir::new().unwrap();
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["--host", "user@box", "list"])
         .env("PATH", tmp.path())
         .output()
@@ -245,7 +245,7 @@ fn host_flag_forwards_namespace_and_strips_host() {
 
     let tmp = fake_ssh_echo();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args([
             "--host",
             "user@box",
@@ -286,7 +286,7 @@ fn host_flag_passes_through_stderr() {
     std::fs::write(&fake_ssh, script).unwrap();
     std::fs::set_permissions(&fake_ssh, PermissionsExt::from_mode(0o755)).unwrap();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["--host", "user@box", "status", "oops"])
         .env("PATH", tmp.path())
         .output()
@@ -308,7 +308,7 @@ fn host_flag_forwards_start_with_trailing_args() {
 
     let tmp = fake_ssh_echo();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args([
             "--host",
             "user@box",
@@ -327,7 +327,7 @@ fn host_flag_forwards_start_with_trailing_args() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed = parse_remote_argv(&stdout);
 
-    assert_eq!(parsed[0], "tender");
+    assert_eq!(parsed[0], "tendr");
     assert!(parsed.contains(&"start".to_string()), "parsed: {parsed:?}");
     assert!(parsed.contains(&"job".to_string()), "parsed: {parsed:?}");
     assert!(
@@ -349,7 +349,7 @@ fn host_flag_quotes_child_args_with_spaces() {
 
     let tmp = fake_ssh_echo();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args([
             "--host",
             "user@box",
@@ -368,7 +368,7 @@ fn host_flag_quotes_child_args_with_spaces() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed = parse_remote_argv(&stdout);
 
-    assert_eq!(parsed[0], "tender");
+    assert_eq!(parsed[0], "tendr");
     assert!(
         parsed.contains(&"hello world".to_string()),
         "space-containing arg must survive round-trip: {parsed:?}"
@@ -389,7 +389,7 @@ fn host_flag_does_not_eat_child_host_arg() {
 
     let tmp = fake_ssh_echo();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args([
             "--host",
             "user@box",
@@ -432,7 +432,7 @@ fn host_flag_attach_uses_tty_allocation() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = fake_ssh_echo();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["--host", "user@box", "attach", "my-session"])
         .env("PATH", tmp.path())
         .output()
@@ -458,7 +458,7 @@ fn host_flag_forwards_exec_target() {
 
     let tmp = fake_ssh_echo();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args([
             "--host",
             "user@box",
@@ -477,7 +477,7 @@ fn host_flag_forwards_exec_target() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed = parse_remote_argv(&stdout);
 
-    assert_eq!(parsed[0], "tender");
+    assert_eq!(parsed[0], "tendr");
     assert!(parsed.contains(&"start".to_string()), "parsed: {parsed:?}");
     assert!(parsed.contains(&"shell".to_string()), "parsed: {parsed:?}");
     assert!(
@@ -514,7 +514,7 @@ fn poison_ssh() -> TempDir {
 
 /// Extract the `try:` line's fallback and re-split it twice — once as the
 /// local shell would (yielding `ssh <host> <remote-string>`), once as the
-/// remote login shell would — returning the remote tender argv. This pins
+/// remote login shell would — returning the remote tendr argv. This pins
 /// that the printed fallback is copy-paste correct, not just plausible.
 fn parse_fallback_argv(stderr: &str, host: &str) -> Vec<String> {
     let try_line = stderr
@@ -564,7 +564,7 @@ fn host_run_wrap_prune_exit_2_and_say_local_only() {
             vec!["--host", "user@box", "prune", "--all", "--dry-run"],
         ),
     ] {
-        let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+        let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
             .args(&cmd_args)
             .env("PATH", tmp.path())
             .output()
@@ -581,13 +581,13 @@ fn host_run_wrap_prune_exit_2_and_say_local_only() {
             "{verb} names itself and says local-only: {stderr}"
         );
         let remote = parse_fallback_argv(&stderr, "user@box");
-        assert_eq!(remote[0], "tender");
+        assert_eq!(remote[0], "tendr");
         assert_eq!(remote[1], verb, "fallback reconstructs the verb");
     }
 }
 
 /// run's fallback keeps the `--` separator before script args: a script
-/// arg like --stdin must not re-parse as tender's own flag when the
+/// arg like --stdin must not re-parse as tendr's own flag when the
 /// fallback is pasted (review finding on PR #12). clap consumes the
 /// first `--` but keeps any later one in the captured args, so exactly
 /// one separator is re-inserted.
@@ -599,15 +599,15 @@ fn host_run_fallback_keeps_separator_before_script_args() {
     for (cli_args, expected_remote) in [
         (
             vec!["--host", "user@box", "run", "deploy.sh", "--", "--stdin"],
-            vec!["tender", "run", "deploy.sh", "--", "--stdin"],
+            vec!["tendr", "run", "deploy.sh", "--", "--stdin"],
         ),
         (
             // A second `--` inside script args survives in place.
             vec!["--host", "user@box", "run", "d.sh", "--", "a", "--", "b"],
-            vec!["tender", "run", "d.sh", "--", "a", "--", "b"],
+            vec!["tendr", "run", "d.sh", "--", "a", "--", "b"],
         ),
     ] {
-        let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+        let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
             .args(&cli_args)
             .env("PATH", tmp.path())
             .output()
@@ -618,7 +618,7 @@ fn host_run_fallback_keeps_separator_before_script_args() {
         let remote = parse_fallback_argv(&stderr, "user@box");
         assert_eq!(
             remote, expected_remote,
-            "script args re-parse as script args, not tender flags"
+            "script args re-parse as script args, not tendr flags"
         );
     }
 }
@@ -639,7 +639,7 @@ fn host_local_only_rejection_spawns_no_ssh() {
     .unwrap();
     std::fs::set_permissions(&fake_ssh, PermissionsExt::from_mode(0o755)).unwrap();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["--host", "user@box", "prune", "--all"])
         .env("PATH", tmp.path())
         .output()
@@ -658,7 +658,7 @@ fn host_query_is_local_only_with_fallback() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
 
     let tmp = poison_ssh();
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["--host", "user@box", "query", "SELECT 1"])
         .env("PATH", tmp.path())
         .output()
@@ -675,7 +675,7 @@ fn host_query_is_local_only_with_fallback() {
         "query names itself and says local-only: {stderr}"
     );
     let remote = parse_fallback_argv(&stderr, "user@box");
-    assert_eq!(remote[0], "tender");
+    assert_eq!(remote[0], "tendr");
     assert_eq!(remote[1], "query", "fallback reconstructs the verb");
     assert!(
         remote.contains(&"SELECT 1".to_string()),
@@ -706,7 +706,7 @@ fn host_guide_and_skill_are_local_only_with_fallback() {
             vec!["skill", "install", "--global", "--force"],
         ),
     ] {
-        let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+        let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
             .args(&cmd_args)
             .env("PATH", tmp.path())
             .output()
@@ -723,7 +723,7 @@ fn host_guide_and_skill_are_local_only_with_fallback() {
             "{verb} names itself and says local-only: {stderr}"
         );
         let remote = parse_fallback_argv(&stderr, "user@box");
-        assert_eq!(remote[0], "tender");
+        assert_eq!(remote[0], "tendr");
         assert_eq!(
             &remote[1..],
             expected_tail.as_slice(),
@@ -740,7 +740,7 @@ fn host_events_keeps_generic_rejection() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
 
     let tmp = poison_ssh();
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["--host", "user@box", "events"])
         .env("PATH", tmp.path())
         .output()
@@ -756,8 +756,8 @@ fn host_events_keeps_generic_rejection() {
 
 // -- Slice 2 (2026-07-08-remote-exec-host-parity.md): remote exec via frame-from-stdin --
 
-/// A fake ssh that drops everything up to and including the "tender"
-/// argv token, then executes the real tender binary with the remainder —
+/// A fake ssh that drops everything up to and including the "tendr"
+/// argv token, then executes the real tendr binary with the remainder —
 /// the frame arrives on real stdin, the session root rides in on HOME.
 /// This exercises the full frame path end-to-end on one machine.
 fn fake_ssh_frame_shim() -> TempDir {
@@ -766,8 +766,8 @@ fn fake_ssh_frame_shim() -> TempDir {
     std::fs::write(
         &fake_ssh,
         "#!/bin/sh\n\
-         while [ $# -gt 0 ]; do a=\"$1\"; shift; [ \"$a\" = tender ] && break; done\n\
-         exec \"$TENDER_TEST_BIN\" \"$@\"\n",
+         while [ $# -gt 0 ]; do a=\"$1\"; shift; [ \"$a\" = tendr ] && break; done\n\
+         exec \"$TENDR_TEST_BIN\" \"$@\"\n",
     )
     .unwrap();
     std::fs::set_permissions(&fake_ssh, PermissionsExt::from_mode(0o755)).unwrap();
@@ -778,26 +778,26 @@ fn shim_path_env(tmp: &TempDir) -> String {
     format!("{}:/usr/bin:/bin", tmp.path().display())
 }
 
-/// `tender --host h exec …` works end-to-end: the envelope comes back on
+/// `tendr --host h exec …` works end-to-end: the envelope comes back on
 /// stdout and the exec ran against the (shim-local) remote session.
 #[test]
 fn host_exec_frame_end_to_end() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
     let tmp = fake_ssh_frame_shim();
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["--host", "box", "exec", "shell", "--", "echo", "remote hi"])
         .env("PATH", shim_path_env(&tmp))
         .env(
-            "TENDER_TEST_BIN",
-            assert_cmd::cargo::cargo_bin("tender").to_str().unwrap(),
+            "TENDR_TEST_BIN",
+            assert_cmd::cargo::cargo_bin("tendr").to_str().unwrap(),
         )
         .output()
         .unwrap();
@@ -811,7 +811,7 @@ fn host_exec_frame_end_to_end() {
     assert_eq!(envelope["exit_code"], 0);
     assert!(envelope["stdout"].as_str().unwrap().contains("remote hi"));
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -822,26 +822,26 @@ fn host_exec_inner_exit_code_propagates() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
     let tmp = fake_ssh_frame_shim();
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["--host", "box", "exec", "shell", "--", "sh", "-c", "exit 7"])
         .env("PATH", shim_path_env(&tmp))
         .env(
-            "TENDER_TEST_BIN",
-            assert_cmd::cargo::cargo_bin("tender").to_str().unwrap(),
+            "TENDR_TEST_BIN",
+            assert_cmd::cargo::cargo_bin("tendr").to_str().unwrap(),
         )
         .output()
         .unwrap();
 
     assert_eq!(output.status.code(), Some(7), "inner exit code survives");
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -852,14 +852,14 @@ fn host_exec_timeout_propagates() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
     let tmp = fake_ssh_frame_shim();
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args([
             "--host",
             "box",
@@ -873,8 +873,8 @@ fn host_exec_timeout_propagates() {
         ])
         .env("PATH", shim_path_env(&tmp))
         .env(
-            "TENDER_TEST_BIN",
-            assert_cmd::cargo::cargo_bin("tender").to_str().unwrap(),
+            "TENDR_TEST_BIN",
+            assert_cmd::cargo::cargo_bin("tendr").to_str().unwrap(),
         )
         .output()
         .unwrap();
@@ -883,7 +883,7 @@ fn host_exec_timeout_propagates() {
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(envelope["timed_out"], true);
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -896,7 +896,7 @@ fn host_exec_torture_payload_matches_local() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
@@ -908,7 +908,7 @@ fn host_exec_torture_payload_matches_local() {
     let torture = r#"it's a "test" $VAR `tick` back\slash ;&|"#;
     let argv = ["printf", "%s\\n", torture];
 
-    let local = harness::tender(&root)
+    let local = harness::tendr(&root)
         .args(["exec", "shell", "--timeout", "30", "--"])
         .args(argv)
         .output()
@@ -916,13 +916,13 @@ fn host_exec_torture_payload_matches_local() {
     assert!(local.status.success());
 
     let tmp = fake_ssh_frame_shim();
-    let remote = harness::tender(&root)
+    let remote = harness::tendr(&root)
         .args(["--host", "box", "exec", "shell", "--timeout", "30", "--"])
         .args(argv)
         .env("PATH", shim_path_env(&tmp))
         .env(
-            "TENDER_TEST_BIN",
-            assert_cmd::cargo::cargo_bin("tender").to_str().unwrap(),
+            "TENDR_TEST_BIN",
+            assert_cmd::cargo::cargo_bin("tendr").to_str().unwrap(),
         )
         .output()
         .unwrap();
@@ -943,7 +943,7 @@ fn host_exec_torture_payload_matches_local() {
         torture
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -958,7 +958,7 @@ fn host_exec_remote_argv_carries_no_payload() {
 
     let tmp = fake_ssh_echo();
     let payload = "SELECT count(*) FROM t;";
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["--host", "box", "exec", "ddb", "--", payload])
         .env("PATH", shim_path_env(&tmp))
         .output()
@@ -968,7 +968,7 @@ fn host_exec_remote_argv_carries_no_payload() {
     let args = parse_remote_argv(&stdout);
     assert_eq!(
         args,
-        vec!["tender", "exec", "--frame-from-stdin"],
+        vec!["tendr", "exec", "--frame-from-stdin"],
         "remote argv is constant — nothing user-controlled"
     );
     assert!(
@@ -984,7 +984,7 @@ fn host_exec_frame_stdin_passes_through() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
@@ -992,12 +992,12 @@ fn host_exec_frame_stdin_passes_through() {
 
     let tmp = fake_ssh_frame_shim();
     let frame = r#"{"v":1,"session":"shell","cmd":["echo","piped frame"]}"#;
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["--host", "box", "exec", "--frame-from-stdin"])
         .env("PATH", shim_path_env(&tmp))
         .env(
-            "TENDER_TEST_BIN",
-            assert_cmd::cargo::cargo_bin("tender").to_str().unwrap(),
+            "TENDR_TEST_BIN",
+            assert_cmd::cargo::cargo_bin("tendr").to_str().unwrap(),
         )
         .write_stdin(frame)
         .output()
@@ -1011,7 +1011,7 @@ fn host_exec_frame_stdin_passes_through() {
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(envelope["stdout"].as_str().unwrap().contains("piped frame"));
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -1024,7 +1024,7 @@ fn start_boundary_is_reconstructed_for_ssh() {
 
     let tmp = fake_ssh_echo();
 
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args([
             "--host",
             "user@box",
@@ -1074,7 +1074,7 @@ fn host_rejects_option_shaped_destination_general() {
     // is never invoked. Guards the general reconstructed-argv path.
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = fake_ssh_echo();
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args(["--host", "-oProxyCommand=marker", "status", "job"])
         .env("PATH", tmp.path())
         .output()
@@ -1093,7 +1093,7 @@ fn host_rejects_option_shaped_destination_framed_exec() {
     // precedes it — so the same guard applies, rejected before any ssh spawn.
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = fake_ssh_echo();
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .args([
             "--host",
             "-oProxyCommand=marker",

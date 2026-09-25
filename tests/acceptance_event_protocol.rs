@@ -5,7 +5,7 @@
 
 mod harness;
 
-use harness::{tender, wait_running, wait_terminal};
+use harness::{tendr, wait_running, wait_terminal};
 use tempfile::TempDir;
 
 fn parse_ndjson(stdout: &[u8]) -> Vec<serde_json::Value> {
@@ -16,20 +16,20 @@ fn parse_ndjson(stdout: &[u8]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// Criterion 1: `kill -9` a supervised run; `tender events` replays
+/// Criterion 1: `kill -9` a supervised run; `tendr events` replays
 /// `run.starting → run.started → run.sidecar_lost` with occurrence-time
 /// timestamps and `provenance:"inferred"` on the last.
 #[cfg(unix)]
 #[test]
 fn kill_nine_replays_full_lifecycle_via_events() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "sleep", "60"])
         .assert()
         .success();
     wait_running(&root, "s1");
 
-    let meta_path = root.path().join(".tender/sessions/default/s1/meta.json");
+    let meta_path = root.path().join(".tendr/sessions/default/s1/meta.json");
     let meta: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
     let sc_pid = meta["sidecar"]["pid"].as_u64().unwrap() as i32;
@@ -42,10 +42,10 @@ fn kill_nine_replays_full_lifecycle_via_events() {
 
     // Reconciliation runs on the next status/wait touch ("after reboot" in
     // the criterion = any later CLI contact).
-    let status_out = tender(&root).args(["status", "s1"]).output().unwrap();
+    let status_out = tendr(&root).args(["status", "s1"]).output().unwrap();
     let status: serde_json::Value = serde_json::from_slice(&status_out.stdout).unwrap();
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["events", "--session", "default/s1"])
         .output()
         .unwrap();
@@ -73,18 +73,18 @@ fn kill_nine_replays_full_lifecycle_via_events() {
 }
 
 /// Criterion 3 (process-level; the 2×1000 writer test lives in
-/// events_log.rs): concurrent `tender emit` processes interleave without
+/// events_log.rs): concurrent `tendr emit` processes interleave without
 /// torn lines and every event survives.
 #[test]
 fn concurrent_emit_processes_no_torn_lines() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "echo", "hi"])
         .assert()
         .success();
     wait_terminal(&root, "s1");
 
-    let bin = assert_cmd::cargo::cargo_bin("tender");
+    let bin = assert_cmd::cargo::cargo_bin("tendr");
     let home = root.path().to_path_buf();
     std::thread::scope(|scope| {
         for t in 0..2 {
@@ -112,7 +112,7 @@ fn concurrent_emit_processes_no_torn_lines() {
     });
 
     // Every line in every segment must parse — a torn line would not.
-    let events_dir = root.path().join(".tender/sessions/default/s1/events");
+    let events_dir = root.path().join(".tendr/sessions/default/s1/events");
     let mut stress = 0;
     for entry in std::fs::read_dir(&events_dir)
         .unwrap()
@@ -139,7 +139,7 @@ fn concurrent_emit_processes_no_torn_lines() {
 #[test]
 fn one_mib_emit_spills_to_deduped_blob() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "echo", "hi"])
         .assert()
         .success();
@@ -150,7 +150,7 @@ fn one_mib_emit_spills_to_deduped_blob() {
     std::fs::write(&data_file, &payload).unwrap();
 
     for _ in 0..2 {
-        tender(&root)
+        tendr(&root)
             .args([
                 "emit",
                 "--kind",
@@ -164,14 +164,14 @@ fn one_mib_emit_spills_to_deduped_blob() {
             .success();
     }
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["events", "--kind", "bulk."])
         .output()
         .unwrap();
     let events = parse_ndjson(&output.stdout);
     assert_eq!(events.len(), 2);
 
-    let session_dir = root.path().join(".tender/sessions/default/s1");
+    let session_dir = root.path().join(".tendr/sessions/default/s1");
     for event in &events {
         assert_eq!(event["truncated"], true);
         let data_ref = &event["data_ref"];
@@ -229,7 +229,7 @@ fn duckdb_reads_events_as_typed_rows() {
     }
 
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "echo", "hi"])
         .assert()
         .success();
@@ -237,7 +237,7 @@ fn duckdb_reads_events_as_typed_rows() {
 
     let glob = root
         .path()
-        .join(".tender/sessions/default/s1/events/*.jsonl");
+        .join(".tendr/sessions/default/s1/events/*.jsonl");
     let query = format!(
         "SELECT kind, seq, run_id, ts FROM read_json('{}') ORDER BY seq",
         glob.display()
@@ -261,21 +261,21 @@ fn duckdb_reads_events_as_typed_rows() {
 
 // --- Slice 3 acceptance (docs/plans/completed/2026-07-08-event-exec-wrap-integration.md) ---
 
-/// An exec payload running `tender emit` lands in the exec block (frame
+/// An exec payload running `tendr emit` lands in the exec block (frame
 /// env propagation), and after the block the session shell is unpolluted —
-/// probed via a raw `tender push` (a follow-up exec exports its own var).
+/// probed via a raw `tendr push` (a follow-up exec exports its own var).
 #[cfg(unix)]
 #[test]
 fn exec_payload_emit_chains_and_env_unsets() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
     wait_running(&root, "shell");
 
-    let bin = assert_cmd::cargo::cargo_bin("tender");
-    tender(&root)
+    let bin = assert_cmd::cargo::cargo_bin("tendr");
+    tendr(&root)
         .args([
             "exec",
             "shell",
@@ -309,14 +309,12 @@ fn exec_payload_emit_chains_and_env_unsets() {
     );
 
     // Probe the shell env after the block via raw push.
-    tender(&root)
+    tendr(&root)
         .args(["push", "shell"])
-        .write_stdin("echo probe_${TENDER_BLOCK_ID:-unset}\n")
+        .write_stdin("echo probe_${TENDR_BLOCK_ID:-unset}\n")
         .assert()
         .success();
-    let log_path = root
-        .path()
-        .join(".tender/sessions/default/shell/output.log");
+    let log_path = root.path().join(".tendr/sessions/default/shell/output.log");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let content = std::fs::read_to_string(&log_path).unwrap_or_default();
@@ -325,7 +323,7 @@ fn exec_payload_emit_chains_and_env_unsets() {
         }
         assert!(
             !content.contains("probe_01"),
-            "TENDER_BLOCK_ID leaked past the block"
+            "TENDR_BLOCK_ID leaked past the block"
         );
         assert!(
             std::time::Instant::now() < deadline,
@@ -334,7 +332,7 @@ fn exec_payload_emit_chains_and_env_unsets() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    let _ = tender(&root).args(["kill", "shell", "--force"]).assert();
+    let _ = tendr(&root).args(["kill", "shell", "--force"]).assert();
 }
 
 /// exec with ≥1 MiB stdout: the full data spills to a content-addressed
@@ -343,13 +341,13 @@ fn exec_payload_emit_chains_and_env_unsets() {
 #[test]
 fn exec_one_mib_stdout_spills_with_structured_preview() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
     wait_running(&root, "shell");
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args([
             "exec",
             "shell",
@@ -384,7 +382,7 @@ fn exec_one_mib_stdout_spills_with_structured_preview() {
     // The blob holds the full result data.
     let blob_path = root
         .path()
-        .join(".tender/sessions/default/shell")
+        .join(".tendr/sessions/default/shell")
         .join(data_ref["path"].as_str().unwrap());
     let full: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&blob_path).unwrap()).unwrap();
@@ -401,7 +399,7 @@ fn exec_one_mib_stdout_spills_with_structured_preview() {
     assert!(preview["stdout_preview"].as_str().unwrap().starts_with('x'));
     assert!(preview.get("stdout").is_none(), "preview renames the field");
 
-    let _ = tender(&root).args(["kill", "shell", "--force"]).assert();
+    let _ = tendr(&root).args(["kill", "shell", "--force"]).assert();
 }
 
 /// The plan's validation scenario: a wrapped hook whose script emits — the
@@ -414,24 +412,24 @@ fn wrap_hook_causal_tree_rebuilds_in_duckdb() {
     }
 
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "agent", "--", "sleep", "60"])
         .assert()
         .success();
     wait_running(&root, "agent");
 
     let meta: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(root.path().join(".tender/sessions/default/agent/meta.json"))
+        &std::fs::read_to_string(root.path().join(".tendr/sessions/default/agent/meta.json"))
             .unwrap(),
     )
     .unwrap();
     let run_id = meta["run_id"].as_str().unwrap();
 
-    let bin = assert_cmd::cargo::cargo_bin("tender");
-    tender(&root)
-        .env("TENDER_RUN_ID", run_id)
-        .env("TENDER_SESSION", "agent")
-        .env("TENDER_NAMESPACE", "default")
+    let bin = assert_cmd::cargo::cargo_bin("tendr");
+    tendr(&root)
+        .env("TENDR_RUN_ID", run_id)
+        .env("TENDR_SESSION", "agent")
+        .env("TENDR_NAMESPACE", "default")
         .args([
             "wrap",
             "--session",
@@ -453,7 +451,7 @@ fn wrap_hook_causal_tree_rebuilds_in_duckdb() {
 
     let glob = root
         .path()
-        .join(".tender/sessions/default/agent/events/*.jsonl");
+        .join(".tendr/sessions/default/agent/events/*.jsonl");
     let query = format!(
         "SELECT parent.kind AS parent_kind, \
                 child.block_id = parent.block_id AS same_block \
@@ -481,5 +479,5 @@ fn wrap_hook_causal_tree_rebuilds_in_duckdb() {
         rows[0]["same_block"]
     );
 
-    let _ = tender(&root).args(["kill", "agent", "--force"]).assert();
+    let _ = tendr(&root).args(["kill", "agent", "--force"]).assert();
 }

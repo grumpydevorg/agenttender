@@ -1,22 +1,22 @@
-# Tender Guide
+# Tendr Guide
 
-How to use Tender day to day — starting sessions, driving shells and REPLs,
+How to use Tendr day to day — starting sessions, driving shells and REPLs,
 observing long-running work, and reaching remote hosts. For the one-page pitch
 see the [project README](../README.md); for how it works inside, see
 [Architecture](architecture/README.md).
 
-> Using Tender *from a coding agent?* The [`using-tender` skill](../.claude/skills/using-tender/SKILL.md)
+> Using Tendr *from a coding agent?* The [`using-tendr` skill](../.claude/skills/using-tendr/SKILL.md)
 > is a thin router that tells the agent the first rules to obey, then points it
-> back to `tender guide` for version-matched detail.
+> back to `tendr guide` for version-matched detail.
 
 ## The model
 
 A **session** is a long-lived child process — a shell, a REPL, a database
-client, a script — that Tender supervises. You start it once; after that every
-`tender exec` is a thin, one-shot client against that still-running process. The
+client, a script — that Tendr supervises. You start it once; after that every
+`tendr exec` is a thin, one-shot client against that still-running process. The
 process keeps its live state (cwd, env, activated venv, imported modules, loaded
 tables, open connections) between calls; the transcript of what each call
-returned is yours to keep, but the *process* is what Tender keeps alive.
+returned is yours to keep, but the *process* is what Tendr keeps alive.
 
 Each session has a stable **name** and lives under a **namespace** (default:
 `default`). Its durable truth is on disk — `meta.json` (state) and `output.log`
@@ -26,18 +26,34 @@ just talks to it.
 
 ## Install and build
 
-The crate is `agenttender`; the installed binary is `tender`:
+The crate and the installed binary are both `tendr`:
 
 ```bash
-cargo install agenttender
-tender --help
+cargo install tendr
+tendr --help
 ```
 
-For unpublished local builds, build the `tender` binary from the repository:
+Releases up to 0.2.1 shipped as the crate `agenttender` with a `tender` binary,
+state under `~/.tender`, and `TENDER_*` environment variables. `tendr` does not
+read the old state root. To keep existing session history, cut over once: stop
+every session the old binary supervises (or let them finish), then move the
+state root:
 
 ```bash
-cargo build --release --bin tender
-install -m 0755 target/release/tender ~/.local/bin/
+tender list                # every session the old binary knows about
+tender status <session>    # each must be terminal; `tender kill <session>` if not
+mv ~/.tender ~/.tendr
+```
+
+Do not move the directory while old sidecars are alive: they hold absolute
+paths into `~/.tender`. Scripts that read `TENDER_*` variables or carry
+`#tender:` directives need the `TENDR_*` and `#tendr:` spellings.
+
+For unpublished local builds, build the `tendr` binary from the repository:
+
+```bash
+cargo build --release --bin tendr
+install -m 0755 target/release/tendr ~/.local/bin/
 ```
 
 For Linux hosts from macOS, `cargo-zigbuild` is the simplest static-musl path:
@@ -45,18 +61,18 @@ For Linux hosts from macOS, `cargo-zigbuild` is the simplest static-musl path:
 ```bash
 brew install zig
 cargo install cargo-zigbuild
-cargo zigbuild --release --target aarch64-unknown-linux-musl --bin tender
+cargo zigbuild --release --target aarch64-unknown-linux-musl --bin tendr
 ```
 
 Musl builds avoid libc-version drift across remote hosts. Windows builds should
 prefer the MSVC target on Windows itself; cross-compiling GNU Windows targets from
 macOS/Linux may need an external binutils toolchain. For long remote builds, run
-the build under Tender too, then follow with `tender log -f` and `tender wait`.
+the build under Tendr too, then follow with `tendr log -f` and `tendr wait`.
 
 ## Start a session
 
 ```bash
-tender start --stdin dev -- bash          # a durable, supervised shell
+tendr start --stdin dev -- bash          # a durable, supervised shell
 ```
 
 - `--stdin` opens the pipe lane so `exec` can frame commands into the session. You almost always want it for interactive shells and REPLs.
@@ -70,25 +86,25 @@ The child's kind (the **exec target**) is auto-inferred from the command —
 `powershell`/`pwsh` → PowerShell. Force it when inference is unclear:
 
 ```bash
-tender start --stdin py --exec-target python-repl -- ipython --no-banner --no-confirm-exit
+tendr start --stdin py --exec-target python-repl -- ipython --no-banner --no-confirm-exit
 ```
 
 ## Drive it with `exec`
 
 ```bash
-tender exec dev -- cd repo
-tender exec dev -- . .venv/bin/activate
-tender exec dev -- pytest -x              # cwd + venv still active
+tendr exec dev -- cd repo
+tendr exec dev -- . .venv/bin/activate
+tendr exec dev -- pytest -x              # cwd + venv still active
 ```
 
 Two rules that matter:
 
-**`exec` takes argv, not a shell snippet.** `tender exec sh -- "cd /tmp && pwd"`
+**`exec` takes argv, not a shell snippet.** `tendr exec sh -- "cd /tmp && pwd"`
 sends one argv element, not two shell statements. For multi-step shell work, use
 separate `exec` calls or wrap explicitly:
 
 ```bash
-tender exec sh -- bash -c 'cd /tmp && pwd'
+tendr exec sh -- bash -c 'cd /tmp && pwd'
 ```
 
 **Gate success on the exit code, not on grepping stdout.** `exec` returns a JSON
@@ -99,7 +115,7 @@ envelope and the inner exit code propagates to `$?`:
 ```
 
 ```bash
-tender exec ddb -- "$SQL" | jq -e '.exit_code == 0' >/dev/null || { echo FAIL; exit 1; }
+tendr exec ddb -- "$SQL" | jq -e '.exit_code == 0' >/dev/null || { echo FAIL; exit 1; }
 ```
 
 Only one `exec` can be in flight per session — a second concurrent `exec` against
@@ -108,7 +124,7 @@ session (`ddb2`, `py2`) for parallel inspection.
 
 Large exec results are quiet. The JSON result still contains the command's
 stdout/stderr and exit code, but the annotation line in `output.log` may degrade
-when it would be too large. In that case Tender writes a compact
+when it would be too large. In that case Tendr writes a compact
 `exec_truncated` breadcrumb with `stdout_len`, `stderr_len`, `stdout_sha256`, and
 `stderr_sha256` instead of raw payload. Find them with:
 
@@ -127,9 +143,9 @@ survives across every `exec`.
 Structured JSON rows, ready to parse:
 
 ```bash
-tender start --stdin ddb -- duckdb :memory:
-tender exec  ddb -- "CREATE TABLE t AS SELECT range AS id, range * 2 AS val FROM range(5);"
-tender exec  ddb -- "SELECT count(*), sum(val) FROM t;"     # → [{"count_star()":5,"sum(val)":"20"}]
+tendr start --stdin ddb -- duckdb :memory:
+tendr exec  ddb -- "CREATE TABLE t AS SELECT range AS id, range * 2 AS val FROM range(5);"
+tendr exec  ddb -- "SELECT count(*), sum(val) FROM t;"     # → [{"count_star()":5,"sum(val)":"20"}]
 ```
 
 ### Python / IPython
@@ -137,9 +153,9 @@ tender exec  ddb -- "SELECT count(*), sum(val) FROM t;"     # → [{"count_star(
 The namespace persists:
 
 ```bash
-tender start --stdin py -- python3 -i                       # or: ipython --no-banner
-tender exec  py -- 'import pandas as pd; df = pd.read_csv("data.csv")'
-tender exec  py -- 'print(df.describe())'                   # df still loaded
+tendr start --stdin py -- python3 -i                       # or: ipython --no-banner
+tendr exec  py -- 'import pandas as pd; df = pd.read_csv("data.csv")'
+tendr exec  py -- 'print(df.describe())'                   # df still loaded
 ```
 
 ### PowerShell
@@ -156,16 +172,16 @@ knowing:
 
 ## Answer prompts and attach
 
-- **`tender push <name>`** feeds stdin to a session waiting on an interactive
-  prompt: `printf 'y\n' | tender push dev`.
-- **`tender attach <name>`** connects your terminal to the live session for
+- **`tendr push <name>`** feeds stdin to a session waiting on an interactive
+  prompt: `printf 'y\n' | tendr push dev`.
+- **`tendr attach <name>`** connects your terminal to the live session for
   hands-on interaction. Press **`Ctrl-\` then `d`** to detach; the session keeps
   running. `Ctrl-\` twice sends one `Ctrl-\`, and `Ctrl-\` followed by any other
   key sends both. `--escape none` turns the escape off so every key reaches the
   session. Window resizes follow you, and your terminal settings are restored
   however the attach ends. It is refused while another client holds the
   terminal.
-- **`tender attach <name> --takeover`** takes the terminal anyway: the previous
+- **`tendr attach <name> --takeover`** takes the terminal anyway: the previous
   client is disconnected and any input it (or an in-flight `push`) had queued is
   dropped, never written. Use it to reconnect after a dropped SSH session.
 - On a PTY session, `push` holds the terminal for its duration and succeeds only
@@ -174,7 +190,7 @@ knowing:
   a second concurrent push is refused rather than interleaved.
 - A PTY session starts at 24×80 and records its exact output and every applied
   window size under `recording/<run_id>/` in the session directory (typed input
-  is not recorded). `tender status` shows the recording under `pty.recording`.
+  is not recorded). `tendr status` shows the recording under `pty.recording`.
   If recording has to stop (size limit, disk failure, or storage falling behind),
   the session keeps running: status shows `Stopped` with the last recorded
   sequence, a `recording.stopped` event is logged, and the run ends with a
@@ -182,15 +198,15 @@ knowing:
 
 ## Observe long-running work
 
-No `ssh` + `tail` + `sleep` loops — Tender owns the read side:
+No `ssh` + `tail` + `sleep` loops — Tendr owns the read side:
 
 ```bash
-tender status dev                 # current state
-tender log    dev --tail 50       # last N lines (on disk, survives crashes)
-tender log    dev -f              # follow
-tender log    dev -s 5m           # since a time window
-tender wait   dev --timeout 600   # block until it exits (propagates its code)
-tender watch --namespace nightly --events --logs   # follow a whole namespace
+tendr status dev                 # current state
+tendr log    dev --tail 50       # last N lines (on disk, survives crashes)
+tendr log    dev -f              # follow
+tendr log    dev -s 5m           # since a time window
+tendr wait   dev --timeout 600   # block until it exits (propagates its code)
+tendr watch --namespace nightly --events --logs   # follow a whole namespace
 ```
 
 `watch` takes a namespace, not a session name — it follows every visible session
@@ -199,9 +215,9 @@ tender watch --namespace nightly --events --logs   # follow a whole namespace
 ## Lifecycle, batches, and hooks
 
 ```bash
-tender kill  dev                  # stop a session
-tender prune                      # remove terminated sessions (local-only)
-tender run --detach ./job.sh      # one-shot convenience over `start` for scripts
+tendr kill  dev                  # stop a session
+tendr prune                      # remove terminated sessions (local-only)
+tendr run --detach ./job.sh      # one-shot convenience over `start` for scripts
 ```
 
 Useful `start` / `run` flags for batch work:
@@ -214,13 +230,13 @@ Useful `start` / `run` flags for batch work:
 
 ## Reach remote hosts with `--host`
 
-Put `--host` on the Tender command itself and the *same* commands run over SSH:
+Put `--host` on the Tendr command itself and the *same* commands run over SSH:
 
 ```bash
-tender --host data-box start --stdin ddb -- duckdb /data/warehouse.duckdb
-tender --host data-box exec  ddb -- "SELECT count(*) FROM read_parquet('s3://bucket/*.parquet');"
-tender --host data-box log   ddb -f
-tender --host data-box wait  extract_all --timeout 3600
+tendr --host data-box start --stdin ddb -- duckdb /data/warehouse.duckdb
+tendr --host data-box exec  ddb -- "SELECT count(*) FROM read_parquet('s3://bucket/*.parquet');"
+tendr --host data-box log   ddb -f
+tendr --host data-box wait  extract_all --timeout 3600
 ```
 
 `--host` carries `start`, `status`, `list`, `log`, `push`, `kill`, `wait`,
@@ -245,9 +261,9 @@ nested-quoting layer to escape.
 Naming `--host` on them exits `2` with a ready-to-paste fallback:
 
 ```text
-$ tender --host data-box run deploy.sh
+$ tendr --host data-box run deploy.sh
 error: 'run' is local-only and does not support --host
-try:  ssh data-box 'tender run deploy.sh'
+try:  ssh data-box 'tendr run deploy.sh'
 ```
 
 This is the workflow behind "leave long-running work on a remote box and come
@@ -255,15 +271,15 @@ back to it": start it under `--host`, disconnect, and reconnect later to `log`,
 `status`, `wait`, or `exec` against the same live session.
 
 On Windows hosts, the default ssh shell only matters when you write your own
-`ssh host 'tender ...'` wrapper. `tender --host ... exec ...` uses a constant
-remote argv (`tender exec --frame-from-stdin`) and sends the payload over stdin,
+`ssh host 'tendr ...'` wrapper. `tendr --host ... exec ...` uses a constant
+remote argv (`tendr exec --frame-from-stdin`) and sends the payload over stdin,
 so the payload does not care whether the remote default shell is `cmd.exe` or
 PowerShell. If you manually ssh-wrap local-only commands, quote for that remote
 shell explicitly; for PowerShell-default hosts, `powershell -NoProfile -Command`
 is often clearer than relying on implicit quoting.
 
 This path was validated end to end on 2026-07-10 against a Parallels ARM Windows
-VM over SSH, using the released Tender 0.2.0 x64 binary under Windows emulation.
+VM over SSH, using the released Tendr 0.2.0 x64 binary under Windows emulation.
 Remote `exec` preserved PowerShell session state across frames, returned clean
 structured JSON, and composed correctly with remote `start` and `kill`.
 
@@ -275,7 +291,7 @@ quoting:
 
 ```bash
 jq -cn --rawfile sql query.sql '{v:1, session:"ddb", cmd:[$sql], timeout:300}' \
-  | tender exec --frame-from-stdin
+  | tendr exec --frame-from-stdin
 ```
 
 ## Cap a session's memory
@@ -301,7 +317,7 @@ logout) and define a capped slice:
 ```bash
 loginctl enable-linger
 mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/tender.slice <<'EOF'
+cat > ~/.config/systemd/user/tendr.slice <<'EOF'
 [Slice]
 MemoryHigh=2G      # soft — reclaim/throttle before the wall
 MemoryMax=3G       # hard — OOM-kill inside the slice past this
@@ -310,16 +326,16 @@ EOF
 systemctl --user daemon-reload
 ```
 
-Launch Tender inside the slice; the detached sidecar and its child inherit the
+Launch Tendr inside the slice; the detached sidecar and its child inherit the
 cgroup:
 
 ```bash
-systemd-run --user --slice=tender.slice --scope --quiet \
-  tender run --detach --replace ./job.sh
+systemd-run --user --slice=tendr.slice --scope --quiet \
+  tendr run --detach --replace ./job.sh
 ```
 
 The child's *own* scope reports `memory.max = max` — that's expected. cgroup v2
-enforces the tightest limit among **all** ancestors, so `tender.slice` bounds the
+enforces the tightest limit among **all** ancestors, so `tendr.slice` bounds the
 aggregate of every session in it; a single runaway is OOM-killed within the slice
 and the host is untouched. Three things to know: the cap is on the *slice*, so
 concurrent sessions share its budget (size for the sum); system-level
@@ -354,11 +370,11 @@ Desktop.
 
 Optionally tag a session with the environment it runs in (host, container, VM,
 pod) so `status` and analytics can tell a local session from one inside a
-container on a remote box. Tender *describes* boundaries; it never manages them.
+container on a remote box. Tendr *describes* boundaries; it never manages them.
 
 ```bash
-tender start job --boundary host:data-box -- make test
-tender start dev --boundary container:my-image:latest --boundary-parent host:data-box -- bash
+tendr start job --boundary host:data-box -- make test
+tendr start dev --boundary container:my-image:latest --boundary-parent host:data-box -- bash
 ```
 
 The boundary is authoritative in `meta.json` and is stamped, immutably, into the
@@ -368,42 +384,42 @@ run's lifecycle events for historical analytics. See
 ## Query the event log
 
 Every supervised run emits a structured JSONL event stream. Point DuckDB at it
-with `tender query` to answer questions across sessions — failure rates, longest
+with `tendr query` to answer questions across sessions — failure rates, longest
 blocks, causal chains. See the [analytics recipes](analytics-recipes.md).
 
-## Tender and Boo
+## Tendr and Boo
 
-Tender owns the **process**; [Boo](https://github.com/coder/boo) owns the
-**screen**. They compose as a stack — supervise a Boo session with Tender for a
-durable, accountable process while Boo drives and reads the live TUI. Tender does
+Tendr owns the **process**; [Boo](https://github.com/coder/boo) owns the
+**screen**. They compose as a stack — supervise a Boo session with Tendr for a
+durable, accountable process while Boo drives and reads the live TUI. Tendr does
 rendered-screen reads for nobody and deliberately never will.
 
-## Tender inside herdr
+## Tendr inside herdr
 
 [herdr](https://herdr.dev) owns the **agent pane**: it hosts interactive
 agents and shows whether each is working, blocked or idle, from the agent's own
-lifecycle hooks. Tender owns the **processes those agents start**. The agent
+lifecycle hooks. Tendr owns the **processes those agents start**. The agent
 runs in a herdr pane; its builds, REPLs and remote jobs run under
-`tender start`/`exec`, where it gets exit codes rather than a screen to scrape.
+`tendr start`/`exec`, where it gets exit codes rather than a screen to scrape.
 
-Measured together on macOS on 2026-09-25 (herdr 0.9.1, tender 0.2.1, oh-my-pi
-18.3.0):
+Measured together on macOS on 2026-09-25 (herdr 0.9.1, oh-my-pi 18.3.0, and
+`tender` 0.2.1, before the rename to `tendr`):
 
-- **Tender outlives the pane and the server.** A session started from a pane
+- **Tendr outlives the pane and the server.** A session started from a pane
   kept running after `herdr pane close`, finished `ExitedOk` with its output
   logged, and a `--stdin` shell kept its cwd and exported variables across the
   pane closing *and* `herdr session stop`. The sidecar `setsid`s, so it is
   reparented to launchd rather than dying with the pane.
-- **Agent state stays right.** An omp agent in a pane ran `tender start` and
-  an 8-second `tender exec` through its bash tool; herdr showed the pane
+- **Agent state stays right.** An omp agent in a pane ran `tendr start` and
+  an 8-second `tendr exec` through its bash tool; herdr showed the pane
   `working` for the turn and `idle` after, the agent reported the exec's exit
   code, and the session was still `Running` for the next turn.
-- **Sessions inherit the pane's identity.** Anything Tender starts from a pane
+- **Sessions inherit the pane's identity.** Anything Tendr starts from a pane
   carries `HERDR_ENV`, `HERDR_PANE_ID`, `HERDR_SOCKET_PATH`, `HERDR_SESSION`,
   `HERDR_BIN_PATH`, `HERDR_TAB_ID` and `HERDR_WORKSPACE_ID`. That is what lets an
   `--on-exit` hook reach the right herdr session, and it is harmless: herdr
   applied lifecycle reports only from the pane's own agent session. An omp
-  started under `tender start --pty` from a pane's shell, and a hand-sent
+  started under `tendr start --pty` from a pane's shell, and a hand-sent
   `pane.report_agent`, were both acknowledged and ignored. omp also marks its
   shells `OMPCODE=1`, which its herdr extension treats as nested and silences.
 
@@ -413,28 +429,28 @@ argv, not through a shell, so put the expansion in a small script, say
 
 ```sh
 #!/bin/sh
-exec "$HERDR_BIN_PATH" notification show "tender: $TENDER_SESSION $TENDER_EXIT_REASON" --sound done
+exec "$HERDR_BIN_PATH" notification show "tendr: $TENDR_SESSION $TENDR_EXIT_REASON" --sound done
 ```
 
 ```bash
-tender start --on-exit ~/bin/notify-herdr build -- make   # from inside a herdr pane
+tendr start --on-exit ~/bin/notify-herdr build -- make   # from inside a herdr pane
 ```
 
 The notification arrived whether or not the pane that started the job still
 existed. Outside herdr `HERDR_BIN_PATH` is unset and the hook fails, which the
 run's `callback.finished` event records.
 
-Watch every job from one pane with `tender watch --namespace <ns> --events`,
-and `tender attach <name>` to take one over by hand.
+Watch every job from one pane with `tendr watch --namespace <ns> --events`,
+and `tendr attach <name>` to take one over by hand.
 
 Limits:
 
-- Read results from Tender, not from `herdr pane read`: a pane is a screen,
+- Read results from Tendr, not from `herdr pane read`: a pane is a screen,
   with no exit code.
-- Run agents in herdr panes, not under Tender: `tender start --pty -- omp`
+- Run agents in herdr panes, not under Tendr: `tendr start --pty -- omp`
   works, but herdr cannot see that agent's state.
 
 ## See also
 
 - [Architecture](architecture/README.md) · [Design principles](design-principles.md) · [Roadmap](ROADMAP.md)
-- [`using-tender` skill](../.claude/skills/using-tender/SKILL.md) — the thin agent-facing router to `tender guide`
+- [`using-tendr` skill](../.claude/skills/using-tendr/SKILL.md) — the thin agent-facing router to `tendr guide`

@@ -78,7 +78,7 @@ pub trait Platform {
     /// Spawn the sidecar as a detached process.
     /// Returns the sidecar PID (for meta.json).
     fn spawn_sidecar(
-        tender_bin: &Path,
+        tendr_bin: &Path,
         session_dir: &Path,
         ready_writer: &Self::ReadyWriter,
     ) -> io::Result<u32>;
@@ -218,8 +218,8 @@ pub trait Platform {
     // --- Ready fd inheritance (sidecar side) ---
 
     /// Construct a ReadyWriter from the OS-specific sidecar entry point.
-    /// Unix: converts TENDER_READY_FD (RawFd from env var) to File.
-    /// Windows: converts TENDER_READY_HANDLE to a HANDLE-based writer.
+    /// Unix: converts TENDR_READY_FD (RawFd from env var) to File.
+    /// Windows: converts TENDR_READY_HANDLE to a HANDLE-based writer.
     fn ready_writer_from_env() -> io::Result<Self::ReadyWriter>;
 
     /// Prevent the ready channel from leaking to the child process.

@@ -1,8 +1,8 @@
 use std::num::{NonZeroI32, NonZeroU32};
-use tender::model::ids::{EpochTimestamp, Generation, ProcessIdentity, RunId, SessionName};
-use tender::model::meta::Meta;
-use tender::model::spec::LaunchSpec;
-use tender::model::state::{ExitReason, RunStatus, SidecarStep};
+use tendr::model::ids::{EpochTimestamp, Generation, ProcessIdentity, RunId, SessionName};
+use tendr::model::meta::Meta;
+use tendr::model::spec::LaunchSpec;
+use tendr::model::state::{ExitReason, RunStatus, SidecarStep};
 
 fn test_sidecar() -> ProcessIdentity {
     ProcessIdentity {
@@ -365,7 +365,7 @@ fn starting_to_dependency_failed() {
     assert!(!meta.status().is_terminal());
     meta.transition_dependency_failed(
         EpochTimestamp::now(),
-        tender::model::dep_fail::DepFailReason::Failed,
+        tendr::model::dep_fail::DepFailReason::Failed,
     )
     .unwrap();
     assert!(meta.status().is_terminal());
@@ -378,7 +378,7 @@ fn running_to_dependency_failed_is_illegal() {
     meta.transition_running(test_child()).unwrap();
     let result = meta.transition_dependency_failed(
         EpochTimestamp::now(),
-        tender::model::dep_fail::DepFailReason::Failed,
+        tendr::model::dep_fail::DepFailReason::Failed,
     );
     assert!(result.is_err());
 }

@@ -25,7 +25,7 @@ Promote the `exec` frame transport's principle from one operation to the whole
 remote surface: every `--host` command travels as a typed request over SSH
 stdin, so **no user- or host-derived value is ever reconstructed into a remote
 shell argv.** This closes a real command-injection vector on Windows and makes
-the transport OS-neutral — without turning Tender into a daemon or RPC framework.
+the transport OS-neutral — without turning Tendr into a daemon or RPC framework.
 
 ## Why — the security motivation
 
@@ -40,7 +40,7 @@ The gap is exploitable, not cosmetic:
   quotes as quoting.
 - `SessionName` / `Namespace` reject only slash, dot, whitespace, and a leading
   underscore — so `x&calc`, `x|whoami`, `x$(id)`, `x;ls` **all validate** (verified).
-- Therefore `tender --host winbox status 'x&calc'` → `ssh -T winbox tender status
+- Therefore `tendr --host winbox status 'x&calc'` → `ssh -T winbox tendr status
   'x&calc'` → cmd.exe splits on `&` → **`calc` executes**.
 
 `exec` is immune because its remote argv is constant by construction
@@ -53,7 +53,7 @@ Surfaced by the pre-implementation review: the `--host` **destination** is place
 as a **bare argument** to the local `ssh` binary — no `--` guard, no leading-dash
 rejection — in *both* `build_ssh_command` (`ssh.rs:60`) **and the already-shipped
 constant-argv frame path** `build_ssh_exec_frame_command` (`ssh.rs:100-109`). So
-`tender --host '-oProxyCommand=<cmd>'` is parsed by the *local* ssh as an option
+`tendr --host '-oProxyCommand=<cmd>'` is parsed by the *local* ssh as an option
 → **arbitrary local command execution**, before any remote hop. This does **not**
 reach the remote shell, so the frame redesign does **not** fix it, and it affected
 shipped `0.2.0`. It was hardened independently — **✅ resolved in v0.2.1**
@@ -90,7 +90,7 @@ are stable protocol/domain DTOs.
 ### 2. Wire format — one hidden, constant entry point
 
 ```
-ssh -T host tender _remote --frame-from-stdin
+ssh -T host tendr _remote --frame-from-stdin
 ```
 
 Nothing host- or user-derived appears after the SSH destination. The stream is:
@@ -138,7 +138,7 @@ cmd.exe / PowerShell / bash / any configured OpenSSH shell — the remote shell
 only ever sees the one constant safe command).
 
 Still OS-specific (by design): **workload syntax** (a Windows target needs
-Windows argv/paths; Linux needs Linux — Tender transports values exactly, it does
+Windows argv/paths; Linux needs Linux — Tendr transports values exactly, it does
 NOT translate bash↔PowerShell) and **process supervision** (Unix/Windows
 backends). **`ExecTarget` stays session-local + authoritative in `meta.json`** —
 for `exec`, the request says "run these fragments against this session" and the
@@ -149,11 +149,11 @@ adapter), which is exactly why `StartRequest` must carry `exec_target` (step 1).
 
 ### 5. Not the sidecar control protocol
 
-The frame terminates in the **remote Tender CLI**, which then uses today's local
+The frame terminates in the **remote Tendr CLI**, which then uses today's local
 files / named pipes / sockets / sidecar:
 
 ```
-local tender → SSH → remote tender CLI → existing local IPC → sidecar
+local tendr → SSH → remote tendr CLI → existing local IPC → sidecar
 ```
 
 Preserves durable `meta.json` + logs, one lifecycle authority, **no listening
@@ -263,7 +263,7 @@ tests above.
 - `push` preserves arbitrary binary bytes without truncation.
 - `log` / `watch` remain genuinely streaming.
 - stdout / stderr / JSON / NDJSON / exit codes are byte-compatible with local.
-- Old remote Tender → actionable "remote upgrade required" error.
+- Old remote Tendr → actionable "remote upgrade required" error.
 - Native tests under Windows OpenSSH default cmd.exe **and** configured PowerShell.
 
 ## Name tightening (defense-in-depth, sequenced)

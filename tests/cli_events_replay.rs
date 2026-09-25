@@ -1,12 +1,12 @@
-//! `tender events` — replay-only read surface (spec §5.1, slice 1 scope).
+//! `tendr events` — replay-only read surface (spec §5.1, slice 1 scope).
 
 mod harness;
 
-use harness::{tender, wait_terminal};
+use harness::{tendr, wait_terminal};
 use tempfile::TempDir;
 
 fn finished_session(root: &TempDir, name: &str) {
-    tender(root)
+    tendr(root)
         .args(["start", name, "--", "echo", "hi"])
         .assert()
         .success();
@@ -26,7 +26,7 @@ fn events_replays_session_lifecycle_as_ndjson() {
     let root = TempDir::new().unwrap();
     finished_session(&root, "s1");
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["events", "--session", "default/s1"])
         .output()
         .unwrap();
@@ -47,7 +47,7 @@ fn events_merges_all_sessions_by_timestamp() {
     finished_session(&root, "a");
     finished_session(&root, "b");
 
-    let output = tender(&root).args(["events"]).output().unwrap();
+    let output = tendr(&root).args(["events"]).output().unwrap();
     assert!(output.status.success());
 
     let events = parse_ndjson(&output.stdout);
@@ -77,13 +77,13 @@ fn events_merges_all_sessions_by_timestamp() {
 fn events_kind_prefix_filter() {
     let root = TempDir::new().unwrap();
     finished_session(&root, "s1");
-    tender(&root)
+    tendr(&root)
         .args(["emit", "--kind", "hook.post_tool_use", "--session", "s1"])
         .assert()
         .success();
 
     // Prefix filter: the plan's canonical validation is --kind hook.
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["events", "--kind", "hook."])
         .output()
         .unwrap();
@@ -93,7 +93,7 @@ fn events_kind_prefix_filter() {
     assert_eq!(events[0]["source"], "user.emit");
 
     // Exact kind is a prefix of itself.
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["events", "--kind", "run.exited"])
         .output()
         .unwrap();
@@ -106,7 +106,7 @@ fn events_kind_prefix_filter() {
 fn events_source_prefix_filter() {
     let root = TempDir::new().unwrap();
     finished_session(&root, "s1");
-    tender(&root)
+    tendr(&root)
         .args([
             "emit",
             "--kind",
@@ -119,7 +119,7 @@ fn events_source_prefix_filter() {
         .assert()
         .success();
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["events", "--source", "claude."])
         .output()
         .unwrap();
@@ -132,12 +132,12 @@ fn events_source_prefix_filter() {
 fn events_namespace_filter() {
     let root = TempDir::new().unwrap();
     finished_session(&root, "s1");
-    tender(&root)
+    tendr(&root)
         .args(["start", "s2", "--namespace", "other", "--", "echo", "hi"])
         .assert()
         .success();
     // wait_terminal helper assumes default ns; poll the other-ns meta directly.
-    let meta_path = root.path().join(".tender/sessions/other/s2/meta.json");
+    let meta_path = root.path().join(".tendr/sessions/other/s2/meta.json");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         if let Ok(content) = std::fs::read_to_string(&meta_path) {
@@ -151,7 +151,7 @@ fn events_namespace_filter() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["events", "--namespace", "other"])
         .output()
         .unwrap();
@@ -167,7 +167,7 @@ fn events_session_filter_is_repeatable() {
     finished_session(&root, "b");
     finished_session(&root, "c");
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["events", "--session", "a", "--session", "default/b"])
         .output()
         .unwrap();
@@ -185,7 +185,7 @@ fn events_strict_exits_65_on_parse_skips() {
     finished_session(&root, "s1");
 
     // Corrupt the log with a torn line.
-    let events_dir = root.path().join(".tender/sessions/default/s1/events");
+    let events_dir = root.path().join(".tendr/sessions/default/s1/events");
     let seg = std::fs::read_dir(&events_dir)
         .unwrap()
         .filter_map(Result::ok)
@@ -197,7 +197,7 @@ fn events_strict_exits_65_on_parse_skips() {
     std::fs::write(&seg, content).unwrap();
 
     // Default: parse-skips tolerated, valid events still replay.
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["events", "--session", "s1"])
         .output()
         .unwrap();
@@ -205,7 +205,7 @@ fn events_strict_exits_65_on_parse_skips() {
     assert_eq!(parse_ndjson(&output.stdout).len(), 3);
 
     // --strict: parse-skips ⇒ exit 65.
-    tender(&root)
+    tendr(&root)
         .args(["events", "--session", "s1", "--strict"])
         .assert()
         .code(65);
@@ -214,7 +214,7 @@ fn events_strict_exits_65_on_parse_skips() {
 #[test]
 fn events_empty_log_succeeds_with_no_output() {
     let root = TempDir::new().unwrap();
-    let output = tender(&root).args(["events"]).output().unwrap();
+    let output = tendr(&root).args(["events"]).output().unwrap();
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
 }

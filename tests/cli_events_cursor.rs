@@ -1,4 +1,4 @@
-//! `tender events --cursors` / `--from-cursor` — Kubernetes semantics on
+//! `tendr events --cursors` / `--from-cursor` — Kubernetes semantics on
 //! files (spec §5.2, slice 2 plan scope items 3–4, 6).
 
 mod harness;
@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use base64::Engine as _;
-use harness::{tender, wait_running, wait_terminal};
+use harness::{tendr, wait_running, wait_terminal};
 use tempfile::TempDir;
 
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -23,7 +23,7 @@ fn parse_ndjson(stdout: &[u8]) -> Vec<serde_json::Value> {
 
 fn events_dir(root: &TempDir, session: &str) -> std::path::PathBuf {
     root.path()
-        .join(format!(".tender/sessions/default/{session}/events"))
+        .join(format!(".tendr/sessions/default/{session}/events"))
 }
 
 fn segments(root: &TempDir, session: &str) -> Vec<std::path::PathBuf> {
@@ -76,16 +76,13 @@ fn ids(records: &[serde_json::Value]) -> Vec<String> {
 fn batch_mode_emits_final_bookmark_and_resume_is_empty_then_exact() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "echo", "hi"])
         .assert()
         .success();
     wait_terminal(&root, "s1");
 
-    let output = tender(&root)
-        .args(["events", "--cursors"])
-        .output()
-        .unwrap();
+    let output = tendr(&root).args(["events", "--cursors"]).output().unwrap();
     assert!(output.status.success());
     let records = parse_ndjson(&output.stdout);
 
@@ -106,7 +103,7 @@ fn batch_mode_emits_final_bookmark_and_resume_is_empty_then_exact() {
 
     // Resuming from the final bookmark: nothing left.
     let token = bookmark["cursor"].as_str().unwrap().to_owned();
-    let resumed = tender(&root)
+    let resumed = tendr(&root)
         .args(["events", "--from-cursor", &token])
         .output()
         .unwrap();
@@ -117,15 +114,15 @@ fn batch_mode_emits_final_bookmark_and_resume_is_empty_then_exact() {
     );
 
     // New events after the bookmark: resume yields exactly those.
-    tender(&root)
+    tendr(&root)
         .args(["emit", "--kind", "test.post1", "--session", "s1"])
         .assert()
         .success();
-    tender(&root)
+    tendr(&root)
         .args(["emit", "--kind", "test.post2", "--session", "s1"])
         .assert()
         .success();
-    let resumed = tender(&root)
+    let resumed = tendr(&root)
         .args(["events", "--from-cursor", &token])
         .output()
         .unwrap();
@@ -141,14 +138,14 @@ fn batch_mode_emits_final_bookmark_and_resume_is_empty_then_exact() {
 fn mid_stream_bookmark_resumes_remainder_exactly_across_segments() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "echo", "hi"])
         .assert()
         .success();
     wait_terminal(&root, "s1");
     // 3 lifecycle + 104 emits = 107 stored records.
     for i in 0..104 {
-        tender(&root)
+        tendr(&root)
             .args([
                 "emit",
                 "--kind",
@@ -163,10 +160,7 @@ fn mid_stream_bookmark_resumes_remainder_exactly_across_segments() {
     // cursor spans both files.
     split_segment(&root, "s1", 53);
 
-    let output = tender(&root)
-        .args(["events", "--cursors"])
-        .output()
-        .unwrap();
+    let output = tendr(&root).args(["events", "--cursors"]).output().unwrap();
     assert!(output.status.success());
     let records = parse_ndjson(&output.stdout);
 
@@ -204,7 +198,7 @@ fn mid_stream_bookmark_resumes_remainder_exactly_across_segments() {
     // nothing twice, nothing dropped.
     let expected = ids(&records[bookmark_positions[0] + 1..]);
     assert_eq!(expected.len(), 7);
-    let resumed = tender(&root)
+    let resumed = tendr(&root)
         .args(["events", "--from-cursor", &token])
         .output()
         .unwrap();
@@ -217,13 +211,13 @@ fn mid_stream_bookmark_resumes_remainder_exactly_across_segments() {
 fn follow_cursors_bookmarks_within_5s_of_idle() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "idle", "--", "sleep", "8"])
         .assert()
         .success();
     wait_running(&root, "idle");
 
-    let bin = assert_cmd::cargo::cargo_bin("tender");
+    let bin = assert_cmd::cargo::cargo_bin("tendr");
     let mut child = Command::new(bin)
         .args(["events", "--follow", "--from-now", "--cursors"])
         .env("HOME", root.path())
@@ -280,16 +274,13 @@ fn follow_cursors_bookmarks_within_5s_of_idle() {
 fn cursor_gone_exits_44_with_structured_stderr() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "echo", "hi"])
         .assert()
         .success();
     wait_terminal(&root, "s1");
 
-    let output = tender(&root)
-        .args(["events", "--cursors"])
-        .output()
-        .unwrap();
+    let output = tendr(&root).args(["events", "--cursors"]).output().unwrap();
     let records = parse_ndjson(&output.stdout);
     let token = records.last().unwrap()["cursor"]
         .as_str()
@@ -300,7 +291,7 @@ fn cursor_gone_exits_44_with_structured_stderr() {
     let segs = segments(&root, "s1");
     std::fs::remove_file(&segs[0]).unwrap();
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["events", "--from-cursor", &token])
         .output()
         .unwrap();
@@ -334,7 +325,7 @@ fn unparseable_or_future_version_tokens_are_cursor_gone() {
         &base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(r#"{"v":2,"s":[["default/s1/events/a.jsonl",0]]}"#),
     ] {
-        let output = tender(&root)
+        let output = tendr(&root)
             .args(["events", "--from-cursor", token])
             .output()
             .unwrap();
@@ -351,13 +342,13 @@ fn unparseable_or_future_version_tokens_are_cursor_gone() {
 fn cursors_never_cover_output_log() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "echo", "logged-line"])
         .assert()
         .success();
     wait_terminal(&root, "s1");
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["events", "--include-logs", "--cursors"])
         .output()
         .unwrap();
@@ -383,7 +374,7 @@ fn cursors_never_cover_output_log() {
 
     // Resume + --include-logs: log projection restarts at the resume
     // wall-clock — historical log lines are not replayed.
-    let resumed = tender(&root)
+    let resumed = tendr(&root)
         .args(["events", "--from-cursor", &token, "--include-logs"])
         .output()
         .unwrap();

@@ -1,8 +1,8 @@
-//! # Tender — an agent process sitter
+//! # Tendr — an agent process sitter
 //!
-//! Tender supervises *runs*, not processes: a command executes under a durable
+//! Tendr supervises *runs*, not processes: a command executes under a durable
 //! per-session sidecar so its lifecycle, output, and exit survive the CLI
-//! invocation that launched it. The `tender` binary is a transactional CLI
+//! invocation that launched it. The `tendr` binary is a transactional CLI
 //! over that durable session model; this crate is the library it is built
 //! from.
 //!
@@ -19,7 +19,7 @@
 //!   is lifecycle/provenance history. Views are derived from those authorities;
 //!   see [`session`] and [`log`].
 //! - **Transport is a wrapper, not a second model.** `--host` forwards an
-//!   allowlisted subset of commands to a remote `tender` over SSH; the remote
+//!   allowlisted subset of commands to a remote `tendr` over SSH; the remote
 //!   runs the *same* local lifecycle. See [`ssh`].
 //!
 //! ## Module map
