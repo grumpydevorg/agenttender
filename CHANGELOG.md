@@ -77,6 +77,13 @@ the state root only once none are running:
   further output and no `--on-exit` hooks. A failed readiness write is now a
   session warning (`readiness not delivered: start client gone`), and the run
   carries on to its normal terminal state.
+- **A PTY session's `pty.control` no longer reverts to `AgentControl` while a
+  human holds it.** Attaching flipped `meta.json` to `HumanControl`, but the
+  sidecar's own later meta writes (a failed `output.log` open, the readiness
+  rewrite, the terminal record) wrote back the `AgentControl` it started with,
+  so `status` misreported the owner and `push` and `attach` skipped their early
+  refusal (the sidecar still arbitrated the input itself). Those writes now
+  carry the live owner.
 
 ## v0.2.1 — Security: reject option-shaped `--host` destinations
 

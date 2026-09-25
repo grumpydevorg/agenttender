@@ -1561,6 +1561,19 @@ struct SidecarControlHooks {
     facts: LifecycleEvents,
     registry: ConnectionRegistry,
     attach_sink: AttachSink,
+    /// The live owner, read by the guard's whole-meta writes.
+    control: Arc<Mutex<PtyControl>>,
+}
+
+#[cfg(unix)]
+impl SidecarControlHooks {
+    /// Publish the new owner to the guard before patching `meta.json`: a guard
+    /// write that already read the old owner holds [`META_WRITE`], so this
+    /// patch lands after it and the file ends on the new owner either way.
+    fn set_control(&self, control: PtyControl) {
+        *lock(&self.control) = control.clone();
+        set_pty_control_on_disk(&self.session_dir, control);
+    }
 }
 
 #[cfg(unix)]
@@ -1573,7 +1586,7 @@ impl crate::pty_input::ControlHooks for SidecarControlHooks {
             "pty.control_changed",
             serde_json::json!({"control": "HumanControl", "trigger": trigger}),
         );
-        set_pty_control_on_disk(&self.session_dir, PtyControl::HumanControl);
+        self.set_control(PtyControl::HumanControl);
     }
 
     fn human_released(&mut self) {
@@ -1581,7 +1594,7 @@ impl crate::pty_input::ControlHooks for SidecarControlHooks {
             "pty.control_changed",
             serde_json::json!({"control": "AgentControl", "trigger": "detach"}),
         );
-        set_pty_control_on_disk(&self.session_dir, PtyControl::AgentControl);
+        self.set_control(PtyControl::AgentControl);
     }
 
     fn retire(
@@ -2246,6 +2259,7 @@ mod tests {
             ),
             registry: registry.clone(),
             attach_sink: Arc::clone(&sink),
+            control: Arc::new(Mutex::new(PtyControl::AgentControl)),
         };
 
         hooks.retire(old, ControllerKind::Human, ControllerEpoch::new(2));

@@ -41,7 +41,7 @@ use super::{
 use super::{ConnectionRegistry, SidecarControlHooks, UnixPtyInput, run_attach_listener};
 use crate::model::ids::{EpochTimestamp, ProcessIdentity};
 use crate::model::meta::Meta;
-use crate::model::pty::{PtyMeta, PtyRecording, RecordingState};
+use crate::model::pty::{PtyControl, PtyMeta, PtyRecording, RecordingState};
 use crate::model::spec::{IoMode, StdinMode};
 use crate::model::state::{ExitReason, SidecarStep};
 use crate::platform::{Current, Platform, ProcessStatus};
@@ -101,6 +101,9 @@ struct RunCore {
     /// A PTY session's exact recording of output and applied geometry, until
     /// it is finished into meta.
     recording: Option<PtyRecordingRun>,
+    /// A PTY session's live input owner, set by the control hooks on the input
+    /// writer thread. `meta` never tracks it, so every write folds it in.
+    pty_control: Option<Arc<Mutex<PtyControl>>>,
     /// Stops the timeout and kill-request watchers once the run is ending.
     watch_cancel: Arc<AtomicBool>,
     timed_out: Arc<AtomicBool>,
@@ -140,6 +143,7 @@ impl SupervisedRun<Spawned> {
                 attach_sink: None,
                 attach,
                 recording: None,
+                pty_control: None,
                 watch_cancel: Arc::new(AtomicBool::new(false)),
                 timed_out: Arc::new(AtomicBool::new(false)),
                 step: SidecarStep::Breadcrumb,
@@ -317,11 +321,14 @@ impl RunCore {
             .take_pty_writer()
             .ok_or_else(|| io::Error::other("PTY write half unavailable"))?;
         let registry = ConnectionRegistry::default();
+        let control = Arc::new(Mutex::new(PtyControl::AgentControl));
+        self.pty_control = Some(Arc::clone(&control));
         let hooks = SidecarControlHooks {
             session_dir: self.session_dir().to_path_buf(),
             facts: self.lifecycle.with_fresh_writer(),
             registry: registry.clone(),
             attach_sink: Arc::clone(&sink),
+            control,
         };
         let input = PtyInput {
             writer: crate::pty_input::InputWriter::spawn(
@@ -354,11 +361,15 @@ impl RunCore {
 
     /// Persist meta, serialized with the sidecar's other `meta.json` writers
     /// ([`META_WRITE`]: control flips and recording stops patch it from other
-    /// threads) and with the recording's current state folded in. A recording
-    /// that already stopped has reported, or will report under this lock after
-    /// this write: either way `meta.json` ends up `Stopped`.
+    /// threads) and with the live control owner and the recording's current
+    /// state folded in, so this whole-meta write never reverts either. A
+    /// recording that already stopped has reported, or will report under this
+    /// lock after this write: either way `meta.json` ends up `Stopped`.
     fn write_meta(&mut self) -> Result<(), session::SessionError> {
         let _serialized = lock(&META_WRITE);
+        if let Some(control) = &self.pty_control {
+            self.meta.set_pty_control(lock(control).clone());
+        }
         if let Some(run) = &self.recording {
             let state = run
                 .thread

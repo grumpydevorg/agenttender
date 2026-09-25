@@ -473,6 +473,55 @@ fn push_rejected_during_human_control() {
     tendr(&root).args(["kill", "pty-hc"]).output().ok();
 }
 
+/// The sidecar's own whole-meta writes must carry the live control owner, not
+/// the `AgentControl` it started with. The gated `output_log` fault forces one
+/// such write mid-run, after the human has taken control.
+#[test]
+fn sidecar_meta_write_keeps_human_control() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let gate = root.path().join("fault-gate");
+
+    tendr(&root)
+        .env("TENDR_TEST_FAIL", "output_log")
+        .env("TENDR_TEST_FAULT_GATE", &gate)
+        .args(["start", "pty-keep", "--pty", "--", "cat"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-keep");
+
+    let sock_path = wait_for_attach_socket(&root, "pty-keep");
+    let _human = attach_as_human(&sock_path);
+    wait_for_pty_control(&root, "pty-keep", "HumanControl");
+
+    std::fs::write(&gate, b"").unwrap();
+    let meta_path = root
+        .path()
+        .join(".tendr/sessions/default/pty-keep/meta.json");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let meta = loop {
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        let written = meta["warnings"].as_array().is_some_and(|w| {
+            w.iter()
+                .any(|w| w.as_str().is_some_and(|w| w.contains("output.log")))
+        });
+        if written {
+            break meta;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "sidecar never rewrote meta: {meta}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    assert_eq!(meta["status"], "Running");
+    assert_eq!(meta["pty"]["control"], "HumanControl");
+
+    tendr(&root).args(["kill", "pty-keep"]).output().ok();
+}
+
 #[test]
 fn attach_contention_rejected() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
