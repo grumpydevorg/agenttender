@@ -1,12 +1,12 @@
 //! Contract tests for the run-bound PTY input controller
-//! (`tender::model::pty_control`).
+//! (`tendr::model::pty_control`).
 
 use std::collections::VecDeque;
 use std::io;
 
 use proptest::prelude::*;
-use tender::model::ids::RunId;
-use tender::model::pty_control::{
+use tendr::model::ids::RunId;
+use tendr::model::pty_control::{
     ControlError, ControllerEpoch, ControllerKind, ControllerState, HolderId, IncompleteReason,
     InputArbiter, InputError, InputOutcome, PendingInput, PtyInputSink, RequestId, StaleReason,
     WriteStep,

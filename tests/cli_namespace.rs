@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{tender, wait_terminal};
+use harness::{tendr, wait_terminal};
 use std::sync::Mutex;
 use tempfile::TempDir;
 
@@ -10,7 +10,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 fn wait_running_ns(root: &TempDir, namespace: &str, session: &str) {
     let path = root
         .path()
-        .join(format!(".tender/sessions/{namespace}/{session}/meta.json"));
+        .join(format!(".tendr/sessions/{namespace}/{session}/meta.json"));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if let Ok(content) = std::fs::read_to_string(&path) {
@@ -31,7 +31,7 @@ fn wait_running_ns(root: &TempDir, namespace: &str, session: &str) {
 fn wait_terminal_ns(root: &TempDir, namespace: &str, session: &str) -> serde_json::Value {
     let path = root
         .path()
-        .join(format!(".tender/sessions/{namespace}/{session}/meta.json"));
+        .join(format!(".tendr/sessions/{namespace}/{session}/meta.json"));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         if let Ok(content) = std::fs::read_to_string(&path) {
@@ -54,7 +54,7 @@ fn start_in_explicit_namespace() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args([
             "start",
             "ns-echo",
@@ -74,7 +74,7 @@ fn start_in_explicit_namespace() {
 
     wait_terminal_ns(&root, "myns", "ns-echo");
 
-    let meta_path = root.path().join(".tender/sessions/myns/ns-echo/meta.json");
+    let meta_path = root.path().join(".tendr/sessions/myns/ns-echo/meta.json");
     assert!(
         meta_path.exists(),
         "meta.json should exist at namespace path: {meta_path:?}"
@@ -87,7 +87,7 @@ fn same_name_different_namespace() {
     let root = TempDir::new().unwrap();
 
     // Start "job" in ns-a
-    let out_a = tender(&root)
+    let out_a = tendr(&root)
         .args(["start", "job", "--namespace", "ns-a", "--", "sleep", "60"])
         .output()
         .unwrap();
@@ -99,7 +99,7 @@ fn same_name_different_namespace() {
     wait_running_ns(&root, "ns-a", "job");
 
     // Start "job" in ns-b — should succeed because different namespace
-    let out_b = tender(&root)
+    let out_b = tendr(&root)
         .args(["start", "job", "--namespace", "ns-b", "--", "sleep", "60"])
         .output()
         .unwrap();
@@ -111,24 +111,24 @@ fn same_name_different_namespace() {
     wait_running_ns(&root, "ns-b", "job");
 
     // Verify status works for each
-    let status_a = tender(&root)
+    let status_a = tendr(&root)
         .args(["status", "job", "--namespace", "ns-a"])
         .output()
         .unwrap();
     assert!(status_a.status.success(), "status for ns-a/job failed");
 
-    let status_b = tender(&root)
+    let status_b = tendr(&root)
         .args(["status", "job", "--namespace", "ns-b"])
         .output()
         .unwrap();
     assert!(status_b.status.success(), "status for ns-b/job failed");
 
     // Cleanup both
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "job", "--namespace", "ns-a"])
         .output()
         .unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "job", "--namespace", "ns-b"])
         .output()
         .unwrap();
@@ -142,20 +142,20 @@ fn list_with_namespace_filters() {
     let root = TempDir::new().unwrap();
 
     // Create sessions in two namespaces
-    tender(&root)
+    tendr(&root)
         .args(["start", "alpha", "--namespace", "ns-a", "--", "sleep", "60"])
         .assert()
         .success();
     wait_running_ns(&root, "ns-a", "alpha");
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "beta", "--namespace", "ns-b", "--", "sleep", "60"])
         .assert()
         .success();
     wait_running_ns(&root, "ns-b", "beta");
 
     // list --namespace ns-a should only show ns-a sessions
-    let list_out = tender(&root)
+    let list_out = tendr(&root)
         .args(["list", "--namespace", "ns-a"])
         .output()
         .unwrap();
@@ -169,11 +169,11 @@ fn list_with_namespace_filters() {
     assert_eq!(entries[0]["name"], "alpha");
 
     // Cleanup
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "alpha", "--namespace", "ns-a"])
         .output()
         .unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "beta", "--namespace", "ns-b"])
         .output()
         .unwrap();
@@ -187,20 +187,20 @@ fn list_without_namespace_returns_all() {
     let root = TempDir::new().unwrap();
 
     // Create sessions in two namespaces
-    tender(&root)
+    tendr(&root)
         .args(["start", "one", "--namespace", "ns-a", "--", "sleep", "60"])
         .assert()
         .success();
     wait_running_ns(&root, "ns-a", "one");
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "two", "--namespace", "ns-b", "--", "sleep", "60"])
         .assert()
         .success();
     wait_running_ns(&root, "ns-b", "two");
 
     // list without --namespace should return all
-    let list_out = tender(&root).args(["list"]).output().unwrap();
+    let list_out = tendr(&root).args(["list"]).output().unwrap();
     assert!(list_out.status.success(), "list (all) failed");
 
     let entries: Vec<serde_json::Value> =
@@ -235,11 +235,11 @@ fn list_without_namespace_returns_all() {
     );
 
     // Cleanup
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "one", "--namespace", "ns-a"])
         .output()
         .unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "two", "--namespace", "ns-b"])
         .output()
         .unwrap();
@@ -252,7 +252,7 @@ fn start_with_namespace_idempotent() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out1 = tender(&root)
+    let out1 = tendr(&root)
         .args([
             "start",
             "idem-ns",
@@ -276,7 +276,7 @@ fn start_with_namespace_idempotent() {
     let run_id1 = meta1["run_id"].as_str().expect("no run_id in first output");
 
     // Same name + same spec + same namespace = idempotent
-    let out2 = tender(&root)
+    let out2 = tendr(&root)
         .args([
             "start",
             "idem-ns",
@@ -306,7 +306,7 @@ fn start_with_namespace_idempotent() {
     );
 
     // Cleanup
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "idem-ns", "--namespace", "myns"])
         .output()
         .unwrap();
@@ -318,7 +318,7 @@ fn default_namespace_used_when_omitted() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args(["start", "no-ns", "--", "echo", "hi"])
         .output()
         .unwrap();
@@ -331,8 +331,8 @@ fn default_namespace_used_when_omitted() {
     // Use the default-namespace harness helper
     wait_terminal(&root, "no-ns");
 
-    // Verify session created under .tender/sessions/default/
-    let meta_path = root.path().join(".tender/sessions/default/no-ns/meta.json");
+    // Verify session created under .tendr/sessions/default/
+    let meta_path = root.path().join(".tendr/sessions/default/no-ns/meta.json");
     assert!(
         meta_path.exists(),
         "session without --namespace should be under 'default': {meta_path:?}"
@@ -345,7 +345,7 @@ fn push_resolves_session_in_namespace() {
     let root = TempDir::new().unwrap();
 
     // Start a session with stdin in a non-default namespace
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "push-ns",
@@ -360,7 +360,7 @@ fn push_resolves_session_in_namespace() {
     wait_running_ns(&root, "ns-push", "push-ns");
 
     // Push data via the correct namespace
-    let push_out = tender(&root)
+    let push_out = tendr(&root)
         .args(["push", "push-ns", "--namespace", "ns-push"])
         .write_stdin("hello from push\n")
         .output()
@@ -372,13 +372,13 @@ fn push_resolves_session_in_namespace() {
     );
 
     // Kill and verify log contains pushed data
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "push-ns", "--namespace", "ns-push"])
         .output()
         .unwrap();
     wait_terminal_ns(&root, "ns-push", "push-ns");
 
-    let log_out = tender(&root)
+    let log_out = tendr(&root)
         .args(["log", "push-ns", "--namespace", "ns-push", "--raw"])
         .output()
         .unwrap();
@@ -394,7 +394,7 @@ fn log_resolves_session_in_namespace() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "log-ns",
@@ -408,7 +408,7 @@ fn log_resolves_session_in_namespace() {
         .success();
     wait_terminal_ns(&root, "ns-log", "log-ns");
 
-    let log_out = tender(&root)
+    let log_out = tendr(&root)
         .args(["log", "log-ns", "--namespace", "ns-log", "--raw"])
         .output()
         .unwrap();
@@ -429,7 +429,7 @@ fn wait_resolves_session_in_namespace() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "wait-ns",
@@ -442,7 +442,7 @@ fn wait_resolves_session_in_namespace() {
         .assert()
         .success();
 
-    let wait_out = tender(&root)
+    let wait_out = tendr(&root)
         .args([
             "wait",
             "wait-ns",

@@ -7,7 +7,7 @@ let
   # version in this file would create a second declaration to drift.
   toolchain = (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain;
 
-  # The crate advertises `rust-version = "1.85"` and `cargo install agenttender`
+  # The crate advertises `rust-version = "1.85"` and `cargo install tendr`
   # is a documented path, so that promise is a published contract. It was not
   # verified by anything until now: the code used let-chains, stable only from
   # 1.88, so 1.85 could not build it at all.

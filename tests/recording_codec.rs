@@ -1,11 +1,11 @@
-//! Contract tests for the PTY recording codec (`tender::recording`).
+//! Contract tests for the PTY recording codec (`tendr::recording`).
 //! Wire-format authority: `docs/plans/specs/pty-recording-format.md`.
 
 use std::num::NonZeroU32;
 
 use proptest::prelude::*;
-use tender::model::ids::RunId;
-use tender::recording::{
+use tendr::model::ids::RunId;
+use tendr::recording::{
     Corruption, DecodeErrorKind, EncodeError, Geometry, MAX_PAYLOAD, Record, RecordKind,
     ResizeCause, SegmentEncoder, SegmentEnd, SegmentHeader, Sequence, TermName, TermNameError,
     Violation, decode_recording, decode_segment,

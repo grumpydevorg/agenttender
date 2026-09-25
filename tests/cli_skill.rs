@@ -1,4 +1,4 @@
-//! `tender skill {print, install, path}` — manage the embedded agent skill stub.
+//! `tendr skill {print, install, path}` — manage the embedded agent skill stub.
 //!
 //! The stub's single source of truth is `src/embedded/SKILL.md`, embedded in the
 //! binary. `print` emits it, `install` lands it as a Claude Code skill file
@@ -8,30 +8,30 @@
 
 mod harness;
 
-use harness::tender;
+use harness::tendr;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
 /// Project-relative skill file that `install` writes by default.
-const SKILL_REL: &str = ".claude/skills/using-tender/SKILL.md";
+const SKILL_REL: &str = ".claude/skills/using-tendr/SKILL.md";
 
 #[test]
 fn skill_print_emits_frontmatter_and_bootstrap_rules() {
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["skill", "print"])
         .assert()
         .success()
         // frontmatter identity
-        .stdout(predicate::str::contains("name: using-tender"))
+        .stdout(predicate::str::contains("name: using-tendr"))
         // the three bootstrap rules
         .stdout(predicate::str::contains("takes argv, not a shell string"))
         .stdout(predicate::str::contains("exit_code"))
         .stdout(predicate::str::contains("one in-flight `exec` per session"))
-        .stdout(predicate::str::contains("tender guide install"))
-        .stdout(predicate::str::contains("tender guide powershell"))
-        .stdout(predicate::str::contains("tender guide boundary"));
+        .stdout(predicate::str::contains("tendr guide install"))
+        .stdout(predicate::str::contains("tendr guide powershell"))
+        .stdout(predicate::str::contains("tendr guide boundary"));
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn skill_install_writes_project_local_file() {
     let project = TempDir::new().unwrap();
     let target = project.path().join(SKILL_REL);
 
-    tender(&home)
+    tendr(&home)
         .current_dir(project.path())
         .args(["skill", "install"])
         .assert()
@@ -49,7 +49,7 @@ fn skill_install_writes_project_local_file() {
 
     let written = std::fs::read_to_string(&target).expect("skill file written");
     assert!(
-        written.contains("name: using-tender"),
+        written.contains("name: using-tendr"),
         "installed file carries the canonical stub"
     );
 }
@@ -60,7 +60,7 @@ fn skill_install_is_idempotent() {
     let project = TempDir::new().unwrap();
 
     // First install writes the file.
-    tender(&home)
+    tendr(&home)
         .current_dir(project.path())
         .args(["skill", "install"])
         .assert()
@@ -68,7 +68,7 @@ fn skill_install_is_idempotent() {
 
     // Second install sees byte-identical content and reports "already installed"
     // without failing.
-    tender(&home)
+    tendr(&home)
         .current_dir(project.path())
         .args(["skill", "install"])
         .assert()
@@ -82,7 +82,7 @@ fn skill_install_refuses_to_clobber_without_force() {
     let project = TempDir::new().unwrap();
     let target = project.path().join(SKILL_REL);
 
-    tender(&home)
+    tendr(&home)
         .current_dir(project.path())
         .args(["skill", "install"])
         .assert()
@@ -92,7 +92,7 @@ fn skill_install_refuses_to_clobber_without_force() {
     std::fs::write(&target, "# my own edits\n").unwrap();
 
     // A plain install must not overwrite it: usage error, exit 2, path named.
-    tender(&home)
+    tendr(&home)
         .current_dir(project.path())
         .args(["skill", "install"])
         .assert()
@@ -104,14 +104,14 @@ fn skill_install_refuses_to_clobber_without_force() {
     assert_eq!(after, "# my own edits\n", "refusal left the file untouched");
 
     // --force overwrites unconditionally, restoring the canonical stub.
-    tender(&home)
+    tendr(&home)
         .current_dir(project.path())
         .args(["skill", "install", "--force"])
         .assert()
         .success();
     let forced = std::fs::read_to_string(&target).unwrap();
     assert!(
-        forced.contains("name: using-tender"),
+        forced.contains("name: using-tendr"),
         "--force restored the canonical stub"
     );
 }
@@ -123,7 +123,7 @@ fn skill_install_global_writes_under_home() {
     let target = home.path().join(SKILL_REL);
 
     // cwd is the project dir, but --global must resolve $HOME, not cwd.
-    tender(&home)
+    tendr(&home)
         .current_dir(project.path())
         .args(["skill", "install", "--global"])
         .assert()
@@ -143,7 +143,7 @@ fn skill_path_prints_project_target_without_writing() {
     let project = TempDir::new().unwrap();
     let target = project.path().join(SKILL_REL);
 
-    tender(&home)
+    tendr(&home)
         .current_dir(project.path())
         .args(["skill", "path"])
         .assert()
@@ -162,7 +162,7 @@ fn skill_path_global_prints_home_target() {
     let project = TempDir::new().unwrap();
     let target = home.path().join(SKILL_REL);
 
-    tender(&home)
+    tendr(&home)
         .current_dir(project.path())
         .args(["skill", "path", "--global"])
         .assert()

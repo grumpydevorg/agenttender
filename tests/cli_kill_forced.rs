@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{tender, wait_running, wait_terminal};
+use harness::{tendr, wait_running, wait_terminal};
 use std::sync::Mutex;
 use tempfile::TempDir;
 
@@ -11,13 +11,13 @@ fn force_kill_produces_killed_forced() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "fk-job", "sleep", "60"])
         .assert()
         .success();
     wait_running(&root, "fk-job");
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "fk-job"])
         .assert()
         .success();
@@ -32,13 +32,13 @@ fn graceful_kill_produces_killed() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "gk-job", "sleep", "60"])
         .assert()
         .success();
     wait_running(&root, "gk-job");
 
-    tender(&root).args(["kill", "gk-job"]).assert().success();
+    tendr(&root).args(["kill", "gk-job"]).assert().success();
 
     let meta = wait_terminal(&root, "gk-job");
     assert_eq!(meta["status"], "Exited");

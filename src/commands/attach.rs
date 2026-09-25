@@ -4,11 +4,11 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 
 #[cfg(unix)]
-use tender::attach_proto;
-use tender::model::ids::{Namespace, SessionName};
-use tender::model::pty::PtyControl;
-use tender::model::state::RunStatus;
-use tender::session::{self, SessionRoot};
+use tendr::attach_proto;
+use tendr::model::ids::{Namespace, SessionName};
+use tendr::model::pty::PtyControl;
+use tendr::model::state::RunStatus;
+use tendr::session::{self, SessionRoot};
 
 pub fn cmd_attach(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
     let session_name = SessionName::new(name)?;

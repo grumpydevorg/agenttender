@@ -1,14 +1,14 @@
-# Tender Design Principles
+# Tendr Design Principles
 
-This document is the design doctrine for Tender.
+This document is the design doctrine for Tendr.
 
 The architecture docs describe what the system is today. This file states the rules that should shape new features, reviews, and refactors.
 
-Tender should stay a runtime substrate and session-control system. It should not drift into a workflow reasoning system or a domain-specific scheduler.
+Tendr should stay a runtime substrate and session-control system. It should not drift into a workflow reasoning system or a domain-specific scheduler.
 
 ## The 5-Layer Stack
 
-Think about Tender in five layers:
+Think about Tendr in five layers:
 
 1. **Runtime substrate**
    Sidecar, child process, PTY/pipe transport, logs, process identity, kill/wait.
@@ -21,17 +21,17 @@ Think about Tender in five layers:
 5. **Domain tools**
    Compilers, extractors, CI coordinators, deployment tools, application-specific control loops.
 
-Tender should own layers 1-3.
+Tendr should own layers 1-3.
 
 Be careful when adding layer-4 behavior.
 
-Do not absorb layer 5 into Tender.
+Do not absorb layer 5 into Tendr.
 
 ## The 7 Themes
 
 ### 1. Mechanism Over Policy
 
-Tender should provide hard runtime guarantees and small composition primitives, not high-level workflow judgment.
+Tendr should provide hard runtime guarantees and small composition primitives, not high-level workflow judgment.
 
 Current example:
 
@@ -40,8 +40,8 @@ Current example:
 
 Use in review:
 
-- Ask: "Is this giving the caller a primitive, or is Tender deciding policy on the caller's behalf?"
-- If the feature defines schedules, retry doctrine, or semantic health rules, it probably belongs above Tender.
+- Ask: "Is this giving the caller a primitive, or is Tendr deciding policy on the caller's behalf?"
+- If the feature defines schedules, retry doctrine, or semantic health rules, it probably belongs above Tendr.
 
 ### 2. One Authority Per Fact
 
@@ -74,7 +74,7 @@ Use in review:
 
 ### 4. Durable Truth, Derived Views
 
-Tender should persist authoritative facts and derive views from them. It should not create new durable truth just to support a view.
+Tendr should persist authoritative facts and derive views from them. It should not create new durable truth just to support a view.
 
 Current examples:
 
@@ -87,7 +87,7 @@ Current examples:
 Use in review:
 
 - Ask: "Is this command a view over existing truth, or is it inventing a new shadow state?"
-- If a projection needs its own on-disk authority, that is a sign it may not belong in Tender.
+- If a projection needs its own on-disk authority, that is a sign it may not belong in Tendr.
 
 ### 5. Separate Control Plane From Work Plane
 
@@ -106,7 +106,7 @@ Use in review:
 
 ### 6. Inference Must Be Labeled
 
-Tender sometimes knows facts directly and sometimes infers them. Those should not look identical.
+Tendr sometimes knows facts directly and sometimes infers them. Those should not look identical.
 
 Current examples:
 
@@ -124,7 +124,7 @@ Use in review:
 
 ### 7. Composition Should Stay Shallow
 
-Tender should support shallow composition of supervised runs, not become a full orchestration engine.
+Tendr should support shallow composition of supervised runs, not become a full orchestration engine.
 
 Current examples:
 
@@ -134,7 +134,7 @@ Current examples:
 Use in review:
 
 - Ask: "Is this still structural composition, or are we building a scheduler?"
-- If the feature wants DAG semantics, health rules, retries, or semantic planning, it likely belongs in a tool above Tender.
+- If the feature wants DAG semantics, health rules, retries, or semantic planning, it likely belongs in a tool above Tendr.
 
 ## Litmus Questions For New Features
 
@@ -145,7 +145,7 @@ Use this checklist during design and review:
 - Are inferences distinguishable from observations?
 - Is this a projection over durable truth, or is it creating a new truth?
 - Does it cross from control plane into work plane?
-- Is Tender providing a primitive, or deciding policy?
+- Is Tendr providing a primitive, or deciding policy?
 - Is the composition still shallow?
 
 If a feature fails more than one of these checks, it likely belongs elsewhere or needs to be simplified.
@@ -191,7 +191,7 @@ Why rejected:
 
 Rejected shape:
 
-- Proposing a new `exec` strictness flag before checking whether `tender exec` already propagates inner exit codes.
+- Proposing a new `exec` strictness flag before checking whether `tendr exec` already propagates inner exit codes.
 
 Why rejected:
 
@@ -200,7 +200,7 @@ Why rejected:
 
 ## Applying This Doctrine
 
-The goal is not to freeze Tender. The goal is to keep the system crisp as it grows.
+The goal is not to freeze Tendr. The goal is to keep the system crisp as it grows.
 
 Good new features usually look like this:
 
@@ -211,4 +211,4 @@ Good new features usually look like this:
 - they keep control semantics out of the work channel
 - they give callers primitives rather than policy
 
-When a proposal wants more than that, it is usually a sign that the feature belongs above Tender rather than inside it.
+When a proposal wants more than that, it is usually a sign that the feature belongs above Tendr rather than inside it.

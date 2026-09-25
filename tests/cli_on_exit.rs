@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{echo_env_cmd, tender, touch_cmd, wait_running, wait_terminal};
+use harness::{echo_env_cmd, tendr, touch_cmd, wait_running, wait_terminal};
 use std::sync::Mutex;
 use tempfile::TempDir;
 
@@ -15,12 +15,12 @@ fn wait_for_callbacks(root: &TempDir, session: &str) {
     // Read meta to get run_id, then check for callbacks/<run_id>.json
     let meta_path = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/meta.json"));
+        .join(format!(".tendr/sessions/default/{session}/meta.json"));
     let content = std::fs::read_to_string(&meta_path).expect("meta.json should exist");
     let meta: serde_json::Value = serde_json::from_str(&content).unwrap();
     let run_id = meta["run_id"].as_str().unwrap();
 
-    let callbacks_path = root.path().join(format!(".tender/callbacks/{run_id}.json"));
+    let callbacks_path = root.path().join(format!(".tendr/callbacks/{run_id}.json"));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
         if callbacks_path.exists() {
@@ -36,12 +36,12 @@ fn wait_for_callbacks(root: &TempDir, session: &str) {
 fn read_callback_record(root: &TempDir, session: &str) -> Option<serde_json::Value> {
     let meta_path = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/meta.json"));
+        .join(format!(".tendr/sessions/default/{session}/meta.json"));
     let content = std::fs::read_to_string(&meta_path).ok()?;
     let meta: serde_json::Value = serde_json::from_str(&content).ok()?;
     let run_id = meta["run_id"].as_str()?;
 
-    let callbacks_path = root.path().join(format!(".tender/callbacks/{run_id}.json"));
+    let callbacks_path = root.path().join(format!(".tendr/callbacks/{run_id}.json"));
     let cb_content = std::fs::read_to_string(&callbacks_path).ok()?;
     serde_json::from_str(&cb_content).ok()
 }
@@ -53,7 +53,7 @@ fn on_exit_callback_runs_after_normal_exit() {
 
     let marker = root.path().join("normal_exit_marker");
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args([
             "start",
             "on-exit-normal",
@@ -86,7 +86,7 @@ fn on_exit_callback_runs_after_forced_kill() {
 
     let marker = root.path().join("kill_exit_marker");
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args([
             "start",
             "on-exit-kill",
@@ -106,7 +106,7 @@ fn on_exit_callback_runs_after_forced_kill() {
 
     wait_running(&root, "on-exit-kill");
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "on-exit-kill"])
         .assert()
         .success();
@@ -126,7 +126,7 @@ fn on_exit_callback_sees_env_vars() {
 
     let output_file = root.path().join("env_output.txt");
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args([
             "start",
             "on-exit-env",
@@ -173,7 +173,7 @@ fn on_exit_callback_failure_recorded_without_state_change() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args([
             "start",
             "on-exit-fail",
@@ -196,7 +196,7 @@ fn on_exit_callback_failure_recorded_without_state_change() {
     // Meta should still show correct terminal state — callbacks don't modify it
     let meta_path = root
         .path()
-        .join(".tender/sessions/default/on-exit-fail/meta.json");
+        .join(".tendr/sessions/default/on-exit-fail/meta.json");
     let meta_content = std::fs::read_to_string(&meta_path).unwrap();
     let meta: serde_json::Value = serde_json::from_str(&meta_content).unwrap();
     assert_eq!(meta["status"].as_str(), Some("Exited"));
@@ -216,7 +216,7 @@ fn on_exit_multiple_callbacks_both_run() {
     let marker_a = root.path().join("marker_a");
     let marker_b = root.path().join("marker_b");
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args([
             "start",
             "on-exit-multi",
@@ -259,7 +259,7 @@ fn on_exit_callbacks_emit_finished_events() {
     let root = TempDir::new().unwrap();
 
     let marker = root.path().join("cb_event_marker");
-    let out = tender(&root)
+    let out = tendr(&root)
         .args([
             "start",
             "on-exit-events",
@@ -295,7 +295,7 @@ fn on_exit_callbacks_emit_finished_events() {
     assert!(finished[1]["data"]["error"].is_string());
 
     for (offset, event) in finished.iter().enumerate() {
-        assert_eq!(event["source"], "tender.sidecar");
+        assert_eq!(event["source"], "tendr.sidecar");
         assert_eq!(
             event["writer"], exited["writer"],
             "lifecycle writer identity reused"

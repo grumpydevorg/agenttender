@@ -51,4 +51,4 @@ No `title` (heading is the title), no `created` (git history), no `closed` (arch
 
 ## This pattern is shared
 
-Same frontmatter schema across: tender, edge-platform, machine-learning, starling-edr. File layout varies per repo.
+Same frontmatter schema across: tendr, edge-platform, machine-learning, starling-edr. File layout varies per repo.

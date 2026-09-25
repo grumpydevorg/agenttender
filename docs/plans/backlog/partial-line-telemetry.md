@@ -42,13 +42,13 @@ Two values per session:
 - `pending_partial_bytes` — bytes received since the last emitted record.
 - `last_record_age_s` — age of the most recent record (or of session start).
 
-Surfaced in `tender status`. A session reporting 400 KB pending with no record for
-20 minutes has just explained itself, and `tender guide` can point at exactly that
+Surfaced in `tendr status`. A session reporting 400 KB pending with no record for
+20 minutes has just explained itself, and `tendr guide` can point at exactly that
 reading.
 
 ## The hard part: the sidecar is not the CLI
 
-The counter lives in the sidecar's reader thread. `tender status` is a **different
+The counter lives in the sidecar's reader thread. `tendr status` is a **different
 process** that reconstructs state by reading `meta.json` off disk
 (`src/commands/status.rs` → `session::read_meta`). An in-memory counter is invisible
 to it. This is the whole design problem, and it is why this is a separate plan

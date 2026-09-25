@@ -5,21 +5,21 @@
 //! that readiness went undelivered.
 //!
 //! The window is opened deterministically, not by timing: the debug-only
-//! `TENDER_TEST_READY_GATE` hook holds the sidecar just before its readiness
+//! `TENDR_TEST_READY_GATE` hook holds the sidecar just before its readiness
 //! write until the gate file exists. The test waits for the session's meta on
 //! disk (proof the sidecar is running), confirms the client is still blocked on
 //! readiness, kills and reaps it, and only then opens the gate.
 
 mod harness;
 
-use harness::{read_events, tender, touch_cmd};
+use harness::{read_events, tendr, touch_cmd};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-use tender::model::ids::{Namespace, SessionName};
-use tender::session::{self, LockGuard, SessionRoot};
+use tendr::model::ids::{Namespace, SessionName};
+use tendr::session::{self, LockGuard, SessionRoot};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -27,20 +27,20 @@ const READINESS_WARNING: &str = "readiness not delivered: start client gone";
 
 fn meta_path(root: &TempDir, session: &str) -> PathBuf {
     root.path()
-        .join(format!(".tender/sessions/default/{session}/meta.json"))
+        .join(format!(".tendr/sessions/default/{session}/meta.json"))
 }
 
-/// Spawn `tender start <args>` with the readiness gate closed.
+/// Spawn `tendr start <args>` with the readiness gate closed.
 fn spawn_gated_start(root: &TempDir, gate: &std::path::Path, args: &[&str]) -> Child {
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"));
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"));
     cmd.arg("start")
         .args(args)
         .env("HOME", root.path())
-        .env("TENDER_TEST_READY_GATE", gate)
+        .env("TENDR_TEST_READY_GATE", gate)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    // Mirror harness::tender: Git-for-Windows coreutils for `sleep`/`true`.
+    // Mirror harness::tendr: Git-for-Windows coreutils for `sleep`/`true`.
     #[cfg(windows)]
     {
         let git_usr_bin = std::path::Path::new(r"C:\Program Files\Git\usr\bin");
@@ -49,7 +49,7 @@ fn spawn_gated_start(root: &TempDir, gate: &std::path::Path, args: &[&str]) -> C
             cmd.env("PATH", format!("{};{path}", git_usr_bin.display()));
         }
     }
-    cmd.spawn().expect("spawn tender start")
+    cmd.spawn().expect("spawn tendr start")
 }
 
 /// Start `session`, then lose its client inside the spawn-to-readiness window:
@@ -90,7 +90,7 @@ fn start_and_lose_client(root: &TempDir, session: &str, rest: &[&str]) {
 /// stable while the caller asserts. A sidecar that dies at the readiness write
 /// releases the lock at once, leaving non-terminal meta: exactly the defect.
 fn wait_sidecar_gone(root: &TempDir, session: &str) -> (serde_json::Value, LockGuard) {
-    let session_root = SessionRoot::new(root.path().join(".tender/sessions"));
+    let session_root = SessionRoot::new(root.path().join(".tendr/sessions"));
     let namespace = Namespace::new("default").unwrap();
     let name = SessionName::new(session).unwrap();
     let dir = session::open(&session_root, &namespace, &name)
@@ -190,7 +190,7 @@ fn client_lost_during_dependency_wait_still_runs_after_deps() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "dep1", "--", "sleep", "1"])
         .assert()
         .success();

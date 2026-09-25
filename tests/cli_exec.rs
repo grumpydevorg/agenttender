@@ -18,7 +18,7 @@ fn python_repl_argv() -> &'static [&'static str] {
     }
 }
 
-/// Build tender start args for a Python REPL session.
+/// Build tendr start args for a Python REPL session.
 fn python_start_args(session: &str) -> Vec<String> {
     let mut args: Vec<String> = [
         "start",
@@ -35,7 +35,7 @@ fn python_start_args(session: &str) -> Vec<String> {
     args
 }
 
-/// Build tender start args for a Python session without --exec-target (for inference tests).
+/// Build tendr start args for a Python session without --exec-target (for inference tests).
 fn python_start_args_no_target(session: &str) -> Vec<String> {
     let mut args: Vec<String> = ["start", session, "--stdin", "--"]
         .iter()
@@ -56,7 +56,7 @@ fn python_start_args_no_target(session: &str) -> Vec<String> {
 // exec_powershell_* pattern.
 // ---------------------------------------------------------------------------
 
-/// `tender start` args for a native interactive shell session.
+/// `tendr start` args for a native interactive shell session.
 #[cfg(unix)]
 fn native_shell_start_args(session: &str) -> Vec<String> {
     ["start", session, "--stdin", "--", "bash"]
@@ -135,7 +135,7 @@ fn native_cd(path: &std::path::Path) -> Vec<String> {
     vec![format!("Set-Location '{}'", path.display())]
 }
 
-/// `tender exec <session> -- <cmd...>` argv for the native fixture.
+/// `tendr exec <session> -- <cmd...>` argv for the native fixture.
 fn exec_argv(session: &str, cmd: Vec<String>) -> Vec<String> {
     let mut args = vec!["exec".to_string(), session.to_string(), "--".to_string()];
     args.extend(cmd);
@@ -147,7 +147,7 @@ fn exec_argv(session: &str, cmd: Vec<String>) -> Vec<String> {
 fn exec_session_not_found() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["exec", "nonexistent", "--", "pwd"])
         .assert()
         .failure()
@@ -159,12 +159,12 @@ fn exec_session_not_found() {
 fn exec_session_not_running() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["start", "job1", "--", "true"])
         .assert()
         .success();
     harness::wait_terminal(&root, "job1");
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["exec", "job1", "--", "pwd"])
         .assert()
         .failure()
@@ -178,14 +178,14 @@ fn exec_basic_command() {
     let root = tempfile::TempDir::new().unwrap();
 
     // Start the native shell with --stdin
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
     // Exec a command
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(exec_argv("shell", native_echo("hello world")))
         .output()
         .unwrap();
@@ -208,7 +208,7 @@ fn exec_basic_command() {
         "cwd_after should be absolute, got: {cwd}"
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -218,17 +218,17 @@ fn exec_basic_command() {
 fn exec_session_no_stdin() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["start", "job1", "--", "sleep", "30"])
         .assert()
         .success();
     harness::wait_running(&root, "job1");
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["exec", "job1", "--", "pwd"])
         .assert()
         .failure()
         .stderr(predicates::str::contains("--stdin"));
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "job1", "--force"])
         .assert();
 }
@@ -239,13 +239,13 @@ fn exec_nonzero_exit() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(exec_argv("shell", native_failure()))
         .output()
         .unwrap();
@@ -255,14 +255,14 @@ fn exec_nonzero_exit() {
     assert_eq!(result["exit_code"].as_i64(), Some(1));
 
     // Shell still running after failed command
-    let status_output = harness::tender(&root)
+    let status_output = harness::tendr(&root)
         .args(["status", "shell"])
         .output()
         .unwrap();
     let status: serde_json::Value = serde_json::from_slice(&status_output.stdout).unwrap();
     assert_eq!(status["status"].as_str(), Some("Running"));
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -273,7 +273,7 @@ fn exec_cwd_persists() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
@@ -286,7 +286,7 @@ fn exec_cwd_persists() {
     let canon_target = std::fs::canonicalize(target.path()).unwrap();
 
     // cd into the target directory
-    let output1 = harness::tender(&root)
+    let output1 = harness::tendr(&root)
         .args(exec_argv("shell", native_cd(target.path())))
         .output()
         .unwrap();
@@ -299,7 +299,7 @@ fn exec_cwd_persists() {
     );
 
     // The next exec must still observe the target dir — state persisted.
-    let output2 = harness::tender(&root)
+    let output2 = harness::tendr(&root)
         .args(exec_argv("shell", native_echo("persist")))
         .output()
         .unwrap();
@@ -312,7 +312,7 @@ fn exec_cwd_persists() {
         "persisted cwd_after should be the target dir, got: {cwd2}"
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -323,20 +323,18 @@ fn exec_writes_annotation() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(exec_argv("shell", native_echo("annotated")))
         .assert()
         .success();
 
-    let log_path = root
-        .path()
-        .join(".tender/sessions/default/shell/output.log");
+    let log_path = root.path().join(".tendr/sessions/default/shell/output.log");
     let content = std::fs::read_to_string(&log_path).unwrap();
     let ann_line: serde_json::Value = content
         .lines()
@@ -349,7 +347,7 @@ fn exec_writes_annotation() {
     assert_eq!(ann["data"]["hook_exit_code"].as_i64(), Some(0));
     assert!(ann["data"]["command"].is_array());
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -363,7 +361,7 @@ fn exec_oversized_output_is_quiet_and_leaves_breadcrumb() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
@@ -389,7 +387,7 @@ fn exec_oversized_output_is_quiet_and_leaves_breadcrumb() {
             "seq 1 2000; seq 1 2000 >&2".to_string(),
         ]
     };
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(exec_argv("shell", big_cmd))
         .output()
         .unwrap();
@@ -405,9 +403,7 @@ fn exec_oversized_output_is_quiet_and_leaves_breadcrumb() {
         "annotation overflow must be silent, got stderr: {stderr:?}"
     );
 
-    let log_path = root
-        .path()
-        .join(".tender/sessions/default/shell/output.log");
+    let log_path = root.path().join(".tendr/sessions/default/shell/output.log");
     let content = std::fs::read_to_string(&log_path).unwrap();
     let ann = content
         .lines()
@@ -424,7 +420,7 @@ fn exec_oversized_output_is_quiet_and_leaves_breadcrumb() {
     assert!(data["stderr_sha256"].is_string());
     assert_eq!(data["truncated"], true);
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -435,7 +431,7 @@ fn exec_timeout() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
@@ -449,21 +445,21 @@ fn exec_timeout() {
         "--".to_string(),
     ];
     args.extend(native_sleep(4));
-    let output = harness::tender(&root).args(args).output().unwrap();
+    let output = harness::tendr(&root).args(args).output().unwrap();
 
     assert_eq!(output.status.code(), Some(124));
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(result["timed_out"].as_bool().unwrap());
 
     // Shell should still be running
-    let status_output = harness::tender(&root)
+    let status_output = harness::tendr(&root)
         .args(["status", "shell"])
         .output()
         .unwrap();
     let status: serde_json::Value = serde_json::from_slice(&status_output.stdout).unwrap();
     assert_eq!(status["status"].as_str(), Some("Running"));
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -474,14 +470,14 @@ fn exec_concurrent_busy() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
     // Start a long exec in the background (holds the exec lock while it sleeps)
-    let mut long_exec = std::process::Command::new(assert_cmd::cargo::cargo_bin("tender"))
+    let mut long_exec = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
         .env("HOME", root.path())
         .args(exec_argv("shell", native_sleep(30)))
         .stdout(std::process::Stdio::piped())
@@ -494,7 +490,7 @@ fn exec_concurrent_busy() {
     harness::wait_event_kind(&root, "shell", "exec.started");
 
     // Second exec should fail with busy
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(exec_argv("shell", native_echo("hello")))
         .assert()
         .failure()
@@ -503,7 +499,7 @@ fn exec_concurrent_busy() {
     // Clean up
     let _ = long_exec.kill();
     let _ = long_exec.wait();
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -515,7 +511,7 @@ fn exec_concurrent_busy() {
 fn exec_explicit_posix_target() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
-    harness::tender(&root)
+    harness::tendr(&root)
         .args([
             "start",
             "shell",
@@ -529,7 +525,7 @@ fn exec_explicit_posix_target() {
         .success();
     harness::wait_running(&root, "shell");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "shell", "--", "echo", "explicit"])
         .output()
         .unwrap();
@@ -542,7 +538,7 @@ fn exec_explicit_posix_target() {
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert!(result["stdout"].as_str().unwrap().contains("explicit"));
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -553,19 +549,19 @@ fn exec_none_target_rejected() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
     // sleep is not a shell — infers ExecTarget::None
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["start", "sleeper", "--stdin", "--", "sleep", "60"])
         .assert()
         .success();
     harness::wait_running(&root, "sleeper");
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["exec", "sleeper", "--", "echo", "hello"])
         .assert()
         .failure()
         .stderr(predicates::str::contains("no exec target"));
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "sleeper", "--force"])
         .assert();
 }
@@ -577,13 +573,13 @@ fn exec_none_target_rejected() {
 fn exec_infers_posix_from_bash() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "shell", "--", "echo", "inferred"])
         .output()
         .unwrap();
@@ -595,7 +591,7 @@ fn exec_infers_posix_from_bash() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(result["stdout"].as_str().unwrap().contains("inferred"));
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -605,7 +601,7 @@ fn exec_infers_posix_from_bash() {
 fn start_invalid_exec_target() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
-    harness::tender(&root)
+    harness::tendr(&root)
         .args([
             "start",
             "shell",
@@ -626,7 +622,7 @@ fn exec_target_changes_session_identity() {
     let root = tempfile::TempDir::new().unwrap();
 
     // Start the native shell; its exec-target is expected_shell_target().
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
@@ -648,13 +644,13 @@ fn exec_target_changes_session_identity() {
         "--",
     ];
     conflict_args.extend_from_slice(interp);
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(conflict_args)
         .assert()
         .failure()
         .stderr(predicates::str::contains("session conflict"));
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -665,13 +661,13 @@ fn exec_python_repl_basic() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(python_start_args("py"))
         .assert()
         .success();
     harness::wait_running(&root, "py");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args([
             "exec",
             "py",
@@ -702,7 +698,7 @@ fn exec_python_repl_basic() {
         "cwd_after should be absolute, got: {cwd}"
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "py", "--force"])
         .assert();
 }
@@ -713,13 +709,13 @@ fn exec_python_repl_exception() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(python_start_args("py"))
         .assert()
         .success();
     harness::wait_running(&root, "py");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args([
             "exec",
             "py",
@@ -737,7 +733,7 @@ fn exec_python_repl_exception() {
     assert!(result["stderr"].as_str().unwrap().contains("ValueError"));
     assert!(result["stderr"].as_str().unwrap().contains("boom"));
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "py", "--force"])
         .assert();
 }
@@ -748,7 +744,7 @@ fn exec_python_repl_cwd() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(python_start_args("py"))
         .assert()
         .success();
@@ -758,7 +754,7 @@ fn exec_python_repl_cwd() {
     let tmp_str = tmp.to_str().expect("temp dir should be valid UTF-8");
     // Use forward slashes — valid on Windows and avoids raw string edge cases
     let chdir_code = format!("import os; os.chdir('{}')", tmp_str.replace('\\', "/"));
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "py", "--timeout", "10", "--", &chdir_code])
         .output()
         .unwrap();
@@ -778,7 +774,7 @@ fn exec_python_repl_cwd() {
         "cwd should be absolute after chdir, got: {cwd}"
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "py", "--force"])
         .assert();
 }
@@ -790,13 +786,13 @@ fn exec_python_inferred() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(python_start_args_no_target("py"))
         .assert()
         .success();
     harness::wait_running(&root, "py");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "py", "--", "print(1+1)"])
         .output()
         .unwrap();
@@ -811,7 +807,7 @@ fn exec_python_inferred() {
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert_eq!(result["stdout"].as_str().unwrap().trim(), "2");
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "py", "--force"])
         .assert();
 }
@@ -825,14 +821,14 @@ fn exec_infers_duckdb() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["start", "db", "--stdin", "--", "duckdb"])
         .assert()
         .success();
     harness::wait_running(&root, "db");
 
     // Verify the session was created with DuckDb exec target
-    let status_output = harness::tender(&root)
+    let status_output = harness::tendr(&root)
         .args(["status", "db"])
         .output()
         .unwrap();
@@ -842,7 +838,7 @@ fn exec_infers_duckdb() {
         Some("DuckDb")
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "db", "--force"])
         .assert();
 }
@@ -856,7 +852,7 @@ fn exec_duckdb_basic_select() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args([
             "start",
             "db",
@@ -870,7 +866,7 @@ fn exec_duckdb_basic_select() {
         .success();
     harness::wait_running(&root, "db");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args([
             "exec",
             "db",
@@ -900,13 +896,13 @@ fn exec_duckdb_basic_select() {
     );
 
     // No exec-results directory — DuckDB doesn't use side-channel files
-    let results_dir = root.path().join(".tender/sessions/default/db/exec-results");
+    let results_dir = root.path().join(".tendr/sessions/default/db/exec-results");
     assert!(
         !results_dir.exists(),
         "exec-results/ should not exist for DuckDB"
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "db", "--force"])
         .assert();
 }
@@ -920,7 +916,7 @@ fn exec_duckdb_sql_error() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args([
             "start",
             "db",
@@ -935,7 +931,7 @@ fn exec_duckdb_sql_error() {
     harness::wait_running(&root, "db");
 
     // Invalid SQL — error goes to stderr, sentinel still fires, exit_code = 1.
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args([
             "exec",
             "db",
@@ -947,12 +943,12 @@ fn exec_duckdb_sql_error() {
         .output()
         .unwrap();
 
-    // tender exec mirrors the inner exit code — exits 1 on SQL error.
+    // tendr exec mirrors the inner exit code — exits 1 on SQL error.
     // JSON result is still printed to stdout.
     assert_eq!(
         output.status.code(),
         Some(1),
-        "tender exec should exit 1 (mirroring SQL error)"
+        "tendr exec should exit 1 (mirroring SQL error)"
     );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout)
         .expect("stdout should contain JSON result even on error");
@@ -965,13 +961,13 @@ fn exec_duckdb_sql_error() {
     );
 
     // Session should still be running — errors don't kill DuckDB
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["status", "db"])
         .assert()
         .success();
 
     // Verify the session can still handle another query after error
-    let output2 = harness::tender(&root)
+    let output2 = harness::tendr(&root)
         .args([
             "exec",
             "db",
@@ -991,7 +987,7 @@ fn exec_duckdb_sql_error() {
         "second query should succeed after error: {stdout2}"
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "db", "--force"])
         .assert();
 }
@@ -1005,7 +1001,7 @@ fn exec_duckdb_multi_statement() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args([
             "start",
             "db",
@@ -1019,7 +1015,7 @@ fn exec_duckdb_multi_statement() {
         .success();
     harness::wait_running(&root, "db");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args([
             "exec",
             "db",
@@ -1050,7 +1046,7 @@ fn exec_duckdb_multi_statement() {
         "stdout should contain second query result"
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "db", "--force"])
         .assert();
 }
@@ -1064,7 +1060,7 @@ fn exec_duckdb_explicit_target() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args([
             "start",
             "db",
@@ -1078,7 +1074,7 @@ fn exec_duckdb_explicit_target() {
         .success();
     harness::wait_running(&root, "db");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args([
             "exec",
             "db",
@@ -1098,7 +1094,7 @@ fn exec_duckdb_explicit_target() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["exit_code"].as_i64(), Some(0));
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "db", "--force"])
         .assert();
 }
@@ -1113,7 +1109,7 @@ fn exec_duckdb_mixed_success_reports_error() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args([
             "start",
             "db",
@@ -1127,7 +1123,7 @@ fn exec_duckdb_mixed_success_reports_error() {
         .success();
     harness::wait_running(&root, "db");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args([
             "exec",
             "db",
@@ -1160,12 +1156,12 @@ fn exec_duckdb_mixed_success_reports_error() {
     );
 
     // Session should still be alive
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["status", "db"])
         .assert()
         .success();
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "db", "--force"])
         .assert();
 }
@@ -1183,7 +1179,7 @@ fn exec_duckdb_path_with_spaces() {
     std::fs::create_dir_all(&spaced_dir).unwrap();
 
     // Use the spaced directory as HOME so session paths contain spaces
-    let mut cmd = assert_cmd::Command::cargo_bin("tender").unwrap();
+    let mut cmd = assert_cmd::Command::cargo_bin("tendr").unwrap();
     cmd.env("HOME", &spaced_dir);
     cmd.args([
         "start",
@@ -1199,7 +1195,7 @@ fn exec_duckdb_path_with_spaces() {
     // Wait for running
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
-        let mut status_cmd = assert_cmd::Command::cargo_bin("tender").unwrap();
+        let mut status_cmd = assert_cmd::Command::cargo_bin("tendr").unwrap();
         status_cmd.env("HOME", &spaced_dir);
         status_cmd.args(["status", "db"]);
         let out = status_cmd.output().unwrap();
@@ -1215,7 +1211,7 @@ fn exec_duckdb_path_with_spaces() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    let mut exec_cmd = assert_cmd::Command::cargo_bin("tender").unwrap();
+    let mut exec_cmd = assert_cmd::Command::cargo_bin("tendr").unwrap();
     exec_cmd.env("HOME", &spaced_dir);
     exec_cmd.args([
         "exec",
@@ -1240,7 +1236,7 @@ fn exec_duckdb_path_with_spaces() {
         "stdout should contain query result: {stdout}"
     );
 
-    let mut kill_cmd = assert_cmd::Command::cargo_bin("tender").unwrap();
+    let mut kill_cmd = assert_cmd::Command::cargo_bin("tendr").unwrap();
     kill_cmd.env("HOME", &spaced_dir);
     kill_cmd.args(["kill", "db", "--force"]);
     let _ = kill_cmd.output();
@@ -1287,13 +1283,13 @@ fn exec_powershell_clean_stdout() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(powershell_start_args("ps"))
         .assert()
         .success();
     harness::wait_running(&root, "ps");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "ps", "--timeout", "15", "--", "echo hello-world"])
         .output()
         .unwrap();
@@ -1311,7 +1307,7 @@ fn exec_powershell_clean_stdout() {
         "stdout must not contain prompt: {stdout:?}"
     );
     assert!(
-        !stdout.contains("__TENDER_EXEC__"),
+        !stdout.contains("__TENDR_EXEC__"),
         "stdout must not contain framing"
     );
     assert!(
@@ -1320,7 +1316,7 @@ fn exec_powershell_clean_stdout() {
     );
     assert_eq!(stdout.trim(), "hello-world");
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "ps", "--force"])
         .assert();
 }
@@ -1332,13 +1328,13 @@ fn exec_powershell_arbitrary_expression() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(powershell_start_args("ps"))
         .assert()
         .success();
     harness::wait_running(&root, "ps");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "ps", "--timeout", "15", "--", "$x = 1; $x + 1"])
         .output()
         .unwrap();
@@ -1352,7 +1348,7 @@ fn exec_powershell_arbitrary_expression() {
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert_eq!(result["stdout"].as_str().unwrap().trim(), "2");
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "ps", "--force"])
         .assert();
 }
@@ -1364,13 +1360,13 @@ fn exec_powershell_pipeline() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(powershell_start_args("ps"))
         .assert()
         .success();
     harness::wait_running(&root, "ps");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args([
             "exec",
             "ps",
@@ -1397,7 +1393,7 @@ fn exec_powershell_pipeline() {
         "pipeline output unexpected: {stdout:?}"
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "ps", "--force"])
         .assert();
 }
@@ -1409,34 +1405,34 @@ fn exec_powershell_state_persists_across_calls() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(powershell_start_args("ps"))
         .assert()
         .success();
     harness::wait_running(&root, "ps");
 
     // Set a variable
-    harness::tender(&root)
+    harness::tendr(&root)
         .args([
             "exec",
             "ps",
             "--timeout",
             "15",
             "--",
-            "$global:tender_test_var = 42",
+            "$global:tendr_test_var = 42",
         ])
         .assert()
         .success();
 
     // Read it back in a separate exec
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args([
             "exec",
             "ps",
             "--timeout",
             "15",
             "--",
-            "$global:tender_test_var",
+            "$global:tendr_test_var",
         ])
         .output()
         .unwrap();
@@ -1450,7 +1446,7 @@ fn exec_powershell_state_persists_across_calls() {
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert_eq!(result["stdout"].as_str().unwrap().trim(), "42");
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "ps", "--force"])
         .assert();
 }
@@ -1462,13 +1458,13 @@ fn exec_powershell_stderr_separated() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(powershell_start_args("ps"))
         .assert()
         .success();
     harness::wait_running(&root, "ps");
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "ps", "--timeout", "15", "--", "Write-Error 'oops'"])
         .output()
         .unwrap();
@@ -1486,7 +1482,7 @@ fn exec_powershell_stderr_separated() {
         result["stdout"]
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "ps", "--force"])
         .assert();
 }
@@ -1498,14 +1494,14 @@ fn exec_powershell_cwd_after() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(powershell_start_args("ps"))
         .assert()
         .success();
     harness::wait_running(&root, "ps");
 
     // Change directory to C:\
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "ps", "--timeout", "15", "--", "Set-Location C:\\"])
         .output()
         .unwrap();
@@ -1522,7 +1518,7 @@ fn exec_powershell_cwd_after() {
         "cwd_after should reflect Set-Location, got: {cwd:?}"
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "ps", "--force"])
         .assert();
 }
@@ -1533,13 +1529,13 @@ fn exec_python_result_file_cleaned() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(python_start_args("py"))
         .assert()
         .success();
     harness::wait_running(&root, "py");
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args([
             "exec",
             "py",
@@ -1552,7 +1548,7 @@ fn exec_python_result_file_cleaned() {
         .success();
 
     // exec-results/ dir should exist but be empty (result file was cleaned up)
-    let results_dir = root.path().join(".tender/sessions/default/py/exec-results");
+    let results_dir = root.path().join(".tendr/sessions/default/py/exec-results");
     if results_dir.exists() {
         let entries: Vec<_> = std::fs::read_dir(&results_dir).unwrap().collect();
         assert!(
@@ -1561,7 +1557,7 @@ fn exec_python_result_file_cleaned() {
         );
     }
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "py", "--force"])
         .assert();
 }
@@ -1569,20 +1565,20 @@ fn exec_python_result_file_cleaned() {
 // --- Slice 3: exec.started / exec.result events (plan scope 1) ---
 
 /// exec emits exec.started + exec.result sharing a block_id, one writer,
-/// contiguous seq, source tender.exec, with the pinned data shapes.
+/// contiguous seq, source tendr.exec, with the pinned data shapes.
 #[test]
 fn exec_emits_started_and_result_events() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
     let echo_cmd = native_echo("event brigade");
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(exec_argv("shell", echo_cmd.clone()))
         .output()
         .unwrap();
@@ -1621,8 +1617,8 @@ fn exec_emits_started_and_result_events() {
         .find(|e| e["kind"] == "exec.result")
         .expect("exec.result");
 
-    assert_eq!(started["source"], "tender.exec");
-    assert_eq!(result["source"], "tender.exec");
+    assert_eq!(started["source"], "tendr.exec");
+    assert_eq!(result["source"], "tendr.exec");
     assert_eq!(started["data"]["command"], serde_json::json!(echo_cmd));
     assert_eq!(started["data"]["exec_target"], expected_shell_target());
     assert!(
@@ -1661,27 +1657,27 @@ fn exec_emits_started_and_result_events() {
         "no ambient chain → no parent"
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
 
-/// A tender exec running inside an outer block chains upward: parent_id
+/// A tendr exec running inside an outer block chains upward: parent_id
 /// from the exec process's own env, block_id freshly minted.
 #[test]
 fn exec_events_inherit_parent_from_env_chain() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
     let outer = uuid::Uuid::now_v7().to_string();
-    harness::tender(&root)
-        .env("TENDER_BLOCK_ID", &outer)
+    harness::tendr(&root)
+        .env("TENDR_BLOCK_ID", &outer)
         .args(exec_argv("shell", native_echo("chain")))
         .assert()
         .success();
@@ -1698,7 +1694,7 @@ fn exec_events_inherit_parent_from_env_chain() {
         );
     }
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -1710,13 +1706,13 @@ fn exec_aline_links_event_id_and_block_id() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(exec_argv("shell", native_echo("linked")))
         .assert()
         .success();
@@ -1724,9 +1720,7 @@ fn exec_aline_links_event_id_and_block_id() {
     let events = harness::read_events(&root, "shell");
     let result = events.iter().find(|e| e["kind"] == "exec.result").unwrap();
 
-    let log_path = root
-        .path()
-        .join(".tender/sessions/default/shell/output.log");
+    let log_path = root.path().join(".tendr/sessions/default/shell/output.log");
     let content = std::fs::read_to_string(&log_path).unwrap();
     let ann_line: serde_json::Value = content
         .lines()
@@ -1740,7 +1734,7 @@ fn exec_aline_links_event_id_and_block_id() {
     );
     assert_eq!(ann["block_id"], result["block_id"]);
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -1752,7 +1746,7 @@ fn exec_timeout_still_emits_result_event() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
@@ -1766,7 +1760,7 @@ fn exec_timeout_still_emits_result_event() {
         "--".to_string(),
     ];
     args.extend(native_sleep(3));
-    let output = harness::tender(&root).args(args).output().unwrap();
+    let output = harness::tendr(&root).args(args).output().unwrap();
     assert_eq!(output.status.code(), Some(124));
 
     let events = harness::read_events(&root, "shell");
@@ -1776,7 +1770,7 @@ fn exec_timeout_still_emits_result_event() {
     assert_eq!(result["data"]["timed_out"], true);
     assert_eq!(result["data"]["exit_code"], -1);
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -1791,16 +1785,16 @@ fn exec_event_append_is_best_effort() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
-    let events_dir = root.path().join(".tender/sessions/default/shell/events");
+    let events_dir = root.path().join(".tendr/sessions/default/shell/events");
     std::fs::set_permissions(&events_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "shell", "--", "echo", "still fine"])
         .output()
         .unwrap();
@@ -1811,30 +1805,30 @@ fn exec_event_append_is_best_effort() {
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(envelope["stdout"].as_str().unwrap().contains("still fine"));
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
 
-/// The PosixShell frame exports TENDER_BLOCK_ID for the payload's duration:
+/// The PosixShell frame exports TENDR_BLOCK_ID for the payload's duration:
 /// the payload sees exactly the block_id its exec events carry.
 #[cfg_attr(
     windows,
-    ignore = "PowerShell TENDER_BLOCK_ID env propagation — windows-parity Phase 3"
+    ignore = "PowerShell TENDR_BLOCK_ID env propagation — windows-parity Phase 3"
 )]
 #[test]
 fn exec_payload_sees_block_id_env() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
     harness::wait_running(&root, "shell");
 
-    let output = harness::tender(&root)
-        .args(["exec", "shell", "--", "printenv", "TENDER_BLOCK_ID"])
+    let output = harness::tendr(&root)
+        .args(["exec", "shell", "--", "printenv", "TENDR_BLOCK_ID"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -1845,7 +1839,7 @@ fn exec_payload_sees_block_id_env() {
     let result = events.iter().find(|e| e["kind"] == "exec.result").unwrap();
     assert_eq!(seen, result["block_id"].as_str().unwrap());
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -1859,7 +1853,7 @@ fn exec_frame_from_stdin_runs_payload() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
@@ -1870,7 +1864,7 @@ fn exec_frame_from_stdin_runs_payload() {
         "session": "shell",
         "cmd": native_echo("framed hello"),
     });
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "--frame-from-stdin"])
         .write_stdin(frame.to_string())
         .output()
@@ -1891,7 +1885,7 @@ fn exec_frame_from_stdin_runs_payload() {
     );
     assert_eq!(envelope["session"], "shell");
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -1907,7 +1901,7 @@ fn exec_frame_payload_survives_quoting_torture() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
@@ -1924,7 +1918,7 @@ fn exec_frame_payload_survives_quoting_torture() {
         "cmd": ["printf", "%s\\n", torture],
         "timeout": 30,
     });
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "--frame-from-stdin"])
         .write_stdin(frame.to_string())
         .output()
@@ -1938,7 +1932,7 @@ fn exec_frame_payload_survives_quoting_torture() {
         "payload survives byte-exact"
     );
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -1949,7 +1943,7 @@ fn exec_frame_timeout_exits_124() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    harness::tender(&root)
+    harness::tendr(&root)
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
@@ -1961,7 +1955,7 @@ fn exec_frame_timeout_exits_124() {
         "cmd": native_sleep(3),
         "timeout": 1,
     });
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "--frame-from-stdin"])
         .write_stdin(frame.to_string())
         .output()
@@ -1971,7 +1965,7 @@ fn exec_frame_timeout_exits_124() {
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(envelope["timed_out"], true);
 
-    let _ = harness::tender(&root)
+    let _ = harness::tendr(&root)
         .args(["kill", "shell", "--force"])
         .assert();
 }
@@ -1983,7 +1977,7 @@ fn exec_frame_bad_json_exits_2() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "--frame-from-stdin"])
         .write_stdin("this is not json")
         .output()
@@ -2005,7 +1999,7 @@ fn exec_frame_unsupported_version_exits_2() {
     let root = tempfile::TempDir::new().unwrap();
 
     let frame = r#"{"v":2,"session":"shell","cmd":["true"]}"#;
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "--frame-from-stdin"])
         .write_stdin(frame)
         .output()
@@ -2026,7 +2020,7 @@ fn exec_frame_conflicts_with_positional_args() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "shell", "--frame-from-stdin", "--", "ls"])
         .output()
         .unwrap();
@@ -2046,7 +2040,7 @@ fn exec_frame_invalid_session_exits_2() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "--frame-from-stdin"])
         .write_stdin(r#"{"v":1,"session":"bad/name","cmd":["true"]}"#)
         .output()
@@ -2067,7 +2061,7 @@ fn exec_frame_empty_cmd_exits_2() {
     let _lock = lock();
     let root = tempfile::TempDir::new().unwrap();
 
-    let output = harness::tender(&root)
+    let output = harness::tendr(&root)
         .args(["exec", "--frame-from-stdin"])
         .write_stdin(r#"{"v":1,"session":"shell","cmd":[]}"#)
         .output()
@@ -2088,7 +2082,7 @@ fn exec_frame_empty_cmd_exits_2() {
 #[test]
 fn windows_ignored_exec_set_is_exactly_tracked() {
     // Tracked parity gaps (see the attribute above each named test):
-    //   exec_payload_sees_block_id_env — PowerShell has no TENDER_BLOCK_ID env
+    //   exec_payload_sees_block_id_env — PowerShell has no TENDR_BLOCK_ID env
     //     propagation yet (windows-parity Phase 3).
     const EXPECTED: &[&str] = &["exec_payload_sees_block_id_env"];
 

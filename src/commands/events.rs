@@ -1,4 +1,4 @@
-//! `tender events` — the protocol read surface (spec §5.1–5.2): replay all
+//! `tendr events` — the protocol read surface (spec §5.1–5.2): replay all
 //! segments of matching sessions merged by (ts, writer, seq) as envelope
 //! NDJSON, with warm starts (`--since`, `--last`, `--from-now`,
 //! `--from-cursor`), read-time output.log projection (`--include-logs`),
@@ -10,13 +10,13 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use tender::events::{
+use tendr::events::{
     POLL_INTERVAL, decode_cursor, encode_cursor, merge_key, project_log_line, read_segment_records,
 };
-use tender::log::LogLine;
-use tender::model::event::{Event, EventTimestamp};
-use tender::model::ids::{Namespace, SessionName};
-use tender::session::{self, SessionRoot};
+use tendr::log::LogLine;
+use tendr::model::event::{Event, EventTimestamp};
+use tendr::model::ids::{Namespace, SessionName};
+use tendr::session::{self, SessionRoot};
 
 /// Bookmark cadence (plan pinned decision): every 100 emitted records or
 /// 5 s idle, counters reset on each bookmark.
@@ -37,7 +37,7 @@ pub struct EventsOptions {
     pub include_logs: bool,
     pub strict: bool,
     /// Follow-only: atomically publish this file once the baseline is
-    /// established and initial replay is flushed. See [`ready_file`](tender::ready_file).
+    /// established and initial replay is flushed. See [`ready_file`](tendr::ready_file).
     pub ready_file: Option<PathBuf>,
 }
 
@@ -338,7 +338,7 @@ impl StreamReader {
             } else {
                 "log.stderr"
             };
-            if self.filters.passes(kind, "tender.sidecar", ts) {
+            if self.filters.passes(kind, "tendr.sidecar", ts) {
                 batch.records.push(OutRecord::Derived {
                     ts,
                     tie: self.derived_tie,
@@ -434,7 +434,7 @@ fn emit_batch(
 /// records of the offending batch have already been printed.
 fn strict_check(opts: &EventsOptions, skipped: usize) {
     if opts.strict && skipped > 0 {
-        eprintln!("tender events: {skipped} unparseable line(s) skipped");
+        eprintln!("tendr events: {skipped} unparseable line(s) skipped");
         std::process::exit(65);
     }
 }
@@ -578,7 +578,7 @@ pub fn cmd_events(opts: EventsOptions) -> anyhow::Result<()> {
         if out.flush().is_err() {
             return Ok(());
         }
-        tender::ready_file::create_ready_file(ready_path).map_err(|e| {
+        tendr::ready_file::create_ready_file(ready_path).map_err(|e| {
             anyhow::anyhow!("failed to create ready-file {}: {e}", ready_path.display())
         })?;
     }

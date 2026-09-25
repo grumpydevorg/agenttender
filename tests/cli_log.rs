@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{DeadlineAssertExt, tender, wait_terminal};
+use harness::{DeadlineAssertExt, tendr, wait_terminal};
 use predicates::prelude::*;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -12,13 +12,13 @@ fn log_shows_child_output() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "log-echo", "echo", "hello from child"])
         .assert()
         .success();
     wait_terminal(&root, "log-echo");
 
-    tender(&root)
+    tendr(&root)
         .args(["log", "log-echo"])
         .assert()
         .success()
@@ -30,7 +30,7 @@ fn log_tail() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "log-tail",
@@ -42,7 +42,7 @@ fn log_tail() {
         .success();
     wait_terminal(&root, "log-tail");
 
-    tender(&root)
+    tendr(&root)
         .args(["log", "--tail", "1", "log-tail"])
         .assert()
         .success()
@@ -55,13 +55,13 @@ fn log_raw_strips_prefix() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "log-raw", "echo", "just content"])
         .assert()
         .success();
     wait_terminal(&root, "log-raw");
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["log", "--raw", "log-raw"])
         .output()
         .unwrap();
@@ -84,7 +84,7 @@ fn log_nonexistent_session_fails() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root).args(["log", "nope"]).assert().failure();
+    tendr(&root).args(["log", "nope"]).assert().failure();
 }
 
 #[test]
@@ -92,14 +92,14 @@ fn log_no_output_file_returns_empty() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "nolog-test", "/nonexistent/binary"])
         .assert()
         .code(2);
 
     wait_terminal(&root, "nolog-test");
 
-    tender(&root)
+    tendr(&root)
         .args(["log", "nolog-test"])
         .assert()
         .success()
@@ -111,13 +111,13 @@ fn log_stderr_captured() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "log-stderr", "sh", "-c", "echo err >&2"])
         .assert()
         .success();
     wait_terminal(&root, "log-stderr");
 
-    tender(&root)
+    tendr(&root)
         .args(["log", "log-stderr"])
         .assert()
         .success()
@@ -130,7 +130,7 @@ fn log_since_filters_by_time() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "log-since",
@@ -143,7 +143,7 @@ fn log_since_filters_by_time() {
     wait_terminal(&root, "log-since");
 
     // Full log has both lines
-    tender(&root)
+    tendr(&root)
         .args(["log", "log-since"])
         .assert()
         .success()
@@ -151,7 +151,7 @@ fn log_since_filters_by_time() {
         .stdout(predicate::str::contains("late"));
 
     // Epoch far in the future — should return 0 lines
-    tender(&root)
+    tendr(&root)
         .args(["log", "--since", "9999999999", "log-since"])
         .assert()
         .success()
@@ -163,7 +163,7 @@ fn log_follow_stops_on_terminal_session() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "log-follow", "echo", "follow me"])
         .assert()
         .success();
@@ -172,7 +172,7 @@ fn log_follow_stops_on_terminal_session() {
     // `--follow` on an already-terminal session must stop rather than block
     // forever; the hang detector guards that, and the stdout assertion proves
     // the tail content was emitted.
-    tender(&root)
+    tendr(&root)
         .args(["log", "--follow", "--tail", "10", "log-follow"])
         .assert_within_deadline()
         .success()

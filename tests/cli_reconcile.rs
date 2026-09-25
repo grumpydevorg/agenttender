@@ -2,7 +2,7 @@
 
 mod harness;
 
-use harness::{tender, wait_running};
+use harness::{tendr, wait_running};
 use predicates::prelude::*;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -13,7 +13,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 fn read_meta_json(root: &TempDir, session: &str) -> serde_json::Value {
     let path = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/meta.json"));
+        .join(format!(".tendr/sessions/default/{session}/meta.json"));
     let content = std::fs::read_to_string(&path).expect("failed to read meta.json");
     serde_json::from_str(&content).expect("failed to parse meta.json")
 }
@@ -45,7 +45,7 @@ fn status_reconciles_crashed_sidecar() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "crashed-sc", "sleep", "60"])
         .assert()
         .success();
@@ -56,7 +56,7 @@ fn status_reconciles_crashed_sidecar() {
     unsafe { libc::kill(sc_pid, libc::SIGKILL) };
     wait_pid_dead(sc_pid);
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["status", "crashed-sc"])
         .output()
         .unwrap();
@@ -82,19 +82,19 @@ fn status_does_not_reconcile_running_session() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "still-running", "sleep", "60"])
         .assert()
         .success();
     wait_running(&root, "still-running");
 
-    tender(&root)
+    tendr(&root)
         .args(["status", "still-running"])
         .assert()
         .success()
         .stdout(predicate::str::contains(r#""status": "Running"#));
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "still-running"])
         .assert()
         .success();
@@ -105,7 +105,7 @@ fn wait_reconciles_crashed_sidecar() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "wait-crashed", "sleep", "60"])
         .assert()
         .success();
@@ -116,7 +116,7 @@ fn wait_reconciles_crashed_sidecar() {
     unsafe { libc::kill(sc_pid, libc::SIGKILL) };
     wait_pid_dead(sc_pid);
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["wait", "--timeout", "5", "wait-crashed"])
         .assert()
         .code(3)

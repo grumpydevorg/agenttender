@@ -1,22 +1,22 @@
-//! `tender guide [TOPIC]` — the self-documenting usage guide.
+//! `tendr guide [TOPIC]` — the self-documenting usage guide.
 //!
-//! The guide is `docs/guide.md`, embedded in the binary. `tender guide` prints
-//! the whole thing; `tender guide <topic>` slices out one section via a
+//! The guide is `docs/guide.md`, embedded in the binary. `tendr guide` prints
+//! the whole thing; `tendr guide <topic>` slices out one section via a
 //! topic→heading registry. An unknown topic is a usage error (exit 2) that lists
 //! the available topics.
 
 mod harness;
 
-use harness::tender;
+use harness::tendr;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
 #[test]
 fn version_reports_package_version() {
     let root = TempDir::new().unwrap();
-    let expected = format!("tender {}\n", env!("CARGO_PKG_VERSION"));
+    let expected = format!("tendr {}\n", env!("CARGO_PKG_VERSION"));
 
-    tender(&root)
+    tendr(&root)
         .arg("--version")
         .assert()
         .success()
@@ -29,11 +29,11 @@ fn guide_prints_the_whole_guide() {
 
     // The top-level title and a section from the far end both appear only when
     // the entire document is emitted.
-    tender(&root)
+    tendr(&root)
         .args(["guide"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("# Tender Guide"))
+        .stdout(predicate::str::contains("# Tendr Guide"))
         .stdout(predicate::str::contains("Reach remote hosts"))
         .stdout(predicate::str::contains("Record where a session runs"));
 }
@@ -44,7 +44,7 @@ fn guide_exec_prints_only_the_exec_section() {
 
     // The exec section carries its own argv rule; it must NOT bleed into the
     // remote or REPL sections that follow it.
-    tender(&root)
+    tendr(&root)
         .args(["guide", "exec"])
         .assert()
         .success()
@@ -61,7 +61,7 @@ fn guide_remote_includes_the_frame_subsection() {
 
     // The remote section runs to the next top-level heading, so its nested
     // frame-from-stdin subsection rides along.
-    tender(&root)
+    tendr(&root)
         .args(["guide", "remote"])
         .assert()
         .success()
@@ -75,7 +75,7 @@ fn guide_remote_includes_the_frame_subsection() {
 fn guide_python_section_is_relevant() {
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["guide", "python"])
         .assert()
         .success()
@@ -88,7 +88,7 @@ fn guide_python_section_is_relevant() {
 fn guide_duckdb_section_is_relevant() {
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["guide", "duckdb"])
         .assert()
         .success()
@@ -100,12 +100,12 @@ fn guide_duckdb_section_is_relevant() {
 fn guide_install_section_is_relevant() {
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["guide", "install"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Install and build"))
-        .stdout(predicate::str::contains("cargo install agenttender"))
+        .stdout(predicate::str::contains("cargo install tendr"))
         .stdout(predicate::str::contains("cargo-zigbuild"));
 }
 
@@ -113,7 +113,7 @@ fn guide_install_section_is_relevant() {
 fn guide_topic_is_case_insensitive() {
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["guide", "EXEC"])
         .assert()
         .success()
@@ -124,7 +124,7 @@ fn guide_topic_is_case_insensitive() {
 fn guide_unknown_topic_exits_2_and_lists_topics() {
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["guide", "bogus"])
         .assert()
         .code(2)

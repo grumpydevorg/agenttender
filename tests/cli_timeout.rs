@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{tender, wait_running, wait_terminal};
+use harness::{tendr, wait_running, wait_terminal};
 use std::sync::Mutex;
 use tempfile::TempDir;
 
@@ -11,7 +11,7 @@ fn timeout_kills_child() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "--timeout", "2", "timeout-job", "sleep", "60"])
         .assert()
         .success();
@@ -19,7 +19,7 @@ fn timeout_kills_child() {
 
     // `wait_terminal` has a 10-second deadline while the child sleeps for 60
     // seconds, so reaching terminal state proves that the timeout fired. Do
-    // not include `tender start` latency in a sub-5-second assertion: detached
+    // not include `tendr start` latency in a sub-5-second assertion: detached
     // process startup takes about three seconds on hosted Windows runners and
     // is outside the configured child-runtime timeout.
     let meta = wait_terminal(&root, "timeout-job");
@@ -32,7 +32,7 @@ fn timeout_not_triggered() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "--timeout", "60", "fast-job", "true"])
         .assert()
         .success();

@@ -3,14 +3,14 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tender::events::{self, EventDraft, EventWriter};
-use tender::model::event::{Event, Kind, KindError, Uuid7};
-use tender::model::ids::{Namespace, RunId, SessionName, Source};
-use tender::platform::{Current, Platform};
-use tender::session::{self, SessionDir, SessionRoot};
+use tendr::events::{self, EventDraft, EventWriter};
+use tendr::model::event::{Event, Kind, KindError, Uuid7};
+use tendr::model::ids::{Namespace, RunId, SessionName, Source};
+use tendr::platform::{Current, Platform};
+use tendr::session::{self, SessionDir, SessionRoot};
 
 /// Re-export shared constants for local use.
-const MAX_FIELD_BYTES: usize = tender::annotation::MAX_FIELD_BYTES;
+const MAX_FIELD_BYTES: usize = tendr::annotation::MAX_FIELD_BYTES;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -33,22 +33,22 @@ pub fn cmd_wrap(
         Ok(kind) => Some(kind),
         Err(KindError::ReservedPrefix(prefix)) => {
             eprintln!(
-                "tender wrap: --event '{event}' uses the reserved prefix '{prefix}' \
-                 (tender-owned schema)"
+                "tendr wrap: --event '{event}' uses the reserved prefix '{prefix}' \
+                 (tendr-owned schema)"
             );
             std::process::exit(6);
         }
         Err(_) => {
             eprintln!(
-                "tender wrap: --event '{event}' is not a valid event kind; \
+                "tendr wrap: --event '{event}' is not a valid event kind; \
                  writing annotation only (no stored event)"
             );
             None
         }
     };
 
-    let run_id = std::env::var("TENDER_RUN_ID").map_err(|_| {
-        anyhow::anyhow!("TENDER_RUN_ID not set — wrap must run inside a tender-supervised process")
+    let run_id = std::env::var("TENDR_RUN_ID").map_err(|_| {
+        anyhow::anyhow!("TENDR_RUN_ID not set — wrap must run inside a tendr-supervised process")
     })?;
 
     // Resolve session dir structurally, not from env
@@ -70,17 +70,17 @@ pub fn cmd_wrap(
         anyhow::bail!("no command specified");
     }
 
-    // Pre-minted identity (spec §2): TENDER_PARENT_EVENT_ID names the event
+    // Pre-minted identity (spec §2): TENDR_PARENT_EVENT_ID names the event
     // wrap WILL write after the child exits, so hook-spawned emits chain to
-    // it; TENDER_BLOCK_ID is wrap's own fresh block.
+    // it; TENDR_BLOCK_ID is wrap's own fresh block.
     let causality = kind
         .is_some()
         .then(|| (Uuid7::new(), Uuid7::new(), events::env_parent_chain()));
 
     let mut env = BTreeMap::new();
     if let Some((event_id, block_id, _)) = &causality {
-        env.insert("TENDER_BLOCK_ID".to_owned(), block_id.to_string());
-        env.insert("TENDER_PARENT_EVENT_ID".to_owned(), event_id.to_string());
+        env.insert("TENDR_BLOCK_ID".to_owned(), block_id.to_string());
+        env.insert("TENDR_PARENT_EVENT_ID".to_owned(), event_id.to_string());
     }
     let mut child = Current::spawn_child(&cmd, true, None, &env)
         .map_err(|e| anyhow::anyhow!("failed to spawn '{}': {e}", cmd[0]))?;
@@ -98,7 +98,7 @@ pub fn cmd_wrap(
     let (stdout_bytes, stderr_bytes, exit_code) = match output {
         Ok(out) => (out.stdout, out.stderr, out.status.code()),
         Err(e) => {
-            eprintln!("tender wrap: child wait failed: {e}");
+            eprintln!("tendr wrap: child wait failed: {e}");
             (Vec::new(), Vec::new(), None)
         }
     };
@@ -153,21 +153,21 @@ pub fn cmd_wrap(
     let log_path = session_dir.path().join("output.log");
     let mut wrote = false;
     for payload in payloads {
-        match tender::annotation::write_annotation_line(&log_path, &payload) {
+        match tendr::annotation::write_annotation_line(&log_path, &payload) {
             Ok(true) => {
                 wrote = true;
                 break;
             }
             Ok(false) => continue,
             Err(e) => {
-                eprintln!("tender wrap: failed to write annotation: {e}");
+                eprintln!("tendr wrap: failed to write annotation: {e}");
                 wrote = true;
                 break;
             }
         }
     }
     if !wrote {
-        eprintln!("tender wrap: annotation too large even after truncation, dropping");
+        eprintln!("tendr wrap: annotation too large even after truncation, dropping");
     }
 
     // Exit with child's exit code
@@ -197,10 +197,10 @@ fn append_wrap_event(
 ) -> Option<Event> {
     let run_id_value = serde_json::Value::String(run_id_env.to_owned());
     let Ok(run_id) = serde_json::from_value::<RunId>(run_id_value) else {
-        eprintln!("tender wrap: TENDER_RUN_ID is not a valid run id; skipping stored event");
+        eprintln!("tendr wrap: TENDR_RUN_ID is not a valid run id; skipping stored event");
         return None;
     };
-    let generation = std::env::var("TENDER_GENERATION")
+    let generation = std::env::var("TENDR_GENERATION")
         .ok()
         .and_then(|s| s.parse().ok());
 
@@ -228,7 +228,7 @@ fn append_wrap_event(
     match EventWriter::new(session_dir.path()).append(draft, false) {
         Ok(event) => Some(event),
         Err(e) => {
-            eprintln!("tender wrap: event append failed: {e}");
+            eprintln!("tendr wrap: event append failed: {e}");
             None
         }
     }

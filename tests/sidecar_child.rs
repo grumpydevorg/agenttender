@@ -1,7 +1,7 @@
 // These tests spawn real processes (CLI -> sidecar -> child).
 mod harness;
 
-use harness::{tender, wait_terminal, wait_terminal_quiescent};
+use harness::{tendr, wait_terminal, wait_terminal_quiescent};
 use predicates::prelude::*;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -12,7 +12,7 @@ fn read_log(root: &TempDir, session: &str) -> String {
     wait_terminal(root, session);
     let path = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/output.log"));
+        .join(format!(".tendr/sessions/default/{session}/output.log"));
     std::fs::read_to_string(&path).unwrap_or_default()
 }
 
@@ -27,7 +27,7 @@ fn start_returns_running_with_child() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["start", "echo-job", "echo", "hello"])
         .output()
         .unwrap();
@@ -44,7 +44,7 @@ fn child_exit_ok_produces_exited_ok() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "ok-job", "true"])
         .assert()
         .success();
@@ -61,7 +61,7 @@ fn child_exit_error_produces_exited_error() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "err-job", "sh", "-c", "exit 42"])
         .assert()
         .success();
@@ -77,7 +77,7 @@ fn stdout_captured_to_output_log() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "stdout-job", "echo", "hello world"])
         .assert()
         .success();
@@ -104,7 +104,7 @@ fn stderr_captured_to_output_log() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "stderr-job", "sh", "-c", "echo error >&2"])
         .assert()
         .success();
@@ -119,7 +119,7 @@ fn interleaved_stdout_stderr() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "interleave-job",
@@ -150,7 +150,7 @@ fn spawn_failure_produces_spawn_failed() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["start", "bad-cmd", "nonexistent-command-xyz-12345"])
         .output()
         .unwrap();
@@ -165,7 +165,7 @@ fn child_identity_preserved_in_terminal_state() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["start", "preserve-job", "echo", "hi"])
         .output()
         .unwrap();
@@ -184,7 +184,7 @@ fn lock_released_after_child_exits() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "lock-job", "echo", "hi"])
         .assert()
         .success();
@@ -196,13 +196,13 @@ fn status_shows_terminal_after_child_exits() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "status-job", "echo", "hi"])
         .assert()
         .success();
     wait_terminal(&root, "status-job");
 
-    tender(&root)
+    tendr(&root)
         .args(["status", "status-job"])
         .assert()
         .success()

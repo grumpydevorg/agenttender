@@ -3,7 +3,7 @@
 Full Windows parity = a Windows box, as **host or client**, presents the same
 **observable contracts** as POSIX for every capability, with regressions blocked
 by required native CI. Parity is about contracts, **not** identical OS mechanisms
-— Tender does not translate Bash↔PowerShell syntax or Unix↔Windows paths.
+— Tendr does not translate Bash↔PowerShell syntax or Unix↔Windows paths.
 
 Observable-contract parity means: same commands + state transitions; same
 stdout/stderr/exit-code and JSON/NDJSON shapes; same persistence across
@@ -88,7 +88,7 @@ The transport work. Full design in
   No SSH change. Acceptance: local byte-compatible; every field survives
   `Commands→StartRequest→JSON→decode→dispatch`; non-UTF-8 remote values fail
   clearly; local-only commands can't enter `RemoteOperation`.
-- **P2** framed codec + `ssh -T host tender _remote --frame-from-stdin`: `u32`
+- **P2** framed codec + `ssh -T host tendr _remote --frame-from-stdin`: `u32`
   BE header length, UTF-8 JSON header, optional body; 1 MiB header cap; exact
   partial reads; unknown fields tolerated, unknown version/op rejected; full
   semantic validation before side effects; **no user value in SSH argv**;
@@ -147,7 +147,7 @@ named-pipe connects work; concurrent event writers produce valid complete JSONL.
 ## Phase 6 — PowerShell behavioral parity
 
 The frame runs user code via `& ([scriptblock]::Create($_code))` → the surprising
-child scope. Rework so ordinary assignments persist while Tender's internal
+child scope. Rework so ordinary assignments persist while Tendr's internal
 capture variables are cleaned afterward. Acceptance (PS 5.1 **and** 7): `$x = 42`
 then later `$x` → 42; `function f {7}` then `f` → 7; `Set-Location`/`$env:` persist.
 Preserve: clean stdout/stderr, `$LASTEXITCODE`, terminating + non-terminating

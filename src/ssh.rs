@@ -1,7 +1,7 @@
 //! Remote transport — a thin SSH wrapper, not a second lifecycle model.
 //!
 //! `--host` forwards an allowlisted subset of commands ([`REMOTE_COMMANDS`]) to
-//! a remote `tender`, which runs the *same* local lifecycle on the far side.
+//! a remote `tendr`, which runs the *same* local lifecycle on the far side.
 //! Ordinary commands are POSIX-shell-quoted into an `ssh -T` argv; `exec`
 //! instead rides the [`exec_frame`](crate::exec_frame) over SSH stdin so no
 //! user value ever reaches the remote argv. Destinations are validated
@@ -69,20 +69,20 @@ pub fn validate_destination(host: &str) -> Result<(), SshError> {
     Ok(())
 }
 
-/// Build the SSH command line for remote tender invocation.
+/// Build the SSH command line for remote tendr invocation.
 ///
 /// SSH sends everything after the destination as a single string to the
 /// remote login shell. To preserve argument boundaries (spaces, quotes,
-/// shell metacharacters), each tender argument is individually
+/// shell metacharacters), each tendr argument is individually
 /// shell-quoted using `shell_words::quote()` (POSIX quoting).
 ///
 /// The resulting local argv is:
 ///
 /// ```text
-/// ssh -T -o ConnectTimeout=10 <host> tender 'arg1' 'arg2' ...
+/// ssh -T -o ConnectTimeout=10 <host> tendr 'arg1' 'arg2' ...
 /// ```
 ///
-/// SSH concatenates "tender", "'arg1'", "'arg2'" with spaces and sends
+/// SSH concatenates "tendr", "'arg1'", "'arg2'" with spaces and sends
 /// the result to the remote login shell, which re-splits it into argv.
 ///
 /// No `--` separator is used between the host and the remote command.
@@ -94,7 +94,7 @@ pub fn validate_destination(host: &str) -> Result<(), SshError> {
 /// strategy and are deferred to a follow-on slice.
 pub fn build_ssh_command(
     host: &str,
-    tender_args: &[String],
+    tendr_args: &[String],
     allocate_tty: bool,
 ) -> Result<Command, SshError> {
     // Fail closed: the builder validates the destination, so no caller can
@@ -105,11 +105,11 @@ pub fn build_ssh_command(
     let tty_flag = if allocate_tty { "-t" } else { "-T" };
     cmd.args([tty_flag, "-o", "ConnectTimeout=10", host]);
 
-    // Each tender arg becomes a separate ssh argv entry, individually
+    // Each tendr arg becomes a separate ssh argv entry, individually
     // quoted for the remote shell. SSH concatenates all args after the
     // host with spaces to form the remote command string.
-    cmd.arg("tender");
-    for arg in tender_args {
+    cmd.arg("tendr");
+    for arg in tendr_args {
         cmd.arg(shell_words::quote(arg).into_owned());
     }
 
@@ -119,14 +119,14 @@ pub fn build_ssh_command(
     Ok(cmd)
 }
 
-/// Execute a remote tender command via SSH, streaming stdout/stderr
+/// Execute a remote tendr command via SSH, streaming stdout/stderr
 /// directly to the local stdout/stderr.
 ///
-/// Returns the remote tender exit code on success.
+/// Returns the remote tendr exit code on success.
 /// Returns `SshError::TransportFailed` for SSH connection failures (exit 255),
 /// or `SshError::InvalidDestination` for an option-shaped/empty host.
-pub fn exec_ssh(host: &str, tender_args: &[String], allocate_tty: bool) -> Result<i32, SshError> {
-    let mut child = build_ssh_command(host, tender_args, allocate_tty)?
+pub fn exec_ssh(host: &str, tendr_args: &[String], allocate_tty: bool) -> Result<i32, SshError> {
+    let mut child = build_ssh_command(host, tendr_args, allocate_tty)?
         .spawn()
         .map_err(SshError::SpawnFailed)?;
 
@@ -151,7 +151,7 @@ fn build_ssh_exec_frame_command(host: &str, inherit_stdin: bool) -> Result<Comma
         "-o",
         "ConnectTimeout=10",
         host,
-        "tender",
+        "tendr",
         "exec",
         "--frame-from-stdin",
     ]);
@@ -185,7 +185,7 @@ pub fn exec_ssh_frame(host: &str, frame: Option<&[u8]>) -> Result<i32, SshError>
 
     // Nested rather than a let-chain: let-chains are stable from 1.88, and the
     // crate advertises rust-version 1.85. Published releases carry that promise
-    // and `cargo install agenttender` is a documented path, so the syntax gives
+    // and `cargo install tendr` is a documented path, so the syntax gives
     // way, not the contract.
     if let Some(bytes) = frame {
         if let Some(mut stdin) = child.stdin.take() {
@@ -222,7 +222,7 @@ mod tests {
                 "-o",
                 "ConnectTimeout=10",
                 "user@box",
-                "tender",
+                "tendr",
                 "exec",
                 "--frame-from-stdin"
             ]
@@ -280,8 +280,8 @@ mod tests {
     }
 
     /// Helper: extract the args that `build_ssh_command` would pass to the ssh binary.
-    fn ssh_argv(host: &str, tender_args: &[&str]) -> Vec<String> {
-        let args: Vec<String> = tender_args.iter().map(|s| s.to_string()).collect();
+    fn ssh_argv(host: &str, tendr_args: &[&str]) -> Vec<String> {
+        let args: Vec<String> = tendr_args.iter().map(|s| s.to_string()).collect();
         let cmd = build_ssh_command(host, &args, false).unwrap();
         cmd.get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(args[1], "-o");
         assert_eq!(args[2], "ConnectTimeout=10");
         assert_eq!(args[3], "user@box");
-        assert_eq!(args[4], "tender");
+        assert_eq!(args[4], "tendr");
         assert_eq!(args[5], "status");
         assert_eq!(args[6], "my-session");
         assert!(
@@ -323,7 +323,7 @@ mod tests {
         let parsed = shell_words::split(&remote_cmd).unwrap();
         assert_eq!(
             parsed,
-            vec!["tender", "start", "job", "--", "echo", "hello world"]
+            vec!["tendr", "start", "job", "--", "echo", "hello world"]
         );
     }
 

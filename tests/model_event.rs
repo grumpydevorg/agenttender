@@ -1,7 +1,7 @@
 //! Event envelope contract tests — spec §1 (docs/plans/specs/event-protocol.md).
 
-use tender::model::event::{Event, EventTimestamp, Kind, Uuid7};
-use tender::model::ids::{Namespace, RunId, SessionName, Source};
+use tendr::model::event::{Event, EventTimestamp, Kind, Uuid7};
+use tendr::model::ids::{Namespace, RunId, SessionName, Source};
 
 // --- EventTimestamp: RFC 3339 UTC, exactly 6 fractional digits, Z ---
 
@@ -137,7 +137,7 @@ fn kind_internal_constructor_allows_reserved_prefixes() {
     // Internal call sites (sidecar lifecycle, exec, rotation) write reserved kinds.
     assert!(Kind::new("run.exited").is_ok());
     assert!(Kind::new("segment.opened").is_ok());
-    assert!(Kind::new("tender.internal").is_ok());
+    assert!(Kind::new("tendr.internal").is_ok());
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn kind_user_constructor_rejects_reserved_prefixes() {
         "callback.x",
         "segment.x",
         "cursor.x",
-        "tender.x",
+        "tendr.x",
     ] {
         assert!(
             Kind::new_user(reserved).is_err(),
@@ -172,23 +172,23 @@ fn kind_user_constructor_allows_hook_prefix() {
 // --- Source: reservation enforced at user-input boundary only ---
 
 #[test]
-fn source_new_still_rejects_tender_prefix() {
-    assert!(Source::new("tender.sidecar").is_err());
+fn source_new_still_rejects_tendr_prefix() {
+    assert!(Source::new("tendr.sidecar").is_err());
 }
 
 #[test]
-fn source_trusted_allows_tender_prefix() {
-    let s = Source::trusted("tender.sidecar").unwrap();
-    assert_eq!(s.as_str(), "tender.sidecar");
+fn source_trusted_allows_tendr_prefix() {
+    let s = Source::trusted("tendr.sidecar").unwrap();
+    assert_eq!(s.as_str(), "tendr.sidecar");
     // Grammar still enforced for trusted sources.
     assert!(Source::trusted("nodot").is_err());
 }
 
 #[test]
-fn source_deserialize_accepts_tender_prefix() {
-    // Events written by the sidecar carry source "tender.sidecar" and must round-trip.
-    let s: Source = serde_json::from_str("\"tender.sidecar\"").unwrap();
-    assert_eq!(s.as_str(), "tender.sidecar");
+fn source_deserialize_accepts_tendr_prefix() {
+    // Events written by the sidecar carry source "tendr.sidecar" and must round-trip.
+    let s: Source = serde_json::from_str("\"tendr.sidecar\"").unwrap();
+    assert_eq!(s.as_str(), "tendr.sidecar");
     // Grammar violations still rejected on deserialize.
     assert!(serde_json::from_str::<Source>("\"nodot\"").is_err());
 }
@@ -196,7 +196,7 @@ fn source_deserialize_accepts_tender_prefix() {
 // --- Event envelope ---
 
 fn spec_example_a() -> &'static str {
-    r#"{"v":1,"id":"01981f2e-9a3b-7c1d-8e4f-0a1b2c3d4e5f","ts":"2026-07-06T03:14:15.926535Z","kind":"run.exited","namespace":"default","session":"build","run_id":"01981f2d-1111-7abc-9def-556677889900","gen":3,"writer":"01981f2d-1111-7abc-9def-556677889900","seq":7,"source":"tender.sidecar","data":{"status":"Exited","reason":"ExitedError","exit_code":3,"provenance":"direct"}}"#
+    r#"{"v":1,"id":"01981f2e-9a3b-7c1d-8e4f-0a1b2c3d4e5f","ts":"2026-07-06T03:14:15.926535Z","kind":"run.exited","namespace":"default","session":"build","run_id":"01981f2d-1111-7abc-9def-556677889900","gen":3,"writer":"01981f2d-1111-7abc-9def-556677889900","seq":7,"source":"tendr.sidecar","data":{"status":"Exited","reason":"ExitedError","exit_code":3,"provenance":"direct"}}"#
 }
 
 #[test]
@@ -208,7 +208,7 @@ fn event_deserializes_spec_example() {
     assert_eq!(event.session.as_str(), "build");
     assert_eq!(event.generation, Some(3));
     assert_eq!(event.seq, 7);
-    assert_eq!(event.source.as_str(), "tender.sidecar");
+    assert_eq!(event.source.as_str(), "tendr.sidecar");
     assert!(event.block_id.is_none());
     assert!(event.parent_id.is_none());
     assert!(event.data_ref.is_none());

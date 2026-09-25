@@ -524,7 +524,7 @@ impl RunCore {
                     stopped.summary()
                 );
                 self.lifecycle.salvage_unrecorded(&self.meta, record_error);
-                eprintln!("tender sidecar: {message}");
+                eprintln!("tendr sidecar: {message}");
                 if let Some(writer) = self.ready.take() {
                     let _ = Current::write_ready_signal(writer, &format!("ERROR:{message}\n"));
                 }
@@ -606,7 +606,7 @@ fn terminate_and_reap(
 ) -> Stopped {
     let graceful = handle.clone();
     let killer = std::thread::Builder::new()
-        .name("tender-stop-child".to_owned())
+        .name("tendr-stop-child".to_owned())
         .spawn(move || Current::kill_child(&graceful, false));
     let mut notes = Vec::new();
     let killer = match killer {

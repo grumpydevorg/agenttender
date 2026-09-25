@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{tender, wait_running, wait_terminal};
+use harness::{tendr, wait_running, wait_terminal};
 use predicates::prelude::*;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -12,13 +12,13 @@ fn kill_running_process() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "kill-job", "sleep", "60"])
         .assert()
         .success();
     wait_running(&root, "kill-job");
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "kill-job"])
         .assert()
         .success()
@@ -31,13 +31,13 @@ fn kill_force() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "force-job", "sleep", "60"])
         .assert()
         .success();
     wait_running(&root, "force-job");
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "force-job"])
         .assert()
         .success();
@@ -51,13 +51,13 @@ fn kill_already_dead_is_idempotent() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "dead-job", "true"])
         .assert()
         .success();
     wait_terminal(&root, "dead-job");
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "dead-job"])
         .assert()
         .success()
@@ -70,7 +70,7 @@ fn kill_nonexistent_session_is_idempotent() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "nope"])
         .assert()
         .success()
@@ -82,7 +82,7 @@ fn kill_preserves_child_identity() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let start_out = tender(&root)
+    let start_out = tendr(&root)
         .args(["start", "preserve-kill", "sleep", "60"])
         .output()
         .unwrap();
@@ -91,7 +91,7 @@ fn kill_preserves_child_identity() {
     let start_pid = start_meta["child"]["pid"].as_u64().unwrap();
     wait_running(&root, "preserve-kill");
 
-    let kill_out = tender(&root)
+    let kill_out = tendr(&root)
         .args(["kill", "preserve-kill"])
         .output()
         .unwrap();
@@ -106,18 +106,18 @@ fn status_shows_killed_after_kill() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "status-kill", "sleep", "60"])
         .assert()
         .success();
     wait_running(&root, "status-kill");
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "status-kill"])
         .assert()
         .success();
 
-    tender(&root)
+    tendr(&root)
         .args(["status", "status-kill"])
         .assert()
         .success()

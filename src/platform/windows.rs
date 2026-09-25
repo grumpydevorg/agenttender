@@ -62,15 +62,11 @@ impl Platform for WindowsPlatform {
     type ReadyReader = File;
     type ReadyWriter = File;
 
-    fn spawn_sidecar(
-        tender_bin: &Path,
-        session_dir: &Path,
-        ready_writer: &File,
-    ) -> io::Result<u32> {
+    fn spawn_sidecar(tendr_bin: &Path, session_dir: &Path, ready_writer: &File) -> io::Result<u32> {
         // Raw CreateProcessW with STARTUPINFOEXW + PROC_THREAD_ATTRIBUTE_HANDLE_LIST.
         // This is the only way to inherit exactly one handle (the ready pipe)
         // without leaking every other inheritable handle from the parent.
-        spawn_sidecar_raw(tender_bin, session_dir, ready_writer)
+        spawn_sidecar_raw(tendr_bin, session_dir, ready_writer)
     }
 
     fn ready_channel() -> io::Result<(File, File)> {
@@ -383,12 +379,12 @@ impl Platform for WindowsPlatform {
     }
 
     fn ready_writer_from_env() -> io::Result<File> {
-        let handle_str = std::env::var("TENDER_READY_HANDLE")
-            .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "TENDER_READY_HANDLE not set"))?;
+        let handle_str = std::env::var("TENDR_READY_HANDLE")
+            .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "TENDR_READY_HANDLE not set"))?;
         let handle: usize = handle_str.parse().map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "TENDER_READY_HANDLE is not a valid handle",
+                "TENDR_READY_HANDLE is not a valid handle",
             )
         })?;
         // SAFETY: handle was inherited from the parent via CreatePipe with
@@ -538,11 +534,7 @@ fn parent_job_allows_breakaway() -> bool {
 /// (stdout/stderr pipes from test harnesses, SSH sessions, etc.).
 ///
 /// Requires Windows 7+ (PROC_THREAD_ATTRIBUTE_HANDLE_LIST support).
-fn spawn_sidecar_raw(
-    tender_bin: &Path,
-    session_dir: &Path,
-    ready_writer: &File,
-) -> io::Result<u32> {
+fn spawn_sidecar_raw(tendr_bin: &Path, session_dir: &Path, ready_writer: &File) -> io::Result<u32> {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::Threading::{
         CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT,
@@ -558,7 +550,7 @@ fn spawn_sidecar_raw(
     // CreateProcessW wants a single mutable wide string for the command line.
     let cmdline = format!(
         "\"{}\" _sidecar --session-dir \"{}\"",
-        tender_bin.display(),
+        tendr_bin.display(),
         session_dir.display(),
     );
     let mut cmdline_wide: Vec<u16> = cmdline.encode_utf16().chain(std::iter::once(0)).collect();
@@ -568,7 +560,7 @@ fn spawn_sidecar_raw(
     let mut env_vars: Vec<(String, String)> = std::env::vars().collect();
     // Add/override the ready handle env var.
     let handle_value = ready_handle as usize;
-    let ready_key = "TENDER_READY_HANDLE";
+    let ready_key = "TENDR_READY_HANDLE";
     if let Some(entry) = env_vars.iter_mut().find(|(k, _)| k == ready_key) {
         entry.1 = handle_value.to_string();
     } else {
@@ -806,7 +798,7 @@ fn stdin_pipe_name(session_dir: &Path) -> String {
     use sha2::{Digest, Sha256};
     let hash = Sha256::digest(session_dir.as_os_str().as_encoded_bytes());
     let hex: String = hash[..8].iter().map(|b| format!("{b:02x}")).collect();
-    format!(r"\\.\pipe\tender-stdin-{hex}")
+    format!(r"\\.\pipe\tendr-stdin-{hex}")
 }
 
 /// Create a named pipe server for inbound byte-mode reads.

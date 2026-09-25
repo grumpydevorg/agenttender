@@ -6,12 +6,12 @@ use std::io::Write;
 use std::path::Path;
 
 use tempfile::TempDir;
-use tender::events::{
+use tendr::events::{
     EventDraft, EventWriter, decode_cursor, encode_cursor, project_log_line, read_segment_records,
 };
-use tender::log::LogLine;
-use tender::model::event::{EventTimestamp, Kind};
-use tender::model::ids::{Namespace, RunId, SessionName, Source};
+use tendr::log::LogLine;
+use tendr::model::event::{EventTimestamp, Kind};
+use tendr::model::ids::{Namespace, RunId, SessionName, Source};
 
 fn draft(kind: &str, data: serde_json::Value) -> EventDraft {
     EventDraft {
@@ -21,7 +21,7 @@ fn draft(kind: &str, data: serde_json::Value) -> EventDraft {
         session: SessionName::new("s1").unwrap(),
         run_id: RunId::new(),
         generation: Some(1),
-        source: Source::trusted("tender.sidecar").unwrap(),
+        source: Source::trusted("tendr.sidecar").unwrap(),
         block_id: None,
         parent_id: None,
         data: Some(data),
@@ -182,7 +182,7 @@ fn project_log_line_maps_stdout_and_stderr() {
     assert_eq!(projected["namespace"], "default");
     assert_eq!(projected["session"], "s1");
     assert_eq!(projected["run_id"], "run-id-here");
-    assert_eq!(projected["source"], "tender.sidecar");
+    assert_eq!(projected["source"], "tendr.sidecar");
     assert_eq!(projected["data"]["content"], "hello");
     // Derived records carry no stored identity.
     assert!(projected.get("id").is_none());

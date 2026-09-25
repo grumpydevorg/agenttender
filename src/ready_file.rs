@@ -1,6 +1,6 @@
 //! Atomic creation of an out-of-band readiness signal file.
 //!
-//! A follower (`tender events --follow`, `tender watch`) creates this file once
+//! A follower (`tendr events --follow`, `tendr watch`) creates this file once
 //! its baseline is established and its initial output is flushed, so
 //! orchestrators — and tests — can observe "safe to perform live mutations now"
 //! without contaminating the NDJSON stdout stream. The file is an empty

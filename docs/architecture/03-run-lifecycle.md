@@ -1,12 +1,12 @@
 # Run Lifecycle
 
-Tender models supervised runs, not raw processes. The sidecar is the normal writer of lifecycle state. The CLI writes lifecycle state only during reconciliation, in two cases: it infers `SidecarLost` (lock released with no terminal state), or it *heals* a terminal state (`Exited*` / `SpawnFailed` / `DependencyFailed`) by replaying the sidecar's own event-log record when the sidecar died in the WAL crash window before persisting `meta.json`.
+Tendr models supervised runs, not raw processes. The sidecar is the normal writer of lifecycle state. The CLI writes lifecycle state only during reconciliation, in two cases: it infers `SidecarLost` (lock released with no terminal state), or it *heals* a terminal state (`Exited*` / `SpawnFailed` / `DependencyFailed`) by replaying the sidecar's own event-log record when the sidecar died in the WAL crash window before persisting `meta.json`.
 
 **The invariant.** Once the child is spawned, at every instant either the sidecar is alive and owns the child, or meta is terminal and the child is dead, or the sidecar died by a true crash and the next reconciliation reaches the second state. No child is ever left running without a supervisor and without a word. A true crash is anything that ends the sidecar without unwinding: SIGKILL, OOM, `abort`, and any signal it does not handle, SIGTERM, SIGINT and SIGHUP included. The one gap is listed under Limits below.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Starting: tender start / tender run\nspawn detached sidecar
+    [*] --> Starting: tendr start / tendr run\nspawn detached sidecar
 
     Starting --> Running: sidecar spawns child\nand writes Running
     Starting --> SpawnFailed: child spawn fails
@@ -75,9 +75,9 @@ What a failed post-spawn step does:
 | observing the exit (`child_wait`) | end the run | an exit that cannot be observed cannot be classified |
 | terminal meta after a normal exit | not a kill: salvage a copy to lost+found, still run hooks | the durable terminal event lets reconciliation heal meta |
 
-A `SidecarFailed` run shows everywhere: meta carries `"reason":"SidecarFailed","step":…` and a `sidecar failed at <step>: <error>` warning; the event log gets a durable `run.sidecar_failed`; `wait`, `run` and `start` exit **5**; `--on-exit` hooks run with `TENDER_EXIT_REASON=SidecarFailed`; a `start` client still waiting receives the terminal snapshot. Exit code **3** (`SidecarLost`) keeps its meaning: the sidecar vanished, so the child may still be running.
+A `SidecarFailed` run shows everywhere: meta carries `"reason":"SidecarFailed","step":…` and a `sidecar failed at <step>: <error>` warning; the event log gets a durable `run.sidecar_failed`; `wait`, `run` and `start` exit **5**; `--on-exit` hooks run with `TENDR_EXIT_REASON=SidecarFailed`; a `start` client still waiting receives the terminal snapshot. Exit code **3** (`SidecarLost`) keeps its meaning: the sidecar vanished, so the child may still be running.
 
-If the failure record itself cannot be written, the child is still stopped. The failure is then reported on the channels still open: a `start` client still waiting gets an `ERROR:` saying the record failed, a copy of the record with the write error goes to `~/.tender/lost+found/events.jsonl`, and the `child_pid` breadcrumb stays so later recovery can find the child. Nothing claims a record that was not made.
+If the failure record itself cannot be written, the child is still stopped. The failure is then reported on the channels still open: a `start` client still waiting gets an `ERROR:` saying the record failed, a copy of the record with the write error goes to `~/.tendr/lost+found/events.jsonl`, and the `child_pid` breadcrumb stays so later recovery can find the child. Nothing claims a record that was not made.
 
 ## True crashes: reconciliation kills the orphan
 

@@ -199,7 +199,7 @@ fn find_sidecar_terminal_event(session_dir: &Path, meta: &Meta) -> Option<Event>
     outcome.events.into_iter().rev().find(|event| {
         event.run_id == run_id
             && event.writer == sidecar_writer
-            && event.source.as_str() == "tender.sidecar"
+            && event.source.as_str() == "tendr.sidecar"
             && matches!(
                 event.kind.as_str(),
                 "run.exited"
@@ -248,13 +248,13 @@ fn healed_terminal_of(data: &serde_json::Value) -> Option<HealedTerminal> {
 }
 
 /// Append the inferred `run.sidecar_lost` event (`data.provenance:
-/// "inferred"`, source `tender.cli`, fresh CLI writer identity). Best-effort:
+/// "inferred"`, source `tendr.cli`, fresh CLI writer identity). Best-effort:
 /// reconciliation must not fail because the history log is unwritable.
 fn append_sidecar_lost_event(session: &SessionDir, meta: &Meta) {
     let Some(namespace) = namespace_of(session) else {
         return;
     };
-    let Ok(source) = Source::trusted("tender.cli") else {
+    let Ok(source) = Source::trusted("tendr.cli") else {
         return;
     };
     let draft = EventDraft {
@@ -435,7 +435,7 @@ mod tests {
                     session: SessionName::new("t").unwrap(),
                     run_id,
                     generation: Some(1),
-                    source: Source::trusted("tender.sidecar").unwrap(),
+                    source: Source::trusted("tendr.sidecar").unwrap(),
                     block_id: None,
                     parent_id: None,
                     data: Some(events::lifecycle_data(&failed, "direct", None)),

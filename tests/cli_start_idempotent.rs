@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{tender, test_callback_bin, wait_running, wait_terminal};
+use harness::{tendr, test_callback_bin, wait_running, wait_terminal};
 use predicates::prelude::*;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -12,7 +12,7 @@ fn start_same_spec_is_idempotent() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out1 = tender(&root)
+    let out1 = tendr(&root)
         .args(["start", "idem-same", "sleep", "60"])
         .output()
         .unwrap();
@@ -23,7 +23,7 @@ fn start_same_spec_is_idempotent() {
         serde_json::from_slice(&out1.stdout).expect("first output not JSON");
     let run_id1 = meta1["run_id"].as_str().expect("no run_id");
 
-    let out2 = tender(&root)
+    let out2 = tendr(&root)
         .args(["start", "idem-same", "sleep", "60"])
         .output()
         .unwrap();
@@ -43,7 +43,7 @@ fn start_same_spec_is_idempotent() {
         "idempotent start should return same run_id"
     );
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "idem-same"])
         .assert()
         .success();
@@ -54,19 +54,19 @@ fn start_different_spec_is_conflict() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "idem-diff", "sleep", "60"])
         .assert()
         .success();
     wait_running(&root, "idem-diff");
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "idem-diff", "echo", "hi"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("session conflict"));
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "idem-diff"])
         .assert()
         .success();
@@ -77,13 +77,13 @@ fn start_after_terminal_is_error() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "idem-term", "true"])
         .assert()
         .success();
     wait_terminal(&root, "idem-term");
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "idem-term", "true"])
         .assert()
         .failure()
@@ -97,7 +97,7 @@ fn start_with_cwd_child_runs_in_requested_directory() {
     let work_dir = root.path().join("myworkdir");
     std::fs::create_dir_all(&work_dir).unwrap();
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args([
             "start",
             "cwd-test",
@@ -117,7 +117,7 @@ fn start_with_cwd_child_runs_in_requested_directory() {
 
     wait_terminal(&root, "cwd-test");
 
-    let log_out = tender(&root)
+    let log_out = tendr(&root)
         .args(["log", "cwd-test", "--raw"])
         .output()
         .unwrap();
@@ -133,16 +133,16 @@ fn start_with_env_child_sees_overridden_vars() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args([
             "start",
             "env-test",
             "--env",
-            "TENDER_TEST_VAR=hello_from_tender",
+            "TENDR_TEST_VAR=hello_from_tendr",
             "--",
             "sh",
             "-c",
-            "echo $TENDER_TEST_VAR",
+            "echo $TENDR_TEST_VAR",
         ])
         .output()
         .unwrap();
@@ -154,14 +154,14 @@ fn start_with_env_child_sees_overridden_vars() {
 
     wait_terminal(&root, "env-test");
 
-    let log_out = tender(&root)
+    let log_out = tendr(&root)
         .args(["log", "env-test", "--raw"])
         .output()
         .unwrap();
     let log = String::from_utf8_lossy(&log_out.stdout);
     assert!(
-        log.contains("hello_from_tender"),
-        "child should see TENDER_TEST_VAR, got log: {log}"
+        log.contains("hello_from_tendr"),
+        "child should see TENDR_TEST_VAR, got log: {log}"
     );
 }
 
@@ -174,7 +174,7 @@ fn start_with_different_cwd_is_spec_conflict() {
     std::fs::create_dir_all(&dir_a).unwrap();
     std::fs::create_dir_all(&dir_b).unwrap();
 
-    let out1 = tender(&root)
+    let out1 = tendr(&root)
         .args([
             "start",
             "cwd-conflict",
@@ -188,7 +188,7 @@ fn start_with_different_cwd_is_spec_conflict() {
         .unwrap();
     assert!(out1.status.success());
 
-    let out2 = tender(&root)
+    let out2 = tendr(&root)
         .args([
             "start",
             "cwd-conflict",
@@ -211,7 +211,7 @@ fn start_with_different_cwd_is_spec_conflict() {
     );
 
     // Cleanup: kill the running session
-    tender(&root)
+    tendr(&root)
         .args(["kill", "cwd-conflict", "--force"])
         .output()
         .unwrap();
@@ -223,7 +223,7 @@ fn start_with_different_env_is_spec_conflict() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out1 = tender(&root)
+    let out1 = tendr(&root)
         .args([
             "start",
             "env-conflict",
@@ -237,7 +237,7 @@ fn start_with_different_env_is_spec_conflict() {
         .unwrap();
     assert!(out1.status.success());
 
-    let out2 = tender(&root)
+    let out2 = tendr(&root)
         .args([
             "start",
             "env-conflict",
@@ -260,7 +260,7 @@ fn start_with_different_env_is_spec_conflict() {
     );
 
     // Cleanup: kill the running session
-    tender(&root)
+    tendr(&root)
         .args(["kill", "env-conflict", "--force"])
         .output()
         .unwrap();
@@ -272,7 +272,7 @@ fn start_with_invalid_env_format_fails() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args(["start", "bad-env", "--env", "NO_EQUALS_SIGN", "--", "true"])
         .output()
         .unwrap();
@@ -289,7 +289,7 @@ fn start_with_empty_env_key_fails() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args(["start", "empty-key", "--env", "=foo", "--", "true"])
         .output()
         .unwrap();
@@ -309,16 +309,16 @@ fn start_with_env_preserves_inherited_environment() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args([
             "start",
             "env-inherit",
             "--env",
-            "TENDER_EXTRA=added",
+            "TENDR_EXTRA=added",
             "--",
             "sh",
             "-c",
-            "echo PATH=$PATH TENDER_EXTRA=$TENDER_EXTRA",
+            "echo PATH=$PATH TENDR_EXTRA=$TENDR_EXTRA",
         ])
         .output()
         .unwrap();
@@ -330,7 +330,7 @@ fn start_with_env_preserves_inherited_environment() {
 
     wait_terminal(&root, "env-inherit");
 
-    let log_out = tender(&root)
+    let log_out = tendr(&root)
         .args(["log", "env-inherit", "--raw"])
         .output()
         .unwrap();
@@ -340,7 +340,7 @@ fn start_with_env_preserves_inherited_environment() {
         "child should inherit PATH from parent"
     );
     assert!(
-        log.contains("TENDER_EXTRA=added"),
+        log.contains("TENDR_EXTRA=added"),
         "child should see override"
     );
 }
@@ -352,7 +352,7 @@ fn start_with_same_cwd_and_env_is_idempotent() {
     let work_dir = root.path().join("samedir");
     std::fs::create_dir_all(&work_dir).unwrap();
 
-    let out1 = tender(&root)
+    let out1 = tendr(&root)
         .args([
             "start",
             "idem-cwd-env",
@@ -370,7 +370,7 @@ fn start_with_same_cwd_and_env_is_idempotent() {
     let meta1: serde_json::Value = serde_json::from_slice(&out1.stdout).unwrap();
     let run_id1 = meta1["run_id"].as_str().unwrap().to_string();
 
-    let out2 = tender(&root)
+    let out2 = tendr(&root)
         .args([
             "start",
             "idem-cwd-env",
@@ -394,7 +394,7 @@ fn start_with_same_cwd_and_env_is_idempotent() {
     );
 
     // Cleanup: kill the running session
-    tender(&root)
+    tendr(&root)
         .args(["kill", "idem-cwd-env", "--force"])
         .output()
         .unwrap();

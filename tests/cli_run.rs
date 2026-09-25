@@ -13,8 +13,8 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn tender(root: &TempDir) -> Command {
-    harness::tender(root)
+fn tendr(root: &TempDir) -> Command {
+    harness::tendr(root)
 }
 
 /// Write a Python script (cross-platform, .py extension triggers launcher).
@@ -43,7 +43,7 @@ fn run_blocks_and_returns_exit_code_zero() {
     let root = TempDir::new().unwrap();
     let script = write_py_script(root.path(), "hello.py", "print('hello-from-run')");
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap()])
         .assert()
         .success()
@@ -55,7 +55,7 @@ fn run_propagates_nonzero_exit_code() {
     let root = TempDir::new().unwrap();
     let script = write_py_script(root.path(), "fail.py", "print('failing')\nsys.exit(7)");
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap()])
         .assert()
         .code(7)
@@ -71,7 +71,7 @@ fn run_passes_script_arguments() {
         "print('args:', ' '.join(sys.argv[1:]))",
     );
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap(), "foo", "bar"])
         .assert()
         .success()
@@ -83,12 +83,12 @@ fn run_replace_reruns_script() {
     let root = TempDir::new().unwrap();
     let script = write_py_script(root.path(), "rerun.py", "print('rerun-output')");
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap()])
         .assert()
         .success();
 
-    tender(&root)
+    tendr(&root)
         .args(["run", "--replace", script.to_str().unwrap()])
         .assert()
         .success()
@@ -98,22 +98,22 @@ fn run_replace_reruns_script() {
 #[test]
 fn run_foreground_overrides_detach_directive() {
     let root = TempDir::new().unwrap();
-    // Python uses # for comments, so #tender: directives work natively.
+    // Python uses # for comments, so #tendr: directives work natively.
     let script = write_py_script(
         root.path(),
         "detachable.py",
-        "#tender: detach\nprint('foreground-output')",
+        "#tendr: detach\nprint('foreground-output')",
     );
 
     // Without --foreground, the directive causes detach (JSON output).
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap()])
         .assert_within_deadline()
         .success()
         .stdout(predicate::str::contains("\"status\": \"Running\""));
 
     // With --foreground, the directive is overridden.
-    tender(&root)
+    tendr(&root)
         .args(["run", "--foreground", "--replace", script.to_str().unwrap()])
         .assert()
         .success()
@@ -125,7 +125,7 @@ fn run_detach_returns_immediately_with_json() {
     let root = TempDir::new().unwrap();
     let script = write_py_script(root.path(), "slow.py", "import time; time.sleep(30)");
 
-    tender(&root)
+    tendr(&root)
         .args(["run", "--detach", script.to_str().unwrap()])
         .assert_within_deadline()
         .success()
@@ -138,10 +138,10 @@ fn run_session_name_from_filename() {
     let script = write_py_script(
         root.path(),
         "my-build.py",
-        "#tender: detach\nimport time; time.sleep(30)",
+        "#tendr: detach\nimport time; time.sleep(30)",
     );
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap()])
         .assert_within_deadline()
         .success()
@@ -154,10 +154,10 @@ fn run_session_directive_overrides_filename() {
     let script = write_py_script(
         root.path(),
         "build.py",
-        "#tender: session=custom-name\n#tender: detach\nimport time; time.sleep(30)",
+        "#tendr: session=custom-name\n#tendr: detach\nimport time; time.sleep(30)",
     );
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap()])
         .assert_within_deadline()
         .success()
@@ -170,10 +170,10 @@ fn run_directives_map_to_launch_spec() {
     let script = write_py_script(
         root.path(),
         "directives.py",
-        "#tender: namespace=test-ns\n#tender: timeout=999\n#tender: session=my-session\n#tender: detach\nimport time; time.sleep(30)",
+        "#tendr: namespace=test-ns\n#tendr: timeout=999\n#tendr: session=my-session\n#tendr: detach\nimport time; time.sleep(30)",
     );
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap()])
         .assert_within_deadline()
         .success()
@@ -188,10 +188,10 @@ fn run_cli_flags_override_directives() {
     let script = write_py_script(
         root.path(),
         "override.py",
-        "#tender: namespace=directive-ns\n#tender: timeout=999\n#tender: detach\nimport time; time.sleep(30)",
+        "#tendr: namespace=directive-ns\n#tendr: timeout=999\n#tendr: detach\nimport time; time.sleep(30)",
     );
 
-    tender(&root)
+    tendr(&root)
         .args([
             "run",
             "--namespace",
@@ -217,7 +217,7 @@ fn run_shell_flag_uses_specified_interpreter() {
 
     // Use --shell to provide the interpreter explicitly.
     let py = if cfg!(windows) { "py" } else { "python3" };
-    tender(&root)
+    tendr(&root)
         .args(["run", "--shell", py, script_path.to_str().unwrap()])
         .assert()
         .success()
@@ -231,7 +231,7 @@ fn run_py_extension_uses_python() {
     let root = TempDir::new().unwrap();
     let script = write_py_script(root.path(), "check.py", "print('py-ext-works')");
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap()])
         .assert()
         .success()
@@ -244,7 +244,7 @@ fn run_py_extension_uses_python() {
 fn run_nonexistent_script_fails() {
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["run", "/nonexistent/path/script.sh"])
         .assert()
         .failure()
@@ -257,7 +257,7 @@ fn run_unknown_extension_fails_with_hint() {
     let script_path = root.path().join("mystery.xyz");
     std::fs::write(&script_path, "some content\n").unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script_path.to_str().unwrap()])
         .assert()
         .failure()
@@ -270,7 +270,7 @@ fn run_invalid_cli_namespace_fails() {
     let root = TempDir::new().unwrap();
     let script = write_py_script(root.path(), "good.py", "print('hi')");
 
-    tender(&root)
+    tendr(&root)
         .args(["run", "--namespace", "bad name", script.to_str().unwrap()])
         .assert()
         .failure()
@@ -283,10 +283,10 @@ fn run_invalid_namespace_directive_fails() {
     let script = write_py_script(
         root.path(),
         "badns.py",
-        "#tender: namespace=bad name\nprint('hi')",
+        "#tendr: namespace=bad name\nprint('hi')",
     );
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap()])
         .assert()
         .failure()
@@ -299,10 +299,10 @@ fn run_invalid_session_directive_fails() {
     let script = write_py_script(
         root.path(),
         "badsession.py",
-        "#tender: session=my.bad.name\nprint('hi')",
+        "#tendr: session=my.bad.name\nprint('hi')",
     );
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap()])
         .assert()
         .failure()
@@ -312,9 +312,9 @@ fn run_invalid_session_directive_fails() {
 #[test]
 fn run_unknown_directive_errors() {
     let root = TempDir::new().unwrap();
-    let script = write_py_script(root.path(), "bad.py", "#tender: timout=30\nprint('hi')");
+    let script = write_py_script(root.path(), "bad.py", "#tendr: timout=30\nprint('hi')");
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap()])
         .assert()
         .failure()
@@ -331,23 +331,23 @@ fn run_session_rejects_exec() {
     let script = write_py_script(
         root.path(),
         "server.py",
-        "#tender: detach\nimport time; time.sleep(60)",
+        "#tendr: detach\nimport time; time.sleep(60)",
     );
 
-    tender(&root)
+    tendr(&root)
         .args(["run", "--stdin", script.to_str().unwrap()])
         .assert_within_deadline()
         .success();
 
     harness::wait_running(&root, "server");
 
-    tender(&root)
+    tendr(&root)
         .args(["exec", "server", "--", "echo", "hello"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("no exec target"));
 
-    let _ = tender(&root).args(["kill", "server", "--force"]).assert();
+    let _ = tendr(&root).args(["kill", "server", "--force"]).assert();
 }
 
 // ── Harness deadline diagnostics ────────────────────────────────────────
@@ -364,7 +364,7 @@ fn harness_deadline_reports_timeout_with_command_and_deadline() {
     let script_str = script.to_str().unwrap().to_owned();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut cmd = tender(&root);
+        let mut cmd = tendr(&root);
         cmd.args(["run", "--foreground", &script_str]);
         harness::assert_within(&mut cmd, std::time::Duration::from_millis(500));
     }));
@@ -395,7 +395,7 @@ fn run_bash_sh_extension() {
     let root = TempDir::new().unwrap();
     let script = write_bash_script(root.path(), "test.sh", "echo bash-ext-works");
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap()])
         .assert()
         .success()
@@ -410,7 +410,7 @@ fn run_shebang_fallback_for_extensionless() {
     let script_path = root.path().join("myscript");
     std::fs::write(&script_path, "#!/bin/bash\necho shebang-fallback\n").unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script_path.to_str().unwrap()])
         .assert()
         .success()
@@ -423,7 +423,7 @@ fn run_executable_bit_direct() {
     let root = TempDir::new().unwrap();
     let script = write_bash_script(root.path(), "direct", "echo direct-exec");
 
-    tender(&root)
+    tendr(&root)
         .args(["run", script.to_str().unwrap()])
         .assert()
         .success()

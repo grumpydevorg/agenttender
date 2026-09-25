@@ -14,12 +14,12 @@ links:
 ## Outcome and status
 
 **Planned, not implemented.** The first usable workflow is Ghostty on the laptop
-→ SSH → Tender on an exe.dev Linux VM → Claude Code in a Tender-owned PTY.
+→ SSH → Tendr on an exe.dev Linux VM → Claude Code in a Tendr-owned PTY.
 A person can reconnect after losing the network, take input ownership immediately,
 resize and detach. An agent can drive that same PTY. Output is recorded exactly
 and can be played back through Ghostty without a screen extension.
 
-Claude must be launched through Tender; adopting an unrelated existing terminal
+Claude must be launched through Tendr; adopting an unrelated existing terminal
 is out of scope. A lost SSH connection does not end the run. A dead sidecar or VM
 reboot does: recovering a recording is not resuming a process or a conversation.
 
@@ -33,14 +33,14 @@ framework, or async-runtime migration is required.
 
 | Concern | Decision |
 |---------|----------|
-| Core owner | Existing Tender sidecar owns child lifecycle, PTY, input arbitration, output sequencing, recording, and viewer transport. |
+| Core owner | Existing Tendr sidecar owns child lifecycle, PTY, input arbitration, output sequencing, recording, and viewer transport. |
 | First transport | Existing `ssh -t` remote attach, hardened for explicit takeover. Typed `ssh -T` follows in slice 3, before the general remote-frame migration. |
 | Recording | Exact output and geometry are recorded for the new PTY workflow by default. Input payload recording is opt-in per run. |
-| Playback | Core `tender replay` writes recorded output locally. It neither requires a VT engine nor sends historical input to a running child. |
-| Screen authority | Optional, separately packaged Rust `tender-screen` executable on PATH; no Ghostty/Zig linkage in the core package. |
+| Playback | Core `tendr replay` writes recorded output locally. It neither requires a VT engine nor sends historical input to a running child. |
+| Screen authority | Optional, separately packaged Rust `tendr-screen` executable on PATH; no Ghostty/Zig linkage in the core package. |
 | Public surface | Core implements byte/control operations; explicitly recognized screen commands use a versioned external extension contract. Unknown commands are errors. |
 | First platforms | macOS client and Linux target, including exe.dev. Test local Unix behavior too. ConPTY and native Windows attach remain separate work. |
-| Session identity | Reuse Tender namespace/session/run identity. Every stateful handle also carries its run ID; replacement invalidates old handles. |
+| Session identity | Reuse Tendr namespace/session/run identity. Every stateful handle also carries its run ID; replacement invalidates old handles. |
 
 The external screen dispatch is a **revision of the 2026-07-09 decision**, recorded
 in [boo-integration](../backlog/boo-integration.md) and the [roadmap](../../ROADMAP.md).
@@ -123,7 +123,7 @@ epoch validation protects the writer while old tasks exit.
 
 The local terminal endpoint must stay within the run owner's account. Replace
 the predictable socket directly under shared `/tmp` with a short socket path in
-an owner-only directory (`0700`). Default to `sockets/` under Tender's persistent
+an owner-only directory (`0700`). Default to `sockets/` under Tendr's persistent
 state root, with a short name derived from run identity and collision checking.
 The state root must remain mounted/available after logout. Verify ownership/mode
 and reject symlink substitutions; never adopt or remove a foreign pre-existing
@@ -203,7 +203,7 @@ the recovery is explicit takeover plus redraw/repaint, without a byte-resume cla
 
 ## Recording format, failure, and retention
 
-Use a versioned Tender binary recording, separate from structured lifecycle
+Use a versioned Tendr binary recording, separate from structured lifecycle
 events and `output.log`. A segment header records format version, run identity,
 initial dimensions/terminal profile, and wall-clock origin. Length-delimited
 records contain sequence, monotonic elapsed time, kind, byte length, and exact
@@ -221,7 +221,7 @@ observation counts every record kind; filtering output does not reset numbering.
 
 Segment indexes are derived and rebuildable from records. Publish segment files
 and manifests atomically. Keep one recording writer. Record references and state
-changes can appear in Tender's existing event schema without embedding every
+changes can appear in Tendr's existing event schema without embedding every
 PTY chunk into that lifecycle stream or inventing another run model.
 
 Defaults for this workflow:
@@ -326,7 +326,7 @@ the outer `ssh -t` client consumes it as its own disconnect escape. Test the act
 nested SSH path, literal keys, paste, and cancellation as well as a local PTY.
 A repaint does not restore history and must not masquerade as a screen snapshot.
 
-Acceptance is remote: launch via Tender on a Linux VM, attach from Ghostty over
+Acceptance is remote: launch via Tendr on a Linux VM, attach from Ghostty over
 `ssh -t`, leave the old connection half-open, attach again with takeover, and
 prove the new controller works while old input/resize is rejected. Also cover
 agent → human → explicit agent reacquisition. A blocked child input or stalled
@@ -336,7 +336,7 @@ that descriptors, tasks, and admission slots do not grow with reconnect count.
 
 ## Slice 2 — replay in Ghostty without the extension
 
-Implement `tender replay` for a local recording/bundle and asciicast export.
+Implement `tendr replay` for a local recording/bundle and asciicast export.
 Retrieve closed remote segments and their manifest through existing SSH/file
 transfer; replay on the laptop. Do not execute the replay in the live Claude
 session. Publish recordings using a consistent high-water boundary if exporting
@@ -348,7 +348,7 @@ mode tests separately establish its geometry checks. No PNG/WebM pipeline is nee
 ## Slice 3 — typed SSH bridge and resumable observation
 
 Move local terminal handling to the laptop. Use `ssh -T` to a constant remote
-Tender entrypoint, carrying a bounded versioned handshake and subsequent typed
+Tendr entrypoint, carrying a bounded versioned handshake and subsequent typed
 PTY frames. No user payload is reconstructed into remote shell argv. Share the
 codec/validation with [remote frame transport](01_remote-frame-transport.md);
 do not wait for its general operation migration or Windows work.
@@ -389,8 +389,8 @@ is explicitly streaming, and every wait has a finite default deadline.
 
 ## Slice 4 — external Rust screen extension
 
-Add an independently packaged `tender-screen` executable. A small core dispatch
-table delegates only recognized operations such as `tender pty snapshot`, screen
+Add an independently packaged `tendr-screen` executable. A small core dispatch
+table delegates only recognized operations such as `tendr pty snapshot`, screen
 waits, and mode-aware keys/paste. Call it with `Command` and structured stdin;
 never use shell interpolation or implicit installation. Require a protocol/version
 and capability handshake. Missing/incompatible extension returns an actionable
@@ -398,7 +398,7 @@ typed error; core launch/attach/record/replay continue to work.
 
 For `--host`, resolve and invoke the extension on the target host through the
 typed bridge. Maintain one VT state worker per opted-in run beside its sidecar;
-it observes Tender's sequence stream and never owns another child PTY. Tender
+it observes Tendr's sequence stream and never owns another child PTY. Tendr
 binds its lifecycle to the run. A worker crash leaves the child alive, marks screen
 operations unavailable/stale, and permits reconstruction from retained history.
 If designated query answering is lost, report that capability loss explicitly.

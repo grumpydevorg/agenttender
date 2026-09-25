@@ -1,5 +1,5 @@
 use std::num::NonZeroU32;
-use tender::model::ids::{
+use tendr::model::ids::{
     EpochTimestamp, Generation, Namespace, NamespaceError, ProcessIdentity, RunId, SessionName,
     SessionNameError, Source, SourceError,
 };
@@ -342,13 +342,13 @@ fn source_no_dot_rejected() {
 }
 
 #[test]
-fn source_reserved_tender_prefix_rejected() {
+fn source_reserved_tendr_prefix_rejected() {
     assert!(matches!(
-        Source::new("tender.sidecar").unwrap_err(),
+        Source::new("tendr.sidecar").unwrap_err(),
         SourceError::ReservedPrefix
     ));
     assert!(matches!(
-        Source::new("tender.anything").unwrap_err(),
+        Source::new("tendr.anything").unwrap_err(),
         SourceError::ReservedPrefix
     ));
 }

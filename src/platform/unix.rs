@@ -44,11 +44,11 @@ impl Platform for UnixPlatform {
     type ReadyWriter = File;
 
     fn spawn_sidecar(
-        tender_bin: &Path,
+        tendr_bin: &Path,
         session_dir: &Path,
         ready_write_fd: &File,
     ) -> io::Result<u32> {
-        spawn_sidecar(tender_bin, session_dir, ready_write_fd)
+        spawn_sidecar(tendr_bin, session_dir, ready_write_fd)
     }
 
     fn ready_channel() -> io::Result<(File, File)> {
@@ -345,15 +345,15 @@ impl Platform for UnixPlatform {
     }
 
     fn ready_writer_from_env() -> io::Result<File> {
-        let fd_str = std::env::var("TENDER_READY_FD")
-            .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "TENDER_READY_FD not set"))?;
+        let fd_str = std::env::var("TENDR_READY_FD")
+            .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "TENDR_READY_FD not set"))?;
         let fd: RawFd = fd_str.parse().map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "TENDER_READY_FD is not a valid fd",
+                "TENDR_READY_FD is not a valid fd",
             )
         })?;
-        // SAFETY: fd is the TENDER_READY_FD passed by spawn_sidecar, which was a
+        // SAFETY: fd is the TENDR_READY_FD passed by spawn_sidecar, which was a
         // valid open fd at exec time (close-on-exec was cleared in pre_exec).
         // from_raw_fd takes ownership — the fd is closed when the File is dropped.
         Ok(unsafe { File::from_raw_fd(fd) })
@@ -414,14 +414,14 @@ fn pipe() -> io::Result<(File, File)> {
 ///
 /// The sidecar inherits the write end of the readiness pipe and is
 /// responsible for writing a result and closing it.
-fn spawn_sidecar(tender_bin: &Path, session_dir: &Path, ready_write_fd: &File) -> io::Result<u32> {
+fn spawn_sidecar(tendr_bin: &Path, session_dir: &Path, ready_write_fd: &File) -> io::Result<u32> {
     let write_fd_raw = ready_write_fd.as_raw_fd();
 
-    let mut cmd = Command::new(tender_bin);
+    let mut cmd = Command::new(tendr_bin);
     cmd.arg("_sidecar")
         .arg("--session-dir")
         .arg(session_dir)
-        .env("TENDER_READY_FD", write_fd_raw.to_string());
+        .env("TENDR_READY_FD", write_fd_raw.to_string());
 
     // Redirect stdin/stdout/stderr to /dev/null for detachment
     cmd.stdin(std::process::Stdio::null())
@@ -488,7 +488,7 @@ fn write_ready_signal_file(mut file: File, message: &str) -> io::Result<()> {
 /// Write a readiness signal to the pipe via a raw fd number.
 /// Used by the sidecar entry point which receives the fd from the environment.
 pub fn write_ready_signal(fd_num: RawFd, message: &str) -> io::Result<()> {
-    // SAFETY: fd_num is the TENDER_READY_FD passed by spawn_sidecar, which was a
+    // SAFETY: fd_num is the TENDR_READY_FD passed by spawn_sidecar, which was a
     // valid open fd at exec time (close-on-exec was cleared in pre_exec).
     // from_raw_fd takes ownership -- the fd is closed when file is dropped at
     // the end of this function, ensuring exactly one close.

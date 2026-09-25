@@ -5,7 +5,7 @@
 
 mod harness;
 
-use harness::{tender, wait_running};
+use harness::{tendr, wait_running};
 use std::sync::Mutex;
 use tempfile::TempDir;
 
@@ -18,7 +18,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 fn read_events(root: &TempDir, session: &str) -> Vec<serde_json::Value> {
     let events_dir = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/events"));
+        .join(format!(".tendr/sessions/default/{session}/events"));
     let mut segments: Vec<_> = std::fs::read_dir(&events_dir)
         .expect("events dir exists")
         .filter_map(Result::ok)
@@ -48,7 +48,7 @@ fn read_events(root: &TempDir, session: &str) -> Vec<serde_json::Value> {
 fn read_meta_json(root: &TempDir, session: &str) -> serde_json::Value {
     let path = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/meta.json"));
+        .join(format!(".tendr/sessions/default/{session}/meta.json"));
     serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
 }
 
@@ -69,7 +69,7 @@ fn wait_pid_dead(pid: i32) {
     }
 }
 
-/// Poll `tender status` until it reports a terminal state, or panic after
+/// Poll `tendr status` until it reports a terminal state, or panic after
 /// 10 s. Needed after crash injection: the aborting sidecar releases the
 /// session lock only when the process finishes dying (macOS crash reporting
 /// can delay that well past the fsync'd event append), and reconciliation
@@ -77,7 +77,7 @@ fn wait_pid_dead(pid: i32) {
 fn poll_status_until_terminal(root: &TempDir, session: &str) -> serde_json::Value {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        let output = tender(root).args(["status", session]).output().unwrap();
+        let output = tendr(root).args(["status", session]).output().unwrap();
         assert!(output.status.success());
         let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         if status["status"]
@@ -99,7 +99,7 @@ fn wait_for_event_kind(root: &TempDir, session: &str, kind: &str) {
     loop {
         let events_dir = root
             .path()
-            .join(format!(".tender/sessions/default/{session}/events"));
+            .join(format!(".tendr/sessions/default/{session}/events"));
         if events_dir.exists() && read_events(root, session).iter().any(|e| e["kind"] == kind) {
             return;
         }
@@ -117,7 +117,7 @@ fn killed_sidecar_appends_inferred_sidecar_lost_event() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "sleep", "60"])
         .assert()
         .success();
@@ -129,7 +129,7 @@ fn killed_sidecar_appends_inferred_sidecar_lost_event() {
     wait_pid_dead(sc_pid);
 
     // status triggers reconciliation.
-    let output = tender(&root).args(["status", "s1"]).output().unwrap();
+    let output = tendr(&root).args(["status", "s1"]).output().unwrap();
     assert!(output.status.success());
     let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(status["status"], "SidecarLost");
@@ -140,7 +140,7 @@ fn killed_sidecar_appends_inferred_sidecar_lost_event() {
 
     let lost = events.last().unwrap();
     assert_eq!(lost["data"]["provenance"], "inferred");
-    assert_eq!(lost["source"], "tender.cli");
+    assert_eq!(lost["source"], "tendr.cli");
     assert_eq!(lost["run_id"], meta["run_id"]);
     // CLI emitter: freshly minted writer (not the sidecar's), seq from 1.
     assert_ne!(lost["writer"], meta["run_id"]);
@@ -165,8 +165,8 @@ fn crash_between_event_and_meta_heals_meta_from_event_log() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
-        .env("TENDER_TEST_ABORT", "before_terminal_meta")
+    tendr(&root)
+        .env("TENDR_TEST_ABORT", "before_terminal_meta")
         .args(["start", "s1", "--", "false"])
         .assert()
         .success();
@@ -200,8 +200,8 @@ fn wait_exit_code_reflects_healed_state() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
-        .env("TENDER_TEST_ABORT", "before_terminal_meta")
+    tendr(&root)
+        .env("TENDR_TEST_ABORT", "before_terminal_meta")
         .args(["start", "s1", "--", "false"])
         .assert()
         .success();
@@ -210,7 +210,7 @@ fn wait_exit_code_reflects_healed_state() {
     // ExitedError → 42 (wait's non-zero-child-exit code), not 3 (sidecar
     // lost). wait polls internally, so it tolerates the lock-release lag;
     // the generous timeout covers slow crash teardown under load.
-    tender(&root)
+    tendr(&root)
         .args(["wait", "--timeout", "10", "s1"])
         .assert()
         .code(42);

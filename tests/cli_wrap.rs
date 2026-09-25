@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{tender, wait_terminal};
+use harness::{tendr, wait_terminal};
 // Command/Stdio remain only for the cfg(unix) SIGTERM test below.
 #[cfg(unix)]
 use std::process::{Command, Stdio};
@@ -11,7 +11,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 /// Start a session that runs `sleep 60`, wait for Running state.
 fn create_running_session(root: &TempDir, name: &str, namespace: &str) {
-    let out = tender(root)
+    let out = tendr(root)
         .args(["start", name, "--namespace", namespace, "--", "sleep", "60"])
         .output()
         .unwrap();
@@ -27,7 +27,7 @@ fn create_running_session(root: &TempDir, name: &str, namespace: &str) {
 fn wait_running_ns(root: &TempDir, namespace: &str, session: &str) {
     let path = root
         .path()
-        .join(format!(".tender/sessions/{namespace}/{session}/meta.json"));
+        .join(format!(".tendr/sessions/{namespace}/{session}/meta.json"));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if let Ok(content) = std::fs::read_to_string(&path) {
@@ -48,7 +48,7 @@ fn wait_running_ns(root: &TempDir, namespace: &str, session: &str) {
 fn read_run_id(root: &TempDir, namespace: &str, session: &str) -> String {
     let path = root
         .path()
-        .join(format!(".tender/sessions/{namespace}/{session}/meta.json"));
+        .join(format!(".tendr/sessions/{namespace}/{session}/meta.json"));
     let content = std::fs::read_to_string(&path).unwrap();
     let meta: serde_json::Value = serde_json::from_str(&content).unwrap();
     meta["run_id"].as_str().unwrap().to_owned()
@@ -58,7 +58,7 @@ fn read_run_id(root: &TempDir, namespace: &str, session: &str) -> String {
 fn read_annotation_lines(root: &TempDir, namespace: &str, session: &str) -> Vec<serde_json::Value> {
     let path = root
         .path()
-        .join(format!(".tender/sessions/{namespace}/{session}/output.log"));
+        .join(format!(".tendr/sessions/{namespace}/{session}/output.log"));
     let content = std::fs::read_to_string(&path).unwrap_or_default();
     content
         .lines()
@@ -74,12 +74,12 @@ fn read_annotation_lines(root: &TempDir, namespace: &str, session: &str) -> Vec<
 }
 
 #[test]
-fn wrap_child_inherits_tender_env() {
+fn wrap_child_inherits_tendr_env() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
     // Start a session that prints its env
-    let out = tender(&root)
+    let out = tendr(&root)
         .args([
             "start",
             "wrap-env-test",
@@ -95,20 +95,20 @@ fn wrap_child_inherits_tender_env() {
 
     let log_path = root
         .path()
-        .join(".tender/sessions/default/wrap-env-test/output.log");
+        .join(".tendr/sessions/default/wrap-env-test/output.log");
     let content = std::fs::read_to_string(&log_path).unwrap();
 
     assert!(
-        content.contains("TENDER_RUN_ID="),
-        "child should see TENDER_RUN_ID"
+        content.contains("TENDR_RUN_ID="),
+        "child should see TENDR_RUN_ID"
     );
     assert!(
-        content.contains("TENDER_SESSION=wrap-env-test"),
-        "child should see TENDER_SESSION"
+        content.contains("TENDR_SESSION=wrap-env-test"),
+        "child should see TENDR_SESSION"
     );
     assert!(
-        content.contains("TENDER_NAMESPACE=default"),
-        "child should see TENDER_NAMESPACE"
+        content.contains("TENDR_NAMESPACE=default"),
+        "child should see TENDR_NAMESPACE"
     );
 }
 
@@ -120,8 +120,8 @@ fn wrap_preserves_child_exit_code() {
     create_running_session(&root, "wrap-exit", "default");
     let run_id = read_run_id(&root, "default", "wrap-exit");
 
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
         .args([
             "wrap",
             "--session",
@@ -145,7 +145,7 @@ fn wrap_preserves_child_exit_code() {
     );
 
     // Cleanup
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-exit"])
         .output()
         .unwrap();
@@ -160,8 +160,8 @@ fn wrap_captures_and_replays_stdout() {
     create_running_session(&root, "wrap-stdout", "default");
     let run_id = read_run_id(&root, "default", "wrap-stdout");
 
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
         .args([
             "wrap",
             "--session",
@@ -192,7 +192,7 @@ fn wrap_captures_and_replays_stdout() {
     assert_eq!(ann["data"]["hook_exit_code"], 0);
 
     // Cleanup
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-stdout"])
         .output()
         .unwrap();
@@ -207,8 +207,8 @@ fn wrap_writes_annotation_line() {
     create_running_session(&root, "wrap-ann", "default");
     let run_id = read_run_id(&root, "default", "wrap-ann");
 
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
         .args([
             "wrap",
             "--session",
@@ -235,7 +235,7 @@ fn wrap_writes_annotation_line() {
     assert_eq!(ann["data"]["truncated"], false);
 
     // Cleanup
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-ann"])
         .output()
         .unwrap();
@@ -247,9 +247,9 @@ fn wrap_fails_without_run_id() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    // Don't set TENDER_RUN_ID
-    let out = tender(&root)
-        .env_remove("TENDER_RUN_ID")
+    // Don't set TENDR_RUN_ID
+    let out = tendr(&root)
+        .env_remove("TENDR_RUN_ID")
         .args([
             "wrap",
             "--session",
@@ -267,12 +267,12 @@ fn wrap_fails_without_run_id() {
 
     assert!(
         !out.status.success(),
-        "wrap should fail without TENDER_RUN_ID"
+        "wrap should fail without TENDR_RUN_ID"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("TENDER_RUN_ID"),
-        "error should mention TENDER_RUN_ID, got: {stderr}"
+        stderr.contains("TENDR_RUN_ID"),
+        "error should mention TENDR_RUN_ID, got: {stderr}"
     );
 }
 
@@ -281,8 +281,8 @@ fn wrap_fails_for_nonexistent_session() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", "fake-run-id")
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", "fake-run-id")
         .args([
             "wrap",
             "--session",
@@ -305,18 +305,18 @@ fn wrap_fails_for_nonexistent_session() {
 }
 
 #[test]
-fn source_rejects_tender_prefix() {
+fn source_rejects_tendr_prefix() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", "fake-run-id")
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", "fake-run-id")
         .args([
             "wrap",
             "--session",
             "any",
             "--source",
-            "tender.sidecar",
+            "tendr.sidecar",
             "--event",
             "test",
             "--",
@@ -326,10 +326,10 @@ fn source_rejects_tender_prefix() {
         .output()
         .unwrap();
 
-    assert!(!out.status.success(), "wrap should reject tender.* source");
+    assert!(!out.status.success(), "wrap should reject tendr.* source");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("tender."),
+        stderr.contains("tendr."),
         "error should mention reserved prefix, got: {stderr}"
     );
 }
@@ -343,10 +343,10 @@ fn wrap_defaults_session_from_env() {
     let run_id = read_run_id(&root, "myns", "wrap-env-default");
 
     // Don't pass --session or --namespace, rely on env vars
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
-        .env("TENDER_SESSION", "wrap-env-default")
-        .env("TENDER_NAMESPACE", "myns")
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
+        .env("TENDR_SESSION", "wrap-env-default")
+        .env("TENDR_NAMESPACE", "myns")
         .args([
             "wrap",
             "--source",
@@ -370,13 +370,13 @@ fn wrap_defaults_session_from_env() {
     assert_eq!(ann_lines.len(), 1, "annotation should exist");
 
     // Cleanup
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-env-default", "--namespace", "myns"])
         .output()
         .unwrap();
     let path = root
         .path()
-        .join(".tender/sessions/myns/wrap-env-default/meta.json");
+        .join(".tendr/sessions/myns/wrap-env-default/meta.json");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         if let Ok(content) = std::fs::read_to_string(&path) {
@@ -405,8 +405,8 @@ fn wrap_truncates_large_payload() {
     // Generate a large stdin payload (>4096 bytes)
     let large_input = "x".repeat(5000);
 
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
         .args([
             "wrap",
             "--session",
@@ -442,7 +442,7 @@ fn wrap_truncates_large_payload() {
     assert_eq!(ann["data"]["truncated"], true, "should be marked truncated");
 
     // Cleanup
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-trunc"])
         .output()
         .unwrap();
@@ -459,8 +459,8 @@ fn wrap_passes_stdin_to_child() {
 
     let input = r#"{"tool":"bash","input":"ls"}"#;
 
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
         .args([
             "wrap",
             "--session",
@@ -491,7 +491,7 @@ fn wrap_passes_stdin_to_child() {
     assert_eq!(ann["data"]["hook_stdin"]["tool"], "bash");
 
     // Cleanup
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-stdin"])
         .output()
         .unwrap();
@@ -515,8 +515,8 @@ fn wrap_annotation_visible_in_watch() {
         &["--namespace", "default", "--annotations", "--from-now"],
     );
 
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
         .args([
             "wrap",
             "--session",
@@ -542,7 +542,7 @@ fn wrap_annotation_visible_in_watch() {
     });
     follower.stop();
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-watch"])
         .output()
         .unwrap();
@@ -569,10 +569,10 @@ fn wrap_forwards_sigterm_and_writes_annotation() {
         ready.display()
     );
 
-    let bin = assert_cmd::cargo::cargo_bin("tender");
+    let bin = assert_cmd::cargo::cargo_bin("tendr");
     let mut wrap_child = Command::new(bin)
         .env("HOME", root.path())
-        .env("TENDER_RUN_ID", &run_id)
+        .env("TENDR_RUN_ID", &run_id)
         .args([
             "wrap",
             "--session",
@@ -589,7 +589,7 @@ fn wrap_forwards_sigterm_and_writes_annotation() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn tender wrap");
+        .expect("failed to spawn tendr wrap");
 
     // No sleep: the trap is proven installed once the ready-file appears.
     harness::wait_ready_file(&ready, std::time::Duration::from_secs(10));
@@ -620,7 +620,7 @@ fn wrap_forwards_sigterm_and_writes_annotation() {
     assert_eq!(ann["event"], "sigterm-test");
     assert_eq!(ann["data"]["hook_exit_code"], 0);
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-sigterm"])
         .output()
         .unwrap();
@@ -639,9 +639,9 @@ fn wrap_dual_writes_event_and_linked_aline() {
     create_running_session(&root, "wrap-dual", "default");
     let run_id = read_run_id(&root, "default", "wrap-dual");
 
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
-        .env("TENDER_GENERATION", "1")
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
+        .env("TENDR_GENERATION", "1")
         .args([
             "wrap",
             "--session",
@@ -682,14 +682,14 @@ fn wrap_dual_writes_event_and_linked_aline() {
     assert_eq!(ann["source"], "claude.hook", "legacy A-line shape intact");
     assert_eq!(ann["data"]["hook_exit_code"], 0);
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-dual"])
         .output()
         .unwrap();
     wait_terminal(&root, "wrap-dual");
 }
 
-/// The child sees TENDER_BLOCK_ID (wrap's block) and TENDER_PARENT_EVENT_ID
+/// The child sees TENDR_BLOCK_ID (wrap's block) and TENDR_PARENT_EVENT_ID
 /// — the id of the event wrap WILL write (pre-minted, spec §2).
 #[test]
 fn wrap_sets_child_env_chain() {
@@ -699,8 +699,8 @@ fn wrap_sets_child_env_chain() {
     create_running_session(&root, "wrap-env", "default");
     let run_id = read_run_id(&root, "default", "wrap-env");
 
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
         .args([
             "wrap",
             "--session",
@@ -712,7 +712,7 @@ fn wrap_sets_child_env_chain() {
             "--",
             "sh",
             "-c",
-            "printenv TENDER_BLOCK_ID; printenv TENDER_PARENT_EVENT_ID",
+            "printenv TENDR_BLOCK_ID; printenv TENDR_PARENT_EVENT_ID",
         ])
         .output()
         .unwrap();
@@ -733,10 +733,10 @@ fn wrap_sets_child_env_chain() {
     assert_eq!(
         seen[1],
         hook["id"].as_str().unwrap(),
-        "TENDER_PARENT_EVENT_ID names the event wrap wrote"
+        "TENDR_PARENT_EVENT_ID names the event wrap wrote"
     );
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-env"])
         .output()
         .unwrap();
@@ -753,11 +753,11 @@ fn wrap_child_emit_chains_to_hook_event() {
     create_running_session(&root, "wrap-chain", "default");
     let run_id = read_run_id(&root, "default", "wrap-chain");
 
-    let tender_bin = assert_cmd::cargo::cargo_bin("tender");
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
-        .env("TENDER_SESSION", "wrap-chain")
-        .env("TENDER_NAMESPACE", "default")
+    let tendr_bin = assert_cmd::cargo::cargo_bin("tendr");
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
+        .env("TENDR_SESSION", "wrap-chain")
+        .env("TENDR_NAMESPACE", "default")
         .args([
             "wrap",
             "--session",
@@ -771,7 +771,7 @@ fn wrap_child_emit_chains_to_hook_event() {
             "-c",
             &format!(
                 "{} emit --kind hook.note --data '{{\"note\":1}}' --best-effort",
-                shell_words::quote(tender_bin.to_str().unwrap())
+                shell_words::quote(tendr_bin.to_str().unwrap())
             ),
         ])
         .output()
@@ -796,7 +796,7 @@ fn wrap_child_emit_chains_to_hook_event() {
         "child event lands in wrap's block"
     );
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-chain"])
         .output()
         .unwrap();
@@ -814,8 +814,8 @@ fn wrap_reserved_event_exits_6_without_side_effects() {
     let run_id = read_run_id(&root, "default", "wrap-res");
 
     let marker = root.path().join("side-effect-marker");
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
         .args([
             "wrap",
             "--session",
@@ -842,7 +842,7 @@ fn wrap_reserved_event_exits_6_without_side_effects() {
         "no stored event"
     );
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-res"])
         .output()
         .unwrap();
@@ -859,8 +859,8 @@ fn wrap_legacy_dotless_event_keeps_aline_only() {
     create_running_session(&root, "wrap-legacy", "default");
     let run_id = read_run_id(&root, "default", "wrap-legacy");
 
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
         .args([
             "wrap",
             "--session",
@@ -872,7 +872,7 @@ fn wrap_legacy_dotless_event_keeps_aline_only() {
             "--",
             "sh",
             "-c",
-            "printenv TENDER_BLOCK_ID || echo no-block-env",
+            "printenv TENDR_BLOCK_ID || echo no-block-env",
         ])
         .output()
         .unwrap();
@@ -902,7 +902,7 @@ fn wrap_legacy_dotless_event_keeps_aline_only() {
         "no stored event on the legacy path"
     );
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-legacy"])
         .output()
         .unwrap();
@@ -919,9 +919,9 @@ fn wrap_chains_parent_from_ambient_env() {
     let run_id = read_run_id(&root, "default", "wrap-outer");
 
     let outer = uuid::Uuid::now_v7().to_string();
-    tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
-        .env("TENDER_BLOCK_ID", &outer)
+    tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
+        .env("TENDR_BLOCK_ID", &outer)
         .args([
             "wrap",
             "--session",
@@ -941,7 +941,7 @@ fn wrap_chains_parent_from_ambient_env() {
     assert_eq!(hook["parent_id"].as_str().unwrap(), outer);
     assert_ne!(hook["block_id"].as_str().unwrap(), outer, "fresh block");
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-outer"])
         .output()
         .unwrap();
@@ -961,11 +961,11 @@ fn wrap_event_append_failure_is_best_effort() {
     create_running_session(&root, "wrap-ro", "default");
     let run_id = read_run_id(&root, "default", "wrap-ro");
 
-    let events_dir = root.path().join(".tender/sessions/default/wrap-ro/events");
+    let events_dir = root.path().join(".tendr/sessions/default/wrap-ro/events");
     std::fs::set_permissions(&events_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-    let out = tender(&root)
-        .env("TENDER_RUN_ID", &run_id)
+    let out = tendr(&root)
+        .env("TENDR_RUN_ID", &run_id)
         .args([
             "wrap",
             "--session",
@@ -996,7 +996,7 @@ fn wrap_event_append_failure_is_best_effort() {
         "block context still recorded"
     );
 
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "wrap-ro"])
         .output()
         .unwrap();

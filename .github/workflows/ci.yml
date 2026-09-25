@@ -23,7 +23,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
         # Native pinned DuckDB CLI per lane so the analytics tests actually run
-        # everywhere (see TENDER_REQUIRE_DUCKDB_TESTS below).
+        # everywhere (see TENDR_REQUIRE_DUCKDB_TESTS below).
         include:
           - os: ubuntu-latest
             duckdb_asset: duckdb_cli-linux-amd64.zip
@@ -37,7 +37,7 @@ jobs:
       DUCKDB_VERSION: v1.5.2
       # Absence of duckdb must FAIL these lanes, not silently skip -- otherwise a
       # broken install step would turn analytics coverage falsely green.
-      TENDER_REQUIRE_DUCKDB_TESTS: "1"
+      TENDR_REQUIRE_DUCKDB_TESTS: "1"
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust
@@ -101,7 +101,7 @@ jobs:
         run: cargo clippy --all-targets --locked --target aarch64-pc-windows-msvc -- -D warnings
 
   # The crate advertises `rust-version = "1.85"` in Cargo.toml and
-  # `cargo install agenttender` is a documented path, so that is a published
+  # `cargo install tendr` is a documented path, so that is a published
   # contract. Nothing verified it until this job: the code used let-chains,
   # stable only from 1.88, so the advertised minimum could not build the crate
   # at all. A promise nothing executes is not a promise.

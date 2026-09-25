@@ -1,7 +1,7 @@
-//! `tender guide [TOPIC]` — the self-documenting usage guide.
+//! `tendr guide [TOPIC]` — the self-documenting usage guide.
 //!
 //! The guide's single source of truth is `docs/guide.md`, embedded at build
-//! time. `tender guide` prints the whole document; `tender guide <topic>` slices
+//! time. `tendr guide` prints the whole document; `tendr guide <topic>` slices
 //! out one section by mapping the topic to a heading and returning everything
 //! from that heading down to the next same-or-higher-level heading. Zero doc
 //! duplication in Rust — the Markdown is the content, this module is only the
@@ -183,8 +183,8 @@ mod tests {
     #[test]
     fn install_section_mentions_crate_and_binary_names() {
         let install = slice_section(GUIDE, "Install and build").unwrap();
-        assert!(install.contains("agenttender"));
-        assert!(install.contains("cargo install agenttender"));
+        assert!(install.contains("tendr"));
+        assert!(install.contains("cargo install tendr"));
         assert!(install.contains("cargo-zigbuild"));
     }
 
@@ -201,7 +201,7 @@ mod tests {
     fn cgroup_section_covers_linux_and_cross_platform() {
         let cg = slice_section(GUIDE, "Cap a session's memory").unwrap();
         // Linux cgroup recipe.
-        assert!(cg.contains("tender.slice"));
+        assert!(cg.contains("tendr.slice"));
         assert!(cg.contains("systemd-run --user"));
         assert!(cg.contains("enable-linger"));
         // The nested `### Windows and macOS` subsection rides along (slicing

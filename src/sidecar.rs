@@ -573,7 +573,7 @@ impl LifecycleEvents {
             session: self.session.clone(),
             run_id: self.run_id,
             generation: Some(self.generation.as_u64()),
-            source: Source::trusted("tender.sidecar").expect("tender.sidecar is grammatical"),
+            source: Source::trusted("tendr.sidecar").expect("tendr.sidecar is grammatical"),
             block_id: None,
             parent_id: None,
             data: Some(events::lifecycle_data(
@@ -623,7 +623,7 @@ impl LifecycleEvents {
             session: self.session.clone(),
             run_id: self.run_id,
             generation: Some(self.generation.as_u64()),
-            source: Source::trusted("tender.sidecar").expect("tender.sidecar is grammatical"),
+            source: Source::trusted("tendr.sidecar").expect("tendr.sidecar is grammatical"),
             block_id: None,
             parent_id: None,
             data: Some(data),
@@ -633,10 +633,10 @@ impl LifecycleEvents {
     }
 
     /// Last-resort preservation when the session's event log is unwritable:
-    /// the fully-addressed record lands in `~/.tender/lost+found/events.jsonl`
+    /// the fully-addressed record lands in `~/.tendr/lost+found/events.jsonl`
     /// (spec §7 machinery) instead of vanishing. Best-effort by design.
     fn salvage_to_lost_found(&self, draft: EventDraft) {
-        let Some(tender_root) = self
+        let Some(tendr_root) = self
             .session_dir
             .ancestors()
             .find(|p| p.ends_with("sessions"))
@@ -645,26 +645,26 @@ impl LifecycleEvents {
             return;
         };
         let event = events::stamp_orphan_event(draft);
-        let _ = events::append_lost_found(tender_root, &event);
+        let _ = events::append_lost_found(tendr_root, &event);
     }
 }
 
-/// Test-only crash injection: `TENDER_TEST_ABORT=<point>` aborts the sidecar
+/// Test-only crash injection: `TENDR_TEST_ABORT=<point>` aborts the sidecar
 /// there, a true crash that skips the lifecycle guard (WAL ordering, orphan
 /// recovery). Points: `after_spawn`, `after_running`, `before_terminal_event`,
 /// `before_terminal_meta`. Compiled into debug builds only; release sidecars
 /// ignore the variable entirely.
 fn test_abort_point(point: &str) {
-    if cfg!(debug_assertions) && std::env::var("TENDER_TEST_ABORT").as_deref() == Ok(point) {
+    if cfg!(debug_assertions) && std::env::var("TENDR_TEST_ABORT").as_deref() == Ok(point) {
         std::process::abort();
     }
 }
 
-/// Test-only fault injection at a named sidecar step. `TENDER_TEST_FAIL` is a
+/// Test-only fault injection at a named sidecar step. `TENDR_TEST_FAIL` is a
 /// comma-separated list of points that return an injected error;
-/// `TENDER_TEST_PANIC` names points that panic. The points are the
+/// `TENDR_TEST_PANIC` names points that panic. The points are the
 /// [`SidecarStep`] wire names plus `ready_rewrite`, `terminal_meta` and
-/// `failure_record`. If `TENDER_TEST_FAULT_GATE` names a file, a named point
+/// `failure_record`. If `TENDR_TEST_FAULT_GATE` names a file, a named point
 /// first waits for it (bounded), so a test can let the child reach a known
 /// state before the fault fires. Compiled into debug builds only; release
 /// sidecars ignore all three variables entirely.
@@ -677,10 +677,10 @@ fn test_fault(point: &str) -> io::Result<()> {
             .map(|v| v.split(',').any(|p| p.trim() == point))
             .unwrap_or(false)
     };
-    let panics = names("TENDER_TEST_PANIC");
-    let fails = names("TENDER_TEST_FAIL");
+    let panics = names("TENDR_TEST_PANIC");
+    let fails = names("TENDR_TEST_FAIL");
     if panics || fails {
-        wait_for_gate_file("TENDER_TEST_FAULT_GATE");
+        wait_for_gate_file("TENDR_TEST_FAULT_GATE");
     }
     if panics {
         panic!("injected panic at {point}");
@@ -706,12 +706,12 @@ fn wait_for_gate_file(var: &str) {
 
 /// Test-only gate before the readiness write, so a test can kill the `start`
 /// client inside the spawn-to-readiness window without a timing race: the
-/// sidecar waits until the file named by `TENDER_TEST_READY_GATE` exists
+/// sidecar waits until the file named by `TENDR_TEST_READY_GATE` exists
 /// (bounded, so a failed test cannot strand it). Compiled into debug builds
 /// only; release sidecars ignore the variable entirely.
 fn test_ready_gate() {
     if cfg!(debug_assertions) {
-        wait_for_gate_file("TENDER_TEST_READY_GATE");
+        wait_for_gate_file("TENDR_TEST_READY_GATE");
     }
 }
 
@@ -812,17 +812,17 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
         *ready = Some(sealed);
     }
 
-    // Build effective env: user-supplied first, then TENDER_* overlay (authoritative).
+    // Build effective env: user-supplied first, then TENDR_* overlay (authoritative).
     let mut effective_env = meta.launch_spec().env.clone();
     effective_env.insert(
-        "TENDER_SESSION".to_owned(),
+        "TENDR_SESSION".to_owned(),
         meta.session().as_str().to_owned(),
     );
-    effective_env.insert("TENDER_NAMESPACE".to_owned(), namespace.as_str().to_owned());
-    effective_env.insert("TENDER_RUN_ID".to_owned(), run_id.to_string());
-    effective_env.insert("TENDER_GENERATION".to_owned(), generation.to_string());
+    effective_env.insert("TENDR_NAMESPACE".to_owned(), namespace.as_str().to_owned());
+    effective_env.insert("TENDR_RUN_ID".to_owned(), run_id.to_string());
+    effective_env.insert("TENDR_GENERATION".to_owned(), generation.to_string());
     effective_env.insert(
-        "TENDER_SESSION_DIR".to_owned(),
+        "TENDR_SESSION_DIR".to_owned(),
         session_dir.to_str().unwrap_or("").to_owned(),
     );
 
@@ -980,12 +980,12 @@ fn run_on_exit_hooks(meta: &Meta, session_dir: &Path, lifecycle: &mut LifecycleE
         }
         let result = std::process::Command::new(&argv[0])
             .args(&argv[1..])
-            .env("TENDER_SESSION", &session_name)
-            .env("TENDER_NAMESPACE", &namespace)
-            .env("TENDER_RUN_ID", &run_id)
-            .env("TENDER_GENERATION", &generation)
-            .env("TENDER_EXIT_REASON", &exit_reason)
-            .env("TENDER_SESSION_DIR", &session_dir_str)
+            .env("TENDR_SESSION", &session_name)
+            .env("TENDR_NAMESPACE", &namespace)
+            .env("TENDR_RUN_ID", &run_id)
+            .env("TENDR_GENERATION", &generation)
+            .env("TENDR_EXIT_REASON", &exit_reason)
+            .env("TENDR_SESSION_DIR", &session_dir_str)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .output();
@@ -1025,7 +1025,7 @@ fn run_on_exit_hooks(meta: &Meta, session_dir: &Path, lifecycle: &mut LifecycleE
         .ancestors()
         .find(|p| p.ends_with("sessions"))
         .and_then(|p| p.parent())
-        .map(|tender_root| tender_root.join("callbacks"));
+        .map(|tendr_root| tendr_root.join("callbacks"));
 
     if let Some(dir) = callbacks_dir {
         let _ = std::fs::create_dir_all(&dir);
@@ -1039,7 +1039,7 @@ fn run_on_exit_hooks(meta: &Meta, session_dir: &Path, lifecycle: &mut LifecycleE
     }
 }
 
-/// `TENDER_EXIT_REASON` for `--on-exit` hooks. `SidecarFailed` is the bare
+/// `TENDR_EXIT_REASON` for `--on-exit` hooks. `SidecarFailed` is the bare
 /// reason name, so a hook can match it exactly; the failing step is in meta.
 /// Every other reason keeps the Debug form hooks have always received.
 fn exit_reason_env(how: &ExitReason) -> String {
