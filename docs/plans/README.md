@@ -20,6 +20,7 @@ pty-session-mode) have shipped, so nothing is dependency-blocked.
 | cloud-pty-control | [00_cloud-pty-control.md](active/00_cloud-pty-control.md) | — |
 | remote-frame-transport | [01_remote-frame-transport.md](active/01_remote-frame-transport.md) | — |
 | polling-consolidation | [02_polling-consolidation.md](active/02_polling-consolidation.md) | — |
+| dagger-ci | [03_dagger-ci.md](active/03_dagger-ci.md) | — (starts after #75 merges) |
 
 The cloud plan owns the early Unix PTY bridge, extracted ahead of the general
 remote-frame migration. The plans share a codec contract, not a circular
