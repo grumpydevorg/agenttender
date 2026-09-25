@@ -38,6 +38,7 @@
 //!   from it.
 //! - [`exec_frame`] / [`exec_request`] — the framed `exec` request/response
 //!   that rides SSH stdin instead of the remote argv.
+//! - [`recording`] — the exact PTY recording codec (versioned binary segments).
 //! - [`ssh`] — the remote transport wrapper and its command allowlist.
 //! - [`reconcile`] — reconciling recorded state against observed OS reality.
 //!
@@ -68,6 +69,7 @@ pub mod model;
 pub mod platform;
 pub mod ready_file;
 pub mod reconcile;
+pub mod recording;
 pub mod session;
 pub mod sidecar;
 pub mod ssh;
