@@ -94,7 +94,7 @@
           # tests drive the sidecar's crash injection, which is compiled out of a
           # release build:
           #
-          #     src/sidecar.rs:613
+          #     src/sidecar.rs:656
           #     if cfg!(debug_assertions) && std::env::var("TENDER_TEST_ABORT")...
           #
           # With buildRustPackage's default (checkType follows buildType) the
@@ -104,7 +104,9 @@
           # a real run where they expect the orphan the crash should have left.
           # They are not flaky and not sandbox-hostile; they simply require the
           # profile they were written for. tests/sidecar_client_loss.rs likewise
-          # needs the debug-only TENDER_TEST_READY_GATE readiness hold.
+          # needs the debug-only TENDER_TEST_READY_GATE readiness hold, and
+          # tests/sidecar_failure.rs the fault hooks TENDER_TEST_FAIL,
+          # TENDER_TEST_PANIC and TENDER_TEST_FAULT_GATE.
           checkType = "debug";
 
           # src/bin/ holds three helper executables that exist only for the

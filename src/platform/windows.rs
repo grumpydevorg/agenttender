@@ -185,8 +185,8 @@ impl Platform for WindowsPlatform {
         ))
     }
 
-    fn child_identity(child: &SupervisedChild) -> io::Result<ProcessIdentity> {
-        Ok(child.identity)
+    fn child_identity(child: &SupervisedChild) -> ProcessIdentity {
+        child.identity
     }
 
     fn child_wait(child: &mut SupervisedChild) -> io::Result<ExitStatus> {
@@ -745,6 +745,25 @@ fn terminate_job(job: &OwnedHandle) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether the process with this PID has already exited (its object signalled).
+/// False when it is running, or when it cannot be opened for waiting.
+fn has_exited(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+
+    // SAFETY: OpenProcess with SYNCHRONIZE is the minimum right for waiting.
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    // SAFETY: handle is valid from OpenProcess; a zero timeout only polls.
+    let result = unsafe { WaitForSingleObject(handle, 0) };
+    unsafe { CloseHandle(handle) };
+    result == WAIT_OBJECT_0
+}
+
 /// Wait for a process to exit using WaitForSingleObject.
 /// Opens a SYNCHRONIZE handle to the process by PID, waits up to `timeout_ms`.
 /// Returns true if the process exited within the timeout, false otherwise.
@@ -962,16 +981,23 @@ fn process_identity(pid: u32) -> io::Result<ProcessIdentity> {
 /// Windows keeps the process object alive as long as any handle is open.
 /// So `ERROR_INVALID_PARAMETER` reliably means "no process with this PID"
 /// rather than "PID was recycled." The identity check (creation time)
-/// catches the recycled-PID case when `OpenProcess` succeeds.
+/// catches the recycled-PID case when `OpenProcess` succeeds. Because the
+/// object outlives the process, a matching identity is also checked for
+/// exit: an exited process whose object is still held open (by us, a
+/// console host, a scanner) is `Missing`, as an unreaped zombie is on macOS.
+/// (On Linux a zombie's `/proc/<pid>/stat` stays readable, so it reads
+/// `AliveVerified` until it is reaped.)
 fn process_status(id: &ProcessIdentity) -> ProcessStatus {
     use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER};
 
     match process_identity(id.pid.get()) {
         Ok(current) => {
-            if current == *id {
-                ProcessStatus::AliveVerified
-            } else {
+            if current != *id {
                 ProcessStatus::IdentityMismatch
+            } else if has_exited(id.pid.get()) {
+                ProcessStatus::Missing
+            } else {
+                ProcessStatus::AliveVerified
             }
         }
         Err(e) => match e.raw_os_error() {

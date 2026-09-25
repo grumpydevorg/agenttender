@@ -61,9 +61,15 @@ fn kill_nine_replays_full_lifecycle_via_events() {
 
     assert_eq!(events[2]["data"]["provenance"], "inferred");
 
-    if let Some(child_pid) = status["child"]["pid"].as_u64() {
-        unsafe { libc::kill(child_pid as i32, libc::SIGKILL) };
-    }
+    // Reconciliation killed the orphan: its evidence says so.
+    assert!(
+        status["transition_provenance"]["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e == "orphan_killed"),
+        "{status}"
+    );
 }
 
 /// Criterion 3 (process-level; the 2×1000 writer test lives in
