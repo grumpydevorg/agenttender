@@ -2,7 +2,7 @@
 id: log-delimiter-cr-framing
 depends_on: []
 links:
-  - ../specs/tendr-agent-process-sitter.md
+  - ../specs/tender-agent-process-sitter.md
 ---
 
 # CR-Aware Pipe Framing — Live Progress Without a PTY
@@ -28,7 +28,7 @@ until a newline appears or the child exits.
 **This is the documented contract, not a defect.** The spec says the log is "a
 line-oriented observability log, not a byte-exact replay stream. Partial lines are
 buffered until newline"
-([spec, Log Format](../specs/tendr-agent-process-sitter.md)). Nothing is lost —
+([spec, Log Format](../specs/tender-agent-process-sitter.md)). Nothing is lost —
 the operator is blind. Those are different failures and the second one is the one
 that hurt.
 
