@@ -83,14 +83,17 @@ consumes it; only the target-dir volume makes that rerun incremental.
 Consequence: on hosted runners every Dagger run is cold, and so is every
 baseline run (`ci.yml` has no cargo cache). The hosted comparison is therefore
 **cold against cold**, and the **warm one-edit limit is not evaluated on CI**
-unless the open decision below adds a persistent cache. The local warm numbers
+unless the open decision below adds a persistent cache. (Superseded: an
+Actions-cache warm experiment was run on existing infrastructure; see
+Results.) The local warm numbers
 are a proxy only: different architecture (arm64 vs amd64), CPU allocation and
 engine lifecycle. The recommendation must say which criteria were measured
 where.
 
 A hosted **warm** comparison needs a persistent engine. No existing
-infrastructure fits without a decision (see "Open decision" below), so none is
-set up by this pilot.
+infrastructure fits without a decision (see "Open decisions" below), so none is
+set up by this pilot. (Superseded in part: the Actions cache was tried as a
+stand-in; see Results.)
 
 ### Trace export: off, and proven off (2026-09-25)
 
@@ -143,7 +146,8 @@ Workloads (same commit on both sides):
 
 Where each runs:
 
-- **Hosted CI**, cold only (hosted runners have no warm state). Dagger jobs
+- **Hosted CI**, cold (hosted runners have no warm state); a warm variant
+  through the Actions cache was added later (see Results). Dagger jobs
   mirror the baseline's job split (`lint` = fmt+clippy+package, `doc`, `msrv`,
   `test`, `clippy-windows`), one GitHub-hosted `ubuntu-latest` runner each, so
   the difference per job is Dagger's own cost. Report per-job duration and the
@@ -196,26 +200,212 @@ ubuntu lane reports 54 `test result` lines, 713 passed, 0 ignored.
   edit that introduces a clippy finding must fail (a stale cache would pass),
   and reverting it must pass again.
 
-## Open decision (owner)
+## Results (2026-09-25)
 
-A hosted warm comparison needs a persistent engine. Options, none set up:
+All runs are at `0ebcc54` (PR #78) or its one-line edits. Hosted runners:
+`ubuntu-24.04` image 20260828.587, 4 vCPU / 16 GB, identical on both sides.
+Local: Apple M3 Max, OrbStack Docker VM with 16 CPUs / 16 GB, arm64.
+
+### Coverage: equivalent
+
+- Same commands and flags per check, same toolchains (1.98.0; 1.85.0 for
+  MSRV).
+- The test check's result lines match the native ubuntu lane exactly: 54
+  `test result` lines, 713 passed, 0 ignored, same per-binary multiset.
+- The known early-return sites have their tools: DuckDB is required by
+  environment, and `shasum` comes with `perl`.
+
+### Failures: reliable
+
+- **Deliberate failure (#79, closed):** a clippy finding and a failing test.
+  - `dagger lint`, `dagger clippy-windows` and `dagger test` failed with exit
+    code 1; `dagger doc` and `dagger msrv` passed.
+  - Inside the failed lint job, `fmt` and `package` still reported.
+  - `ci.yml` failed the same jobs.
+- **Status contexts:** the workflow publishes five, `dagger lint`,
+  `dagger doc`, `dagger msrv`, `dagger test` and `dagger clippy-windows`.
+  - Identical on every commit, including the failing one.
+  - Published by the same GitHub Actions app (id 15368) as the existing
+    required checks.
+  - No `paths:` filter, so they always report and branch protection could
+    require them. Branch protection is unchanged.
+- **Cancellation, hosted:** `gh run cancel` during the checks marked all five
+  jobs `cancelled`. The Checks steps stopped 16–21 s after the request, which
+  is GitHub's own signal path; the runner VM is discarded anyway.
+- **Cancellation, local:** SIGINT to the CLI ended it in under 1 s ("context
+  canceled", exit code 2). Sampled with `docker exec … ps`, the engine had 5
+  cargo/test processes before the signal and none at every sample from 1 s
+  to 30 s after.
+- **Cache invalidation, local:**
+  - An unchanged `clippy` hit the cache (0.0 s).
+  - An injected clippy finding failed it in 2.8 s, through an incremental
+    rebuild, not a stale pass.
+  - After the revert it passed from the cache again.
+  - A check that failed is not cached: the next unchanged run re-executed it.
+- **Trace export:** every hosted run passed the no-route proof and printed no
+  "Full trace" line. Since `acba47b`, which inspects every dagger step, all five
+  jobs log "tracing not configured".
+
+### Hosted, cold (6 paired attempts, fresh runners each)
+
+| Job | native median [range] | Dagger median [range] | added, paired per attempt | limit: max(60 s, 20 %) |
+|---|---|---|---|---|
+| lint | 41 [40–42] | 91 [84–96] | 42, 47, 48, 51, 54, 55 | 60: **6/6 within** |
+| doc | 22.5 [20–24] | 73.5 [70–76] | 48, 50, 50, 51, 52, 55 | 60: **6/6 within** |
+| msrv | 28 [25–30] | 84.5 [73–98] | 45, 50, 54, 62, 68, 68 | 60: **3/6 within** |
+| test | 127 [125–133] (5 successful; attempt 5 hit a flake) | 175 [168–181] | 38, 38, 46, 50, 54 | 60: **5/5 within** |
+| clippy-windows | 43 [32–45] | 97 [89–102] | 46, 46, 50, 56, 59, 70 | 60: **5/6 within** |
+
+Where the time goes (medians):
+- **Compilation matches:** test 33.4 s native vs 34.6 s Dagger; msrv 17.5 vs
+  16.3.
+- **Test execution matches:** 79.4 s vs 79.3 s.
+- **All of the added time is setup.** Dagger adds 48–52 s of setup per job
+  at the median (38–70 s paired), paid on every hosted job:
+  - image pulls 12 s [7–25], of which the engine image is 631 MB;
+  - engine start plus the Go module's first compile 22 s (18.5 s is the
+    module load);
+  - building the check containers inside the engine 10–20 s;
+  - the no-route proof 5 s. It belongs to the trace-off decision, so it
+    counts; without it msrv would be within the limit in 4 of 6 attempts, and
+    no verdict changes.
+- Queue time is 2–6 s on both sides.
+- Compilation of the lint job is not comparable: Dagger runs fmt, clippy and
+  package concurrently in three containers with separate target dirs (the
+  longest compile is 23 s), where the native job runs them in sequence
+  (26.7 s in total).
+
+The Linux critical path grows from 127 s to 175 s. The PR's wall clock does
+not, because it is set by the native Windows lanes (~246 s).
+
+### Hosted, warm, on existing infrastructure (Actions cache)
+
+A throwaway branch (never merged; its caches, 13.5 GB, deleted afterwards) ran
+the same five lanes on both sides:
+- native with `Swatinem/rust-cache`;
+- Dagger with its whole engine state (`/var/lib/dagger`, stopped engine,
+  zstd tar) saved and restored through `actions/cache`.
+
+It ran a seed, five one-line edits (warm one-edit), then three reruns (warm
+unchanged).
+
+| Lane | one-edit: native / Dagger median | added (limit max(15 s, 10 %)) | unchanged: native / Dagger |
+|---|---|---|---|
+| lint | 27 / 103 | +76 | 23 / 70 |
+| doc | 24 / 78 | +54 | 19 / 57 |
+| msrv | 25 / 72 | +47 | 28 / 59 |
+| test | 112 / 207 | +95 | 108 / 109 |
+| clippy-windows | 26 / 84 | +58 | 28 / 83 |
+
+- The engine state is 1.1–2.2 GB per lane after zstd.
+- The restored state worked: engine start fell from 22 s to 7 s (the module
+  load was cached), and the checks took 3–6 s (test: 90 s).
+- Moving the state cost 38–72 s per one-edit run: restore plus unpack
+  13–30 s, and pack plus save 23–42 s, paid on every run.
+- Warm was slower than cold on lint, doc and test, and faster on msrv and
+  clippy-windows.
+- The unchanged reruns hit Dagger's operation cache (each check 0.1 s).
+- **The design could save the state only on a cache miss,** which removes
+  23–42 s. That would bring msrv to about +13 s; the others would stay at
+  +21–36 s. Pulling the engine image (~12 s), starting it (7 s) and restoring
+  the state (≥ 13 s) already exceed 15 s. Without restored state, engine
+  start and the container build cost 22 s plus 10–20 s. **Result:** with
+  existing infrastructure, the warm one-edit limit is out of reach for every
+  design.
+
+### Local (5 ABBA rounds, all seven checks concurrently)
+
+The baseline is the same commands in plain `docker run` containers built from
+the same recipe, with persistent per-lane target volumes.
+
+| Workload | baseline median [range], all | Dagger median [range], all | limit |
+|---|---|---|---|
+| cold | 168 [149–172]: 168, 169, 165, 172, 149 | 173 [145–177]: 177, 177, 155, 173, 145 | +5 s ≤ 60: within |
+| unchanged | 86 [85–86] | 0.7 (81 once, after a failed run) | — |
+| one-edit | 93 [91–94]: 93, 94, 94, 91, 91 | 86 [83–87]: 86, 87, 86, 84, 83 | −7 s ≤ 15: within |
+
+- On one-edit both sides recompiled only `agenttender`, in every run.
+  Dagger's handling of file timestamps does not defeat cargo's incremental
+  builds.
+- Unchanged, Dagger returns cached results and does not re-run the tests.
+  The baseline does. That is a behaviour difference, not only a speed-up.
+- These numbers are arm64, on a warm persistent engine. They do not predict
+  hosted runs.
+
+### Intermittent tests (not Dagger's)
+
+Four existing tests failed intermittently on both sides today:
+`exec_oversized_output_is_quiet_and_leaves_breadcrumb`,
+`push_to_session_without_stdin_fails`,
+`harness_deadline_reports_timeout_with_command_and_deadline`, and
+`push_resolves_session_in_namespace` (native Windows ARM64, #77).
+
+The first had already failed 6 times in the last 40 failed `ci.yml` runs.
+Locally they failed 6 of 15 baseline runs and 3 of the 11 Dagger runs that
+executed tests. The other four Dagger runs were unchanged reruns returned
+from cache. Failed samples are kept in the timings above.
+
+## Recommendation
+
+**Do not adopt Dagger for the hosted Linux lanes.** Three of the four criteria
+hold:
+- **Coverage:** equivalent.
+- **Failure reporting:** reliable.
+- **Local reproduction:** easier (see below).
+
+The overhead criterion fails:
+- **Warm one-edit:** fails by 47–95 s on every lane with existing
+  infrastructure. Saving the state only on a cache miss would bring msrv to
+  about +13 s; the others would stay at +21–36 s, because pulling the engine
+  image, starting it and restoring its state alone exceed 15 s.
+- **Cold:** passes on medians (added 47–57 s against 60). It exceeds the limit
+  in 4 of 29 paired attempts, each with a slow engine-image pull, so there is
+  no headroom.
+
+The overhead is fixed per job (engine, module, containers). A shorter check
+cannot hide it. Only a persistent engine removes it, and every persistent
+option needs a decision below.
+
+**Local reproduction is a genuine gain.** The in-repo module is one
+definition of the Linux checks that runs unchanged locally and in CI:
+- It includes the Linux test suite, which native macOS `cargo` cannot run.
+- It costs no more than plain Docker (+5 s cold, −7 s one-edit).
+- Unchanged checks return instantly.
+
+Limits: on a Mac it runs arm64 Linux, not the runners' amd64, and it needs a
+Linux `dagger` binary and a privileged engine container. If that is wanted, keep the module and the
+sandbox script. Either drop `dagger.yml` or reduce it to one job on pushes to
+`main` that keeps the module from drifting from `ci.yml`. It should not be a
+per-PR duplicate of the native lanes.
+
+**For edge-platform:** the fixed 45–60 s per job matters less against
+multi-minute Nix and Rugix builds. There, a private repository makes a
+self-hosted persistent engine acceptable, and that removes the cost measured
+here. That pilot should measure that configuration, not hosted-ephemeral.
+
+## Open decisions (owner)
+
+1. **What to keep:**
+   - (a) close #78 and keep only #77;
+   - (b) merge the module and sandbox script for local use, with `dagger.yml`
+     cut to a drift check on `main`;
+   - (c) keep #78 open while a persistent-engine option is tried.
+2. **A persistent engine for hosted warm runs**, only if (c). None is set up.
 
 | Option | Persists | Security for a public repo | Cost |
 |---|---|---|---|
-| Hosted, ephemeral (this pilot) | nothing | isolated VM per job | free (public repo) |
-| Self-hosted runner on an existing host | engine, volumes | GitHub advises against it: fork PRs run code on the host; the existing runner groups (Hetzner cax41 ARM64, dreyfus) refuse public repos and dreyfus serves production | no new spend; ARM64 hosts are not the baseline's architecture |
+| Self-hosted runner on an existing host | engine, volumes | GitHub advises against it: fork PRs run code on the host. The existing runner groups (Hetzner cax41 ARM64, dreyfus) refuse public repos, and dreyfus serves production | no new spend; the ARM64 hosts are not the baseline's architecture |
 | Remote engine on an existing host, reached from hosted runners over the tailnet | engine, volumes | privileged engine; PR code can poison the shared cache; fork PRs get no secrets and fall back to cold | no new spend; a Tailscale CI secret |
 | Dagger Cloud engines | persistent cache (per docs) | traces public by default | Team $50/month; compute pricing unpublished |
-| `actions/cache` of the engine's state volume (plus `Swatinem/rust-cache` for the baseline) | engine state, as a cache entry | caches are branch-scoped, so a PR cannot write main's cache | free; restore and save time counts as Dagger's overhead; 10 GB per-repo cache limit |
+| `actions/cache` of the engine state | engine state | branch-scoped caches | **measured: transfer 38–72 s; even without the save step, the fixed engine cost exceeds the 15 s limit** |
 
-A fair hosted warm comparison would also give the native baseline a cargo
-cache, since `ci.yml` has none today. The last option uses only
-infrastructure the repository already uses; it is the one to try if a hosted
-warm number is wanted.
+3. **Cloud Checks:** still untested. It needs the Team plan and trace upload.
+4. **The four intermittent tests** are a product issue, independent of this
+   pilot. They deserve their own card.
 
 ## Deliverables
 
-1. #77 — baseline Windows clippy (done, stacked on #75).
-2. The pilot PR: this card, the Dagger module, and a `dagger` workflow
-   alongside `ci.yml`. Not merged until the recommendation is accepted.
-3. Results and a measured adoption recommendation, recorded in this card.
+1. #77: baseline Windows clippy (stacked on #75).
+2. #78 (draft): this card, the Dagger module, the sandboxed `dagger`
+   workflow.
+3. Results and recommendation: above.
