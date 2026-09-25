@@ -24,8 +24,9 @@ use crate::model::dep_fail::DepFailReason;
 use crate::model::event::{Kind, Uuid7};
 use crate::model::ids::{EpochTimestamp, Generation, Namespace, RunId, SessionName, Source};
 use crate::model::meta::Meta;
+#[cfg(unix)]
 use crate::model::pty::PtyControl;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use crate::model::pty::PtyMeta;
 use crate::model::spec::{DependencyBinding, IoMode, LaunchSpec};
 use crate::model::state::{ExitReason, RunStatus, SidecarStep};
@@ -551,6 +552,7 @@ impl LifecycleEvents {
     /// threads that append concurrently with the lifecycle writer (the
     /// attach listener). The protocol is multi-writer by design: each
     /// writer keeps its own contiguous `seq` chain (spec §1).
+    #[cfg(unix)]
     fn with_fresh_writer(&self) -> Self {
         Self {
             session_dir: self.session_dir.clone(),
@@ -1315,6 +1317,7 @@ fn apply_pty_resize(fd: &std::fs::File, rows: u16, cols: u16) {
 /// string. Persistence is the same best-effort tmp+rename the attach path has
 /// always used (no fsync): a control flip must not block the attach thread, and
 /// the durable lifecycle writes go through `write_meta_atomic` elsewhere.
+#[cfg(unix)]
 fn set_pty_control_on_disk(session_dir: &Path, control: PtyControl) {
     let meta_path = session_dir.join("meta.json");
     let Ok(content) = std::fs::read_to_string(&meta_path) else {
@@ -1333,7 +1336,8 @@ fn set_pty_control_on_disk(session_dir: &Path, control: PtyControl) {
     }
 }
 
-#[cfg(test)]
+// Every test here exercises the Unix-only PTY control path.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::model::ids::{EpochTimestamp, Generation, ProcessIdentity, RunId, SessionName};
