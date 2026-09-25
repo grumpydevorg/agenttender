@@ -2,7 +2,7 @@ use std::num::{NonZeroI32, NonZeroU32};
 use tender::model::ids::{EpochTimestamp, Generation, ProcessIdentity, RunId, SessionName};
 use tender::model::meta::Meta;
 use tender::model::spec::LaunchSpec;
-use tender::model::state::{ExitReason, RunStatus};
+use tender::model::state::{ExitReason, RunStatus, SidecarStep};
 
 fn test_sidecar() -> ProcessIdentity {
     ProcessIdentity {
@@ -469,4 +469,63 @@ fn meta_hash_computed_on_demand() {
     let h2 = meta.launch_spec_hash();
     assert_eq!(h1, h2);
     assert_eq!(h1, meta.launch_spec().canonical_hash());
+}
+
+// === SidecarFailed: the sidecar's own terminal record of a supervision failure ===
+
+#[test]
+fn running_to_sidecar_failed_serializes_reason_and_step() {
+    let mut meta = starting_meta();
+    meta.transition_running(test_child()).unwrap();
+    meta.transition_sidecar_failed(test_child(), SidecarStep::OutputLog, EpochTimestamp::now())
+        .unwrap();
+    let json: serde_json::Value = serde_json::to_value(&meta).unwrap();
+    assert_eq!(json["status"], "Exited");
+    assert_eq!(json["reason"], "SidecarFailed");
+    assert_eq!(json["step"], "output_log");
+    assert_eq!(json["transition_provenance"]["kind"], "direct");
+
+    let back: Meta = serde_json::from_value(json).unwrap();
+    assert_eq!(back.status(), meta.status());
+}
+
+#[test]
+fn every_sidecar_step_round_trips_by_wire_name() {
+    for step in [
+        SidecarStep::Breadcrumb,
+        SidecarStep::StdinTransport,
+        SidecarStep::AttachBind,
+        SidecarStep::RunningMeta,
+        SidecarStep::Readiness,
+        SidecarStep::OutputLog,
+        SidecarStep::ChildWait,
+    ] {
+        let wire = serde_json::to_value(step).unwrap();
+        assert_eq!(wire, step.as_str(), "serde and as_str agree");
+        assert_eq!(SidecarStep::from_wire(step.as_str()), Some(step));
+    }
+    assert_eq!(SidecarStep::from_wire("not_a_step"), None);
+}
+
+#[test]
+fn starting_to_sidecar_failed_carries_the_spawned_child() {
+    let mut meta = starting_meta();
+    meta.transition_sidecar_failed(
+        test_child(),
+        SidecarStep::StdinTransport,
+        EpochTimestamp::now(),
+    )
+    .unwrap();
+    assert_eq!(meta.status().child(), Some(&test_child()));
+    assert!(meta.status().is_terminal());
+}
+
+#[test]
+fn cannot_sidecar_fail_a_terminal_run() {
+    let mut meta = starting_meta();
+    meta.reconcile_sidecar_lost(EpochTimestamp::now()).unwrap();
+    assert!(
+        meta.transition_sidecar_failed(test_child(), SidecarStep::ChildWait, EpochTimestamp::now())
+            .is_err()
+    );
 }

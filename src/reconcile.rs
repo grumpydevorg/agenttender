@@ -14,7 +14,7 @@ use crate::model::dep_fail::DepFailReason;
 use crate::model::event::{Event, Uuid7};
 use crate::model::ids::{EpochTimestamp, Namespace, Source};
 use crate::model::meta::Meta;
-use crate::model::state::ExitReason;
+use crate::model::state::{ExitReason, SidecarStep};
 use crate::model::transition::HealedTerminal;
 use crate::session::{self, SessionDir};
 
@@ -43,7 +43,7 @@ pub fn reconcile_sidecar_gone(session: &SessionDir, meta: &mut Meta) -> anyhow::
     }
 
     if let Some(event) = find_sidecar_terminal_event(session.path(), meta) {
-        if let Some(healed) = healed_terminal_of(&event) {
+        if let Some(healed) = event.data.as_ref().and_then(healed_terminal_of) {
             let ended_at = EpochTimestamp::from_secs(event.ts.epoch_secs());
             if meta.heal_terminal_from_event(healed, ended_at).is_ok() {
                 session::write_meta_atomic(session, meta)?;
@@ -74,6 +74,7 @@ fn find_sidecar_terminal_event(session_dir: &Path, meta: &Meta) -> Option<Event>
                 "run.exited"
                     | "run.killed"
                     | "run.timed_out"
+                    | "run.sidecar_failed"
                     | "run.spawn_failed"
                     | "run.dependency_failed"
             )
@@ -82,8 +83,7 @@ fn find_sidecar_terminal_event(session_dir: &Path, meta: &Meta) -> Option<Event>
 
 /// Parse a lifecycle event's `data` back into a terminal outcome.
 /// Returns `None` on any shape surprise — the caller then infers loss.
-fn healed_terminal_of(event: &Event) -> Option<HealedTerminal> {
-    let data = event.data.as_ref()?;
+fn healed_terminal_of(data: &serde_json::Value) -> Option<HealedTerminal> {
     match data["status"].as_str()? {
         "Exited" => {
             let how = match data["reason"].as_str()? {
@@ -94,6 +94,9 @@ fn healed_terminal_of(event: &Event) -> Option<HealedTerminal> {
                 "Killed" => ExitReason::Killed,
                 "KilledForced" => ExitReason::KilledForced,
                 "TimedOut" => ExitReason::TimedOut,
+                "SidecarFailed" => ExitReason::SidecarFailed {
+                    step: SidecarStep::from_wire(data["step"].as_str()?)?,
+                },
                 _ => return None,
             };
             Some(HealedTerminal::Exited(how))
@@ -148,4 +151,52 @@ fn append_sidecar_lost_event(session: &SessionDir, meta: &Meta) {
 fn namespace_of(session: &SessionDir) -> Option<Namespace> {
     let name = session.path().parent()?.file_name()?.to_str()?;
     Namespace::new(name).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::ids::ProcessIdentity;
+    use crate::model::state::RunStatus;
+    use std::num::NonZeroU32;
+
+    /// Every terminal `Exited` shape the sidecar writes must parse back, or a
+    /// WAL-window crash would be mislabelled `SidecarLost`.
+    #[test]
+    fn every_exit_reason_heals_from_its_own_lifecycle_data() {
+        let child = ProcessIdentity {
+            pid: NonZeroU32::new(7).unwrap(),
+            start_time_ns: 1,
+        };
+        for how in [
+            ExitReason::ExitedOk,
+            ExitReason::ExitedError {
+                code: NonZeroI32::new(3).unwrap(),
+            },
+            ExitReason::Killed,
+            ExitReason::KilledForced,
+            ExitReason::TimedOut,
+            ExitReason::SidecarFailed {
+                step: SidecarStep::ChildWait,
+            },
+        ] {
+            let status = RunStatus::Exited {
+                child,
+                how: how.clone(),
+                ended_at: EpochTimestamp::from_secs(1),
+            };
+            let data = events::lifecycle_data(&status, "direct", None);
+            match healed_terminal_of(&data) {
+                Some(HealedTerminal::Exited(healed)) => assert_eq!(healed, how),
+                other => panic!("{how:?} did not heal from {data}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn sidecar_failed_without_a_known_step_does_not_heal() {
+        let data =
+            serde_json::json!({"status": "Exited", "reason": "SidecarFailed", "step": "nope"});
+        assert!(healed_terminal_of(&data).is_none());
+    }
 }

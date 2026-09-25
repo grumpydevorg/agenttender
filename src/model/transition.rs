@@ -4,7 +4,7 @@ use super::dep_fail::DepFailReason;
 use super::ids::{EpochTimestamp, ProcessIdentity};
 use super::meta::Meta;
 use super::provenance::{Evidence, TransitionProvenance};
-use super::state::{ExitReason, RunStatus};
+use super::state::{ExitReason, RunStatus, SidecarStep};
 
 #[derive(Debug, Error)]
 pub enum TransitionError {
@@ -28,6 +28,7 @@ fn status_name(status: &RunStatus) -> &'static str {
             ExitReason::Killed => "Killed",
             ExitReason::KilledForced => "KilledForced",
             ExitReason::TimedOut => "TimedOut",
+            ExitReason::SidecarFailed { .. } => "SidecarFailed",
         },
         RunStatus::SidecarLost { .. } => "SidecarLost",
         RunStatus::DependencyFailed { .. } => "DependencyFailed",
@@ -84,11 +85,19 @@ impl Meta {
     /// Transition Running → Exited. Only valid from Running.
     /// ExitReason cannot include SpawnFailed — that's a separate type.
     /// Child identity is carried from Running into the Exited state.
+    /// `SidecarFailed` is not an observed exit: it goes through
+    /// [`Meta::transition_sidecar_failed`], which carries its own evidence.
     pub fn transition_exited(
         &mut self,
         how: ExitReason,
         ended_at: EpochTimestamp,
     ) -> Result<(), TransitionError> {
+        if matches!(how, ExitReason::SidecarFailed { .. }) {
+            return Err(TransitionError::Illegal {
+                from: status_name(self.status()),
+                to: "SidecarFailed (use transition_sidecar_failed)",
+            });
+        }
         match self.status() {
             RunStatus::Running { child } => {
                 let child = *child;
@@ -111,6 +120,38 @@ impl Meta {
                 from: status_name(self.status()),
             }),
         }
+    }
+
+    /// Transition Starting | Running → `Exited { SidecarFailed { step } }`:
+    /// the sidecar failed after spawning `child`, killed it, and records that
+    /// itself (Direct provenance). Valid from `Starting` because the failure
+    /// can precede publishing `Running` (the child existed; `Running` was
+    /// never persisted). From `Running`, the recorded child is kept.
+    pub fn transition_sidecar_failed(
+        &mut self,
+        child: ProcessIdentity,
+        step: SidecarStep,
+        ended_at: EpochTimestamp,
+    ) -> Result<(), TransitionError> {
+        let child = match self.status() {
+            RunStatus::Starting => child,
+            RunStatus::Running { child: running } => *running,
+            _ => {
+                return Err(TransitionError::AlreadyTerminal {
+                    from: status_name(self.status()),
+                });
+            }
+        };
+        *self.status_mut() = RunStatus::Exited {
+            child,
+            how: ExitReason::SidecarFailed { step },
+            ended_at,
+        };
+        self.set_transition_provenance(TransitionProvenance::direct(&[
+            Evidence::SidecarWrite,
+            Evidence::SupervisionFailed,
+        ]));
+        Ok(())
     }
 
     /// Transition Starting → DependencyFailed.
@@ -294,6 +335,76 @@ mod provenance_tests {
             unreachable!()
         };
         assert!(evidence.contains(&Evidence::ChildExitObserved));
+    }
+
+    #[test]
+    fn sidecar_failed_from_running_keeps_child_and_is_direct() {
+        let mut m = fresh_meta();
+        m.transition_running(child()).unwrap();
+        let other = ProcessIdentity {
+            pid: std::num::NonZero::new(99).unwrap(),
+            start_time_ns: 7,
+        };
+        m.transition_sidecar_failed(other, SidecarStep::OutputLog, EpochTimestamp::from_secs(2))
+            .unwrap();
+        let RunStatus::Exited { child: c, how, .. } = m.status() else {
+            panic!("expected Exited, got {:?}", m.status());
+        };
+        assert_eq!(*c, child(), "Running's recorded child wins");
+        assert_eq!(
+            *how,
+            ExitReason::SidecarFailed {
+                step: SidecarStep::OutputLog
+            }
+        );
+        let TransitionProvenance::Direct { evidence } = m.transition_provenance().unwrap() else {
+            panic!("SidecarFailed is a direct sidecar write");
+        };
+        assert!(evidence.contains(&Evidence::SidecarWrite));
+        assert!(evidence.contains(&Evidence::SupervisionFailed));
+    }
+
+    #[test]
+    fn sidecar_failed_from_starting_records_the_spawned_child() {
+        let mut m = fresh_meta();
+        m.transition_sidecar_failed(
+            child(),
+            SidecarStep::StdinTransport,
+            EpochTimestamp::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(m.status().child(), Some(&child()));
+        assert!(m.status().is_terminal());
+    }
+
+    #[test]
+    fn sidecar_failed_is_rejected_once_terminal() {
+        let mut m = fresh_meta();
+        m.transition_running(child()).unwrap();
+        m.transition_exited(ExitReason::ExitedOk, EpochTimestamp::from_secs(2))
+            .unwrap();
+        assert!(
+            m.transition_sidecar_failed(
+                child(),
+                SidecarStep::ChildWait,
+                EpochTimestamp::from_secs(3)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn transition_exited_refuses_sidecar_failed() {
+        let mut m = fresh_meta();
+        m.transition_running(child()).unwrap();
+        let how = ExitReason::SidecarFailed {
+            step: SidecarStep::ChildWait,
+        };
+        assert!(
+            m.transition_exited(how, EpochTimestamp::from_secs(2))
+                .is_err()
+        );
+        assert!(matches!(m.status(), RunStatus::Running { .. }));
     }
 
     #[test]

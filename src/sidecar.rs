@@ -1059,7 +1059,7 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     // --- Write terminal state (run state machine ends here) ---
     // WAL order: the durable terminal event precedes the terminal meta write,
     // so terminal meta always implies a logged terminal event (spec §3.6).
-    let exit_reason_debug = format!("{exit_reason:?}");
+    let exit_reason_debug = exit_reason_env(&exit_reason);
     meta.transition_exited(exit_reason, EpochTimestamp::now())?;
     test_abort_point("before_terminal_event");
     lifecycle.emit(&mut meta, true);
@@ -1153,6 +1153,16 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     }
 
     Ok(())
+}
+
+/// `TENDER_EXIT_REASON` for `--on-exit` hooks. `SidecarFailed` is the bare
+/// reason name, so a hook can match it exactly; the failing step is in meta.
+/// Every other reason keeps the Debug form hooks have always received.
+fn exit_reason_env(how: &ExitReason) -> String {
+    match how {
+        ExitReason::SidecarFailed { .. } => "SidecarFailed".to_owned(),
+        other => format!("{other:?}"),
+    }
 }
 
 /// Forward data from the stdin transport to the child's stdin pipe.
