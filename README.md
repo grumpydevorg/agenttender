@@ -33,8 +33,8 @@ The *shell* lives inside Tendr and outlives every call. The same model works ove
 ## Install
 
 ```bash
-git clone https://github.com/grumpydevorg/agenttender
-cd agenttender && cargo build --release   # → target/release/tendr
+git clone https://github.com/grumpydevorg/tendr
+cd tendr && cargo build --release   # → target/release/tendr
 ```
 
 Prebuilt binaries and `cargo install tendr` arrive with the first release — see the [roadmap](docs/ROADMAP.md).
@@ -42,8 +42,8 @@ Prebuilt binaries and `cargo install tendr` arrive with the first release — se
 ### Nix
 
 ```bash
-nix build github:grumpydevorg/agenttender#tendr   # or  nix build .#tendr  in a clone
-nix run  github:grumpydevorg/agenttender -- --version
+nix build github:grumpydevorg/tendr#tendr   # or  nix build .#tendr  in a clone
+nix run  github:grumpydevorg/tendr -- --version
 ```
 
 The flake exposes `packages.<system>.tendr` for `aarch64-darwin`, `x86_64-linux` and
