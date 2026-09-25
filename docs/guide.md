@@ -410,10 +410,6 @@ and `tender attach <name>` to take one over by hand.
 
 Limits:
 
-- **Let `tender start` return before closing its pane.** Killing the client in
-  the milliseconds between spawn and readiness can lose the sidecar and leave
-  the child running unsupervised. This is Tender's defect, not herdr's; see
-  [sidecar-survives-client-loss](plans/backlog/sidecar-survives-client-loss.md).
 - Read results from Tender, not from `herdr pane read`: a pane is a screen,
   with no exit code.
 - Run agents in herdr panes, not under Tender: `tender start --pty -- omp`

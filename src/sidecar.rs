@@ -615,6 +615,25 @@ fn test_abort_point(point: &str) {
     }
 }
 
+/// Test-only gate before the readiness write, so a test can kill the `start`
+/// client inside the spawn-to-readiness window without a timing race: the
+/// sidecar waits until the file named by `TENDER_TEST_READY_GATE` exists
+/// (bounded, so a failed test cannot strand it). Compiled into debug builds
+/// only; release sidecars ignore the variable entirely.
+fn test_ready_gate() {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let Some(gate) = std::env::var_os("TENDER_TEST_READY_GATE") else {
+        return;
+    };
+    let gate = PathBuf::from(gate);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !gate.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// A Write wrapper around Arc<Mutex<Box<dyn Write + Send>>>.
 /// Allows multiple owners to write to the same underlying sink.
 struct SharedWriter(Arc<Mutex<Box<dyn Write + Send>>>);
@@ -753,7 +772,7 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
             &run_id,
         );
         let action = apply_first_scan_outcome(&session, &mut meta, &mut lifecycle, outcome)?;
-        signal_meta_snapshot(ready, &meta)?;
+        signal_meta_snapshot(&session, ready, &mut meta)?;
 
         match action {
             DepAction::Spawn => {} // every dependency already satisfied — proceed
@@ -829,7 +848,7 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
                 lifecycle.emit(&mut meta, true);
                 session::write_meta_atomic(&session, &meta)?;
                 if !has_deps {
-                    signal_meta_snapshot(ready, &meta)?;
+                    signal_meta_snapshot(&session, ready, &mut meta)?;
                 }
                 return Ok(());
             }
@@ -848,7 +867,7 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
                 lifecycle.emit(&mut meta, true);
                 session::write_meta_atomic(&session, &meta)?;
                 if !has_deps {
-                    signal_meta_snapshot(ready, &meta)?;
+                    signal_meta_snapshot(&session, ready, &mut meta)?;
                 }
                 return Ok(());
             }
@@ -869,7 +888,7 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
             lifecycle.emit(&mut meta, true);
             session::write_meta_atomic(&session, &meta)?;
             if !has_deps {
-                signal_meta_snapshot(ready, &meta)?;
+                signal_meta_snapshot(&session, ready, &mut meta)?;
             }
             return Ok(());
         }
@@ -954,7 +973,7 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     lifecycle.emit(&mut meta, false);
     session::write_meta_atomic(&session, &meta)?;
     if !has_deps {
-        signal_meta_snapshot(ready, &meta)?;
+        signal_meta_snapshot(&session, ready, &mut meta)?;
     }
 
     // --- Timeout + kill watcher setup ---
@@ -1176,12 +1195,27 @@ fn forward_stdin(
 
 /// Send meta JSON over the readiness channel. Consumes the writer.
 /// The CLI reads this snapshot directly -- no race with subsequent disk writes.
-fn signal_meta_snapshot(ready: &mut Option<ReadyWriter>, meta: &Meta) -> anyhow::Result<()> {
+///
+/// Readiness is a courtesy to the `start` client that asked, never a condition
+/// of the run (#71). If that client has gone (killed mid-handshake, its pane
+/// closed), the write fails with a broken pipe; the sidecar then carries on
+/// exactly as it would have (supervising, waiting on dependencies, or finishing
+/// a terminal path) and persists the lost delivery as a session warning. Meta
+/// was already written before every call site, so the rewrite only adds it.
+fn signal_meta_snapshot(
+    session: &SessionDir,
+    ready: &mut Option<ReadyWriter>,
+    meta: &mut Meta,
+) -> anyhow::Result<()> {
     let writer = ready
         .take()
         .ok_or_else(|| anyhow::anyhow!("readiness channel already consumed"))?;
     let json = serde_json::to_string(meta)?;
-    Current::write_ready_signal(writer, &format!("OK:{json}\n"))?;
+    test_ready_gate();
+    if let Err(e) = Current::write_ready_signal(writer, &format!("OK:{json}\n")) {
+        meta.add_warning(format!("readiness not delivered: start client gone ({e})"));
+        session::write_meta_atomic(session, meta)?;
+    }
     Ok(())
 }
 

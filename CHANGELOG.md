@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The sidecar survives losing its `start` client** ([#71](https://github.com/grumpydevorg/agenttender/issues/71)).
+  If the `tender start` client died between the sidecar spawning the child and
+  reading the readiness message (a closed pane, a killed tool call, Ctrl-C),
+  the failed readiness write ended the sidecar and left the child running
+  unsupervised: `status` later showed `SidecarLost`, with no `run.exited`, no
+  further output and no `--on-exit` hooks. A failed readiness write is now a
+  session warning (`readiness not delivered: start client gone`), and the run
+  carries on to its normal terminal state.
+
 ## v0.2.1 — Security: reject option-shaped `--host` destinations
 
 ### Security
