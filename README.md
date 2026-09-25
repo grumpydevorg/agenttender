@@ -33,11 +33,19 @@ The *shell* lives inside Tendr and outlives every call. The same model works ove
 ## Install
 
 ```bash
+cargo binstall tendr   # prebuilt binary from the GitHub release
+cargo install tendr    # or build it from crates.io
+```
+
+Release archives (`tendr-<target>.tar.gz`, Linux musl, macOS and Windows on x86-64 and ARM64)
+carry keyless SLSA build provenance: `gh attestation verify <archive> --repo grumpydevorg/tendr`.
+
+From source:
+
+```bash
 git clone https://github.com/grumpydevorg/tendr
 cd tendr && cargo build --release   # → target/release/tendr
 ```
-
-Prebuilt binaries and `cargo install tendr` arrive with the first release — see the [roadmap](docs/ROADMAP.md).
 
 ### Nix
 

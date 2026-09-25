@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — Renamed to `tendr`
+## v0.3.0 — Renamed to `tendr`
 
 ### Breaking changes
 
@@ -70,7 +70,7 @@ the state root only once none are running:
   cannot verify. Reconciliation now holds the session lock and re-reads meta, so
   it can no longer overwrite a record the sidecar wrote a moment earlier.
 
-- **The sidecar survives losing its `start` client** ([#71](https://github.com/grumpydevorg/agenttender/issues/71)).
+- **The sidecar survives losing its `start` client** ([#71](https://github.com/grumpydevorg/tendr/issues/71)).
   If the `tendr start` client died between the sidecar spawning the child and
   reading the readiness message (a closed pane, a killed tool call, Ctrl-C),
   the failed readiness write ended the sidecar and left the child running
