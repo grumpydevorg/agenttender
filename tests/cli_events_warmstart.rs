@@ -1,13 +1,13 @@
-//! `tender events` warm-start flags — `--since`, `--last`, `--from-now`,
+//! `tendr events` warm-start flags — `--since`, `--last`, `--from-now`,
 //! and their mutual exclusion (slice 2 plan, scope item 2).
 
 mod harness;
 
-use harness::{tender, wait_terminal};
+use harness::{tendr, wait_terminal};
 use tempfile::TempDir;
 
 fn finished_session(root: &TempDir, name: &str) {
-    tender(root)
+    tendr(root)
         .args(["start", name, "--", "echo", "hi"])
         .assert()
         .success();
@@ -15,7 +15,7 @@ fn finished_session(root: &TempDir, name: &str) {
 }
 
 fn emit(root: &TempDir, session: &str, kind: &str) {
-    tender(root)
+    tendr(root)
         .args(["emit", "--kind", kind, "--session", session])
         .assert()
         .success();
@@ -30,7 +30,7 @@ fn parse_ndjson(stdout: &[u8]) -> Vec<serde_json::Value> {
 }
 
 fn replay(root: &TempDir, args: &[&str]) -> Vec<serde_json::Value> {
-    let output = tender(root)
+    let output = tendr(root)
         .arg("events")
         .args(args)
         .output()
@@ -99,7 +99,7 @@ fn since_accepts_second_precision_utc() {
 #[test]
 fn since_rejects_malformed_timestamps_as_usage_error() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["events", "--since", "yesterday"])
         .assert()
         .code(2);
@@ -110,7 +110,7 @@ fn from_now_without_follow_prints_nothing() {
     let root = TempDir::new().unwrap();
     finished_session(&root, "s1");
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["events", "--from-now"])
         .output()
         .unwrap();
@@ -133,6 +133,6 @@ fn warm_start_flags_are_mutually_exclusive() {
         &["--from-cursor", "abc", "--last", "5"],
     ];
     for combo in combos {
-        tender(&root).arg("events").args(*combo).assert().code(2);
+        tendr(&root).arg("events").args(*combo).assert().code(2);
     }
 }

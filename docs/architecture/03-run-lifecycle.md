@@ -1,10 +1,10 @@
 # Run Lifecycle
 
-Tender models supervised runs, not raw processes. The sidecar is the normal writer of lifecycle state. The CLI writes lifecycle state only during reconciliation, in two cases: it infers `SidecarLost` (lock released with no terminal state), or it *heals* a terminal state (`Exited*` / `SpawnFailed` / `DependencyFailed`) by replaying the sidecar's own event-log record when the sidecar died in the WAL crash window before persisting `meta.json`.
+Tendr models supervised runs, not raw processes. The sidecar is the normal writer of lifecycle state. The CLI writes lifecycle state only during reconciliation, in two cases: it infers `SidecarLost` (lock released with no terminal state), or it *heals* a terminal state (`Exited*` / `SpawnFailed` / `DependencyFailed`) by replaying the sidecar's own event-log record when the sidecar died in the WAL crash window before persisting `meta.json`.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Starting: tender start / tender run\nspawn detached sidecar
+    [*] --> Starting: tendr start / tendr run\nspawn detached sidecar
 
     Starting --> Running: sidecar spawns child\nand writes Running
     Starting --> SpawnFailed: child spawn fails

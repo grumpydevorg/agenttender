@@ -43,5 +43,5 @@ the current rule that deleting a session deletes all of its events and blobs.
   complete design.
 
 The previous global-CAS, ULID/`parent_block_id`, daemon, refcount, and
-`tender block output` sketches were superseded by the shipped event protocol
+`tendr block output` sketches were superseded by the shipped event protocol
 and remain available in git history if a future consumer needs their rationale.

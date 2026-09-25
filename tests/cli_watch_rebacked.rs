@@ -1,4 +1,4 @@
-//! `tender watch` re-backed by the event log (spec §5.3, slice 2 plan
+//! `tendr watch` re-backed by the event log (spec §5.3, slice 2 plan
 //! scope item 7). Output shape frozen — these tests assert the *gains*
 //! (un-collapsed transitions, true timestamps, provenance stripped) and
 //! the legacy fallback; cli_watch.rs continues to pin the frozen shape.
@@ -8,9 +8,9 @@ mod harness;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use harness::{tender, wait_terminal};
+use harness::{tendr, wait_terminal};
 use tempfile::TempDir;
-use tender::model::event::EventTimestamp;
+use tendr::model::event::EventTimestamp;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -31,7 +31,7 @@ fn fast_exit_session_shows_all_three_transitions_uncollapsed() {
     let follower = harness::ReadyFollower::spawn(&root, "watch", &["--events"]);
 
     // A session that exits faster than any meta-diff poll could observe.
-    tender(&root)
+    tendr(&root)
         .args(["start", "fast", "--", "echo", "hi"])
         .assert()
         .success();
@@ -52,7 +52,7 @@ fn fast_exit_session_shows_all_three_transitions_uncollapsed() {
     // and the event's provenance field stripped at projection.
     for record in records.iter().filter(|r| r["kind"] == "run") {
         assert!(record["ts"].is_f64() || record["ts"].is_u64());
-        assert_eq!(record["source"], "tender.sidecar");
+        assert_eq!(record["source"], "tendr.sidecar");
         assert!(record["data"]["status"].is_string());
         assert!(
             record["data"].get("provenance").is_none(),
@@ -65,7 +65,7 @@ fn fast_exit_session_shows_all_three_transitions_uncollapsed() {
 fn preexisting_session_still_gets_current_state_snapshot_only() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "done", "--", "echo", "hi"])
         .assert()
         .success();
@@ -89,14 +89,14 @@ fn preexisting_session_still_gets_current_state_snapshot_only() {
 fn rebacked_snapshot_carries_the_true_timestamp() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "stamped", "--", "echo", "hi"])
         .assert()
         .success();
     wait_terminal(&root, "stamped");
 
     // The stored run.exited event's occurrence time.
-    let replay = tender(&root)
+    let replay = tendr(&root)
         .args(["events", "--session", "stamped", "--kind", "run.exited"])
         .output()
         .unwrap();
@@ -134,14 +134,14 @@ fn rebacked_snapshot_carries_the_true_timestamp() {
 fn session_without_events_dir_keeps_legacy_meta_diff_synthesis() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "legacy", "--", "echo", "hi"])
         .assert()
         .success();
     wait_terminal(&root, "legacy");
 
     // A pre-slice-1 layout: meta.json + output.log, no events dir.
-    let events_dir = root.path().join(".tender/sessions/default/legacy/events");
+    let events_dir = root.path().join(".tendr/sessions/default/legacy/events");
     std::fs::remove_dir_all(&events_dir).unwrap();
 
     let follower = harness::ReadyFollower::spawn(&root, "watch", &["--events"]);
@@ -158,7 +158,7 @@ fn session_without_events_dir_keeps_legacy_meta_diff_synthesis() {
     );
     let snapshot = &records[0];
     assert_eq!(snapshot["kind"], "run");
-    assert_eq!(snapshot["source"], "tender.sidecar");
+    assert_eq!(snapshot["source"], "tendr.sidecar");
     assert!(snapshot["ts"].is_f64() || snapshot["ts"].is_u64());
     assert_eq!(snapshot["data"]["status"], "Exited");
 }
@@ -167,7 +167,7 @@ fn session_without_events_dir_keeps_legacy_meta_diff_synthesis() {
 fn from_now_skips_existing_but_streams_new_sessions_uncollapsed() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "old", "--", "echo", "hi"])
         .assert()
         .success();
@@ -175,7 +175,7 @@ fn from_now_skips_existing_but_streams_new_sessions_uncollapsed() {
 
     let follower = harness::ReadyFollower::spawn(&root, "watch", &["--events", "--from-now"]);
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "fresh", "--", "echo", "hi"])
         .assert()
         .success();
@@ -201,7 +201,7 @@ fn from_now_skips_existing_but_streams_new_sessions_uncollapsed() {
 fn replaced_session_streams_the_new_generation_uncollapsed() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "swap", "--", "echo", "first"])
         .assert()
         .success();
@@ -210,7 +210,7 @@ fn replaced_session_streams_the_new_generation_uncollapsed() {
     // gen-1's snapshot (run.exited) is flushed before readiness.
     let follower = harness::ReadyFollower::spawn(&root, "watch", &["--events"]);
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "swap", "--replace", "--", "echo", "second"])
         .assert()
         .success();

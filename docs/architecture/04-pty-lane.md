@@ -1,6 +1,6 @@
 # PTY Lane
 
-Tender has two execution lanes:
+Tendr has two execution lanes:
 
 - pipe sessions: machine-friendly, `push` + `exec`, separate stdout/stderr
 - PTY sessions: terminal-friendly, merged transcript, `push` + `attach`, no generic shell `exec`
@@ -13,9 +13,9 @@ exact recordings, reconnect, and an optional external screen extension.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> AgentControl: tender start --pty
+    [*] --> AgentControl: tendr start --pty
 
-    AgentControl --> HumanControl: tender attach\nor direct attach socket client
+    AgentControl --> HumanControl: tendr attach\nor direct attach socket client
     HumanControl --> AgentControl: detach message\nor socket close
 
     AgentControl --> AgentControl: push accepted
@@ -34,7 +34,7 @@ PTY-specific I/O shape:
 
 ```mermaid
 flowchart LR
-    Push["tender push"] --> FIFO["stdin.pipe"]
+    Push["tendr push"] --> FIFO["stdin.pipe"]
     FIFO --> Sidecar["sidecar forwarding thread"]
     Sidecar --> PTY["PTY master"]
     PTY --> Child["TTY-sensitive child"]

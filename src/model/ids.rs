@@ -281,7 +281,7 @@ impl<'de> Deserialize<'de> for Namespace {
 }
 
 /// Validated annotation source. Dotted string identifying who produced an annotation.
-/// `tender.*` is reserved for internal use.
+/// `tendr.*` is reserved for internal use.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Source(String);
 
@@ -293,7 +293,7 @@ pub enum SourceError {
     NoDot,
     #[error("source contains invalid character '{0}' (allowed: ASCII alphanumeric, '.', '-')")]
     InvalidChar(char),
-    #[error("source cannot start with 'tender.' (reserved)")]
+    #[error("source cannot start with 'tendr.' (reserved)")]
     ReservedPrefix,
     #[error("source has empty segment (leading, trailing, or consecutive dots)")]
     EmptySegment,
@@ -308,18 +308,18 @@ impl Source {
     ///
     /// # Errors
     /// Returns `SourceError` if the source is empty, missing a dot,
-    /// contains invalid characters, or uses the reserved `tender.*` prefix.
+    /// contains invalid characters, or uses the reserved `tendr.*` prefix.
     pub fn new(s: &str) -> Result<Self, SourceError> {
         Self::validate_grammar(s)?;
-        if s.starts_with("tender.") {
+        if s.starts_with("tendr.") {
             return Err(SourceError::ReservedPrefix);
         }
         Ok(Self(s.to_owned()))
     }
 
-    /// Create a source at a tender-internal call site. Grammar is still
-    /// enforced, but the `tender.*` reservation is not — internal writers
-    /// (`tender.sidecar`, `tender.exec`, `tender.cli`) are the only
+    /// Create a source at a tendr-internal call site. Grammar is still
+    /// enforced, but the `tendr.*` reservation is not — internal writers
+    /// (`tendr.sidecar`, `tendr.exec`, `tendr.cli`) are the only
     /// legitimate users of the reserved prefix.
     ///
     /// # Errors
@@ -371,9 +371,9 @@ impl Serialize for Source {
 
 impl<'de> Deserialize<'de> for Source {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        // Grammar only: the `tender.*` reservation is a user-input-boundary
+        // Grammar only: the `tendr.*` reservation is a user-input-boundary
         // rule (`Source::new`). Stored records legitimately carry internal
-        // sources like `tender.sidecar` and must round-trip.
+        // sources like `tendr.sidecar` and must round-trip.
         let s = String::deserialize(deserializer)?;
         Self::validate_grammar(&s).map_err(serde::de::Error::custom)?;
         Ok(Self(s))

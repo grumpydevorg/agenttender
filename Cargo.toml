@@ -1,5 +1,5 @@
 [package]
-name = "agenttender"
+name = "tendr"
 version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"
@@ -7,12 +7,12 @@ description = "Agent process sitter — supervised runs, not processes"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/grumpydevorg/agenttender"
 readme = "README.md"
-default-run = "tender"
+default-run = "tendr"
 keywords = ["cli", "supervisor", "agent", "process", "session"]
 categories = ["command-line-utilities", "development-tools"]
 # Whitelist the crate package: public source, the embedded skill, the guide the
 # binary include_str!s, README, and licenses. Keep src/bin test helpers out of
-# the package so crates.io installs only `tender`, while local test builds can
+# the package so crates.io installs only `tendr`, while local test builds can
 # still auto-discover those helpers.
 include = [
     "/src/*.rs",
@@ -26,18 +26,17 @@ include = [
     "/LICENSE-MIT",
 ]
 
-# The crate is `agenttender`; the library stays importable as `tender` and the
-# binary keeps the short name `tender`.
+# The crate, the library (`use tendr::…`) and the binary are all `tendr`.
 [lib]
-name = "tender"
+name = "tendr"
 
 [[bin]]
-name = "tender"
+name = "tendr"
 path = "src/main.rs"
 
-# `cargo binstall agenttender` fetches the prebuilt binary from GitHub releases.
-# Asset naming here must match what release.yml uploads: agenttender-<target>.tar.gz
-# containing the `tender` binary at the archive root.
+# `cargo binstall tendr` fetches the prebuilt binary from GitHub releases.
+# Asset naming here must match what release.yml uploads: tendr-<target>.tar.gz
+# containing the `tendr` binary at the archive root.
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
 pkg-fmt = "tgz"

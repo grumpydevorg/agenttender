@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased — Renamed to `tendr`
+
+### Breaking changes
+
+The project, crate and binary are renamed from Tender / `agenttender` /
+`tender` to **`tendr`**. Nothing reads the old names, so this is a clean break:
+
+- **Crate and binary:** `cargo install tendr` installs the `tendr` binary. The
+  library is `tendr` (`use tendr::…`). Release archives are
+  `tendr-<target>.tar.gz`. The `agenttender` crate stops at 0.2.1.
+- **State root:** `~/.tender` → `~/.tendr` (sessions, callbacks, `lost+found`).
+  There is no automatic migration and no fallback read of the old path.
+- **Environment variables:** every `TENDER_*` variable is now `TENDR_*`
+  (`TENDR_SESSION`, `TENDR_NAMESPACE`, `TENDR_RUN_ID`, `TENDR_GENERATION`,
+  `TENDR_EXIT_REASON`, `TENDR_SESSION_DIR`, `TENDR_BLOCK_ID`,
+  `TENDR_PARENT_EVENT_ID`, and the internal ready-pipe variables).
+- **Script directives:** `#tender: key=value` is now `#tendr: key=value`.
+- **Events:** internal sources are `tendr.sidecar`, `tendr.exec` and
+  `tendr.cli`, and `tendr.` is the reserved source and kind prefix. Event logs
+  written before the rename keep their `tender.*` sources.
+- **Exec framing:** the in-band sentinels are `__TENDR_EXEC__` / `TENDR_EXEC_`,
+  so `tendr exec` cannot drive a session started by the old binary.
+- **Agent skill:** `using-tender` is now `using-tendr`; `tendr skill install`
+  writes `.claude/skills/using-tendr/SKILL.md`, and the Nix package installs
+  `share/agent-skills/using-tendr/SKILL.md`.
+- **Nix:** the flake's package and check are `tendr` (`nix build .#tendr`).
+
+### Cutover
+
+Live sidecars from the old binary hold absolute paths into `~/.tender`, so move
+the state root only once none are running:
+
+1. Stop every session the old binary supervises (`tender kill <session>`), or
+   let them finish.
+2. `mv ~/.tender ~/.tendr`
+3. Install `tendr`, remove `tender`, and update scripts, shebangs and callbacks
+   that use `tender`, `TENDER_*` or `#tender:`.
+
 ## v0.2.1 — Security: reject option-shaped `--host` destinations
 
 ### Security

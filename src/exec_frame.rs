@@ -16,7 +16,7 @@ pub fn python_frame(code: &str, result_path: &str) -> String {
     // The entire frame must be a single line for REPL injection.
     // Python's compile() interprets \n as real newlines inside the string.
     format!(
-        "exec(compile('import json,os,sys,contextlib,io,traceback,base64 as _b64;_out,_err,_code,_tb=io.StringIO(),io.StringIO(),0,None;_rp=_b64.b64decode(\"{encoded_path}\").decode()\\ntry:\\n with contextlib.redirect_stdout(_out),contextlib.redirect_stderr(_err):\\n  exec(compile(_b64.b64decode(\"{encoded_code}\").decode(),\"<exec>\",\"exec\"))\\nexcept SystemExit as _e:\\n _code=_e.code if _e.code is not None else 0\\nexcept:\\n _tb=traceback.format_exc();_code=1\\n_tmp=_rp+\".tmp\"\\nwith open(_tmp,\"w\") as _f:\\n json.dump(dict(exit_code=_code,cwd=os.getcwd(),stdout=_out.getvalue(),stderr=_err.getvalue(),traceback=_tb),_f)\\nos.rename(_tmp,_rp)','<tender-exec>','exec'))\n"
+        "exec(compile('import json,os,sys,contextlib,io,traceback,base64 as _b64;_out,_err,_code,_tb=io.StringIO(),io.StringIO(),0,None;_rp=_b64.b64decode(\"{encoded_path}\").decode()\\ntry:\\n with contextlib.redirect_stdout(_out),contextlib.redirect_stderr(_err):\\n  exec(compile(_b64.b64decode(\"{encoded_code}\").decode(),\"<exec>\",\"exec\"))\\nexcept SystemExit as _e:\\n _code=_e.code if _e.code is not None else 0\\nexcept:\\n _tb=traceback.format_exc();_code=1\\n_tmp=_rp+\".tmp\"\\nwith open(_tmp,\"w\") as _f:\\n json.dump(dict(exit_code=_code,cwd=os.getcwd(),stdout=_out.getvalue(),stderr=_err.getvalue(),traceback=_tb),_f)\\nos.rename(_tmp,_rp)','<tendr-exec>','exec'))\n"
     )
 }
 
@@ -25,9 +25,9 @@ pub fn python_frame(code: &str, result_path: &str) -> String {
 /// The command is escaped using shell_words::join, then appended with a sentinel
 /// trailer that captures exit code and cwd.
 ///
-/// `TENDER_BLOCK_ID` is exported for exactly the payload's duration
+/// `TENDR_BLOCK_ID` is exported for exactly the payload's duration
 /// (spec §2): set before it, exit code captured first, unset before the
-/// sentinel — so a payload spawning `tender emit` chains to the exec
+/// sentinel — so a payload spawning `tendr emit` chains to the exec
 /// block, and the session shell is not left polluted.
 ///
 /// Token must be hex-only (as produced by `generate_token`); block_id is
@@ -43,7 +43,7 @@ pub fn unix_frame(argv: &[String], token: &str, block_id: &str) -> String {
     );
     let cmd = shell_words::join(argv);
     format!(
-        "export TENDER_BLOCK_ID='{block_id}'; {cmd}; __tender_s=$?; unset TENDER_BLOCK_ID; printf '__TENDER_EXEC__ %s %s %s\\n' '{token}' \"$__tender_s\" \"$(pwd)\"\n"
+        "export TENDR_BLOCK_ID='{block_id}'; {cmd}; __tendr_s=$?; unset TENDR_BLOCK_ID; printf '__TENDR_EXEC__ %s %s %s\\n' '{token}' \"$__tendr_s\" \"$(pwd)\"\n"
     )
 }
 
@@ -94,13 +94,13 @@ pub fn duckdb_frame(sql: &str, token: &str) -> String {
         token.bytes().all(|b| b.is_ascii_hexdigit()),
         "token must be hex-only, got: {token}"
     );
-    format!(".mode json\n.nullvalue null\n{sql}\n.print __TENDER_EXEC__ {token} 0 .\n")
+    format!(".mode json\n.nullvalue null\n{sql}\n.print __TENDR_EXEC__ {token} 0 .\n")
 }
 
 /// Parse a sentinel line, extracting exit code and cwd.
 /// Returns None if the line is not a sentinel or token doesn't match.
 pub fn parse_sentinel(line: &str, expected_token: &str) -> Option<(i32, String)> {
-    let rest = line.strip_prefix("__TENDER_EXEC__ ")?;
+    let rest = line.strip_prefix("__TENDR_EXEC__ ")?;
     let (token, rest) = rest.split_once(' ')?;
     if token != expected_token {
         return None;
@@ -130,7 +130,7 @@ mod tests {
     fn unix_frame_simple_command() {
         let frame = unix_frame(&["echo".into(), "hello".into()], "a1b2c3", BLOCK);
         assert!(frame.contains("echo hello"));
-        assert!(frame.contains("__TENDER_EXEC__ %s %s %s"));
+        assert!(frame.contains("__TENDR_EXEC__ %s %s %s"));
         assert!(frame.contains("a1b2c3"));
         assert!(frame.ends_with('\n'));
     }
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn unix_frame_command_with_special_chars() {
         let frame = unix_frame(&["echo".into(), "it's a \"test\"".into()], "a1b2c3", BLOCK);
-        assert!(frame.contains("__TENDER_EXEC__"));
+        assert!(frame.contains("__TENDR_EXEC__"));
         assert!(frame.contains("a1b2c3"));
     }
 
@@ -149,11 +149,11 @@ mod tests {
         // left polluted.
         let frame = unix_frame(&["echo".into(), "hi".into()], "a1b2c3", BLOCK);
         let export = frame
-            .find(&format!("export TENDER_BLOCK_ID='{BLOCK}'"))
+            .find(&format!("export TENDR_BLOCK_ID='{BLOCK}'"))
             .expect("export present");
         let cmd = frame.find("echo hi").expect("payload present");
-        let status = frame.find("__tender_s=$?").expect("exit capture present");
-        let unset = frame.find("unset TENDER_BLOCK_ID").expect("unset present");
+        let status = frame.find("__tendr_s=$?").expect("exit capture present");
+        let unset = frame.find("unset TENDR_BLOCK_ID").expect("unset present");
         let sentinel = frame.find("printf").expect("sentinel present");
         assert!(export < cmd, "export precedes payload");
         assert!(cmd < status, "exit captured after payload");
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn parse_sentinel_valid() {
-        let result = parse_sentinel("__TENDER_EXEC__ a1b2c3 0 /home/user", "a1b2c3");
+        let result = parse_sentinel("__TENDR_EXEC__ a1b2c3 0 /home/user", "a1b2c3");
         assert!(result.is_some());
         let (exit_code, cwd) = result.unwrap();
         assert_eq!(exit_code, 0);
@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn parse_sentinel_nonzero_exit() {
-        let result = parse_sentinel("__TENDER_EXEC__ a1b2c3 42 /tmp", "a1b2c3");
+        let result = parse_sentinel("__TENDR_EXEC__ a1b2c3 42 /tmp", "a1b2c3");
         let (exit_code, cwd) = result.unwrap();
         assert_eq!(exit_code, 42);
         assert_eq!(cwd, "/tmp");
@@ -180,14 +180,14 @@ mod tests {
 
     #[test]
     fn parse_sentinel_cwd_with_spaces() {
-        let result = parse_sentinel("__TENDER_EXEC__ a1b2c3 0 /home/user/my project", "a1b2c3");
+        let result = parse_sentinel("__TENDR_EXEC__ a1b2c3 0 /home/user/my project", "a1b2c3");
         let (_, cwd) = result.unwrap();
         assert_eq!(cwd, "/home/user/my project");
     }
 
     #[test]
     fn parse_sentinel_wrong_token() {
-        let result = parse_sentinel("__TENDER_EXEC__ deadbeef 0 /home", "a1b2c3");
+        let result = parse_sentinel("__TENDR_EXEC__ deadbeef 0 /home", "a1b2c3");
         assert!(result.is_none());
     }
 
@@ -288,7 +288,7 @@ mod tests {
         );
         assert!(frame.contains(".nullvalue null\n"));
         assert!(frame.contains("SELECT 42 as answer;\n"));
-        assert!(frame.contains("__TENDER_EXEC__ abc123 0 .\n"));
+        assert!(frame.contains("__TENDR_EXEC__ abc123 0 .\n"));
         assert!(frame.ends_with('\n'));
     }
 
@@ -297,12 +297,12 @@ mod tests {
         let sql = "SELECT 1;\nSELECT 2;";
         let frame = duckdb_frame(sql, "def456");
         assert!(frame.contains("SELECT 1;\nSELECT 2;\n"));
-        assert!(frame.contains("__TENDER_EXEC__ def456 0 ."));
+        assert!(frame.contains("__TENDR_EXEC__ def456 0 ."));
     }
 
     #[test]
     fn duckdb_sentinel_parses_with_dot_cwd() {
-        let result = parse_sentinel("__TENDER_EXEC__ abc123 0 .", "abc123");
+        let result = parse_sentinel("__TENDR_EXEC__ abc123 0 .", "abc123");
         assert!(result.is_some());
         let (exit_code, cwd) = result.unwrap();
         assert_eq!(exit_code, 0);

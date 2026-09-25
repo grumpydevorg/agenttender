@@ -7,9 +7,9 @@ These are the load-bearing sequences in the current system. They show where the 
 ```mermaid
 sequenceDiagram
     participant Caller
-    participant CLI as tender start
+    participant CLI as tendr start
     participant Session as session dir
-    participant Sidecar as tender _sidecar
+    participant Sidecar as tendr _sidecar
     participant Child
 
     Caller->>CLI: start <session> -- <cmd...>
@@ -36,7 +36,7 @@ Notes:
 ```mermaid
 sequenceDiagram
     participant Caller
-    participant CLI as tender exec
+    participant CLI as tendr exec
     participant Session as session dir
     participant FIFO as stdin.pipe
     participant Shell as running shell / repl
@@ -65,7 +65,7 @@ Notes:
 ```mermaid
 sequenceDiagram
     participant Caller
-    participant CLI as tender kill
+    participant CLI as tendr kill
     participant Session as session dir
     participant Sidecar
     participant OS as platform kill path
@@ -96,7 +96,7 @@ Notes:
 ```mermaid
 sequenceDiagram
     participant Human
-    participant CLI as tender attach
+    participant CLI as tendr attach
     participant SSH as ssh -t
     participant Socket as attach socket
     participant Sidecar
@@ -105,8 +105,8 @@ sequenceDiagram
     alt local
         Human->>CLI: attach <session>
     else remote
-        Human->>SSH: tender --host box attach <session>
-        SSH->>CLI: remote tender attach <session>
+        Human->>SSH: tendr --host box attach <session>
+        SSH->>CLI: remote tendr attach <session>
     end
     CLI->>Socket: connect using a.sock.path breadcrumb
     Sidecar->>Sidecar: switch PTY control to HumanControl
@@ -135,7 +135,7 @@ Notes:
 
 `wrap` is also a wrapper flow:
 
-- must run inside a Tender-supervised process (`TENDER_RUN_ID` required)
+- must run inside a Tendr-supervised process (`TENDR_RUN_ID` required)
 - spawns the wrapped command directly
 - captures stdin/stdout/stderr
 - appends one `A` line to `output.log`

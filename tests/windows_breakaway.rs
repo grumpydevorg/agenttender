@@ -11,9 +11,9 @@
 //!
 //! The test reproduces the kill chain locally:
 //!   1. Create a named Job Object with KILL_ON_JOB_CLOSE | BREAKAWAY_OK
-//!   2. Spawn helper which assigns self to job and then spawns `tender start`
+//!   2. Spawn helper which assigns self to job and then spawns `tendr start`
 //!   3. After helper exits, all in-job processes have either inherited the
-//!      job (`tender start` did, sidecar would without breakaway) or broken
+//!      job (`tendr start` did, sidecar would without breakaway) or broken
 //!      away (sidecar should, with the fix)
 //!   4. TerminateJobObject — kills anything still in the job
 //!   5. Assert sidecar PID still alive
@@ -113,9 +113,9 @@ fn resolve_bin(env_key: &str, compile_time: &str) -> String {
     std::env::var(env_key).unwrap_or_else(|_| compile_time.to_string())
 }
 
-/// Force-kill a tender session, ignoring errors. Used in test teardown.
-fn force_kill_session(tender_bin: &str, home: &std::path::Path, session: &str) {
-    let _ = std::process::Command::new(tender_bin)
+/// Force-kill a tendr session, ignoring errors. Used in test teardown.
+fn force_kill_session(tendr_bin: &str, home: &std::path::Path, session: &str) {
+    let _ = std::process::Command::new(tendr_bin)
         .env("HOME", home)
         .args(["kill", session, "--force"])
         .status();
@@ -123,15 +123,15 @@ fn force_kill_session(tender_bin: &str, home: &std::path::Path, session: &str) {
 
 #[test]
 fn sidecar_survives_parent_job_kill() {
-    let tender_bin = resolve_bin("TENDER_TEST_BIN", env!("CARGO_BIN_EXE_tender"));
+    let tendr_bin = resolve_bin("TENDR_TEST_BIN", env!("CARGO_BIN_EXE_tendr"));
     let helper_bin = resolve_bin(
-        "TENDER_TEST_HELPER_BIN",
+        "TENDR_TEST_HELPER_BIN",
         env!("CARGO_BIN_EXE_test_breakaway_parent"),
     );
     let home = tempfile::tempdir().expect("tempdir");
     let session = format!("breakaway-{}", std::process::id());
     let sidecar_pid_out = home.path().join("sidecar_pid.txt");
-    let job_name = format!("tender-test-breakaway-{}", std::process::id());
+    let job_name = format!("tendr-test-breakaway-{}", std::process::id());
 
     let job = create_named_job_with_limits(
         &job_name,
@@ -139,7 +139,7 @@ fn sidecar_survives_parent_job_kill() {
     );
 
     let status = std::process::Command::new(&helper_bin)
-        .arg(&tender_bin)
+        .arg(&tendr_bin)
         .arg(home.path())
         .arg(&session)
         .arg(&sidecar_pid_out)
@@ -170,7 +170,7 @@ fn sidecar_survives_parent_job_kill() {
     let died = process_dies_within(sidecar_pid, Duration::from_secs(2));
 
     // Cleanup before asserting (so a failure still tears the session down).
-    force_kill_session(&tender_bin, home.path(), &session);
+    force_kill_session(&tendr_bin, home.path(), &session);
     drop(job); // close job handle explicitly for clarity (Drop would do this anyway)
 
     assert!(
@@ -180,27 +180,27 @@ fn sidecar_survives_parent_job_kill() {
     );
 }
 
-/// Fallback path: when the parent's job forbids breakaway, `tender start`
+/// Fallback path: when the parent's job forbids breakaway, `tendr start`
 /// must still succeed. Without the fallback, CreateProcessW returns
-/// ERROR_ACCESS_DENIED and `tender start` fails outright — strictly worse
+/// ERROR_ACCESS_DENIED and `tendr start` fails outright — strictly worse
 /// than the degraded case where the sidecar inherits the parent's lifetime.
 #[test]
 fn sidecar_spawn_succeeds_when_parent_job_forbids_breakaway() {
-    let tender_bin = resolve_bin("TENDER_TEST_BIN", env!("CARGO_BIN_EXE_tender"));
+    let tendr_bin = resolve_bin("TENDR_TEST_BIN", env!("CARGO_BIN_EXE_tendr"));
     let helper_bin = resolve_bin(
-        "TENDER_TEST_HELPER_BIN",
+        "TENDR_TEST_HELPER_BIN",
         env!("CARGO_BIN_EXE_test_breakaway_parent"),
     );
     let home = tempfile::tempdir().expect("tempdir");
     let session = format!("no-breakaway-{}", std::process::id());
     let sidecar_pid_out = home.path().join("sidecar_pid.txt");
-    let job_name = format!("tender-test-no-breakaway-{}", std::process::id());
+    let job_name = format!("tendr-test-no-breakaway-{}", std::process::id());
 
     // KILL_ON_JOB_CLOSE only — explicitly NO BREAKAWAY_OK.
     let job = create_named_job_with_limits(&job_name, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE);
 
     let status = std::process::Command::new(&helper_bin)
-        .arg(&tender_bin)
+        .arg(&tendr_bin)
         .arg(home.path())
         .arg(&session)
         .arg(&sidecar_pid_out)
@@ -211,14 +211,14 @@ fn sidecar_spawn_succeeds_when_parent_job_forbids_breakaway() {
     let succeeded = status.success();
 
     // Cleanup before asserting.
-    force_kill_session(&tender_bin, home.path(), &session);
+    force_kill_session(&tendr_bin, home.path(), &session);
     // SAFETY: `job` is a valid OwnedHandle; exit code 1 is arbitrary.
     unsafe { TerminateJobObject(job.as_raw_handle() as _, 1) };
     drop(job); // close job handle (Drop would do this anyway).
 
     assert!(
         succeeded,
-        "tender start should fall back to non-breakaway spawn when the \
+        "tendr start should fall back to non-breakaway spawn when the \
          parent's job forbids breakaway. Helper exit: {status:?}"
     );
 }

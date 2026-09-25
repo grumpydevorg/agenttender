@@ -1,6 +1,6 @@
-use tender::model::ids::{Namespace, ProcessIdentity, SessionName};
-use tender::platform::{Current, Platform, ProcessStatus};
-use tender::session::{self, SessionError, SessionRoot};
+use tendr::model::ids::{Namespace, ProcessIdentity, SessionName};
+use tendr::platform::{Current, Platform, ProcessStatus};
+use tendr::session::{self, SessionError, SessionRoot};
 
 pub fn cmd_status(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
     let session_name = SessionName::new(name)?;
@@ -30,7 +30,7 @@ pub fn cmd_status(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
     // Reconciliation: non-terminal + lock not held -> sidecar gone.
     // Heals from the event log when the sidecar's own terminal event
     // exists; infers SidecarLost otherwise (spec §3.6).
-    tender::reconcile::reconcile_sidecar_gone(&session, &mut meta)?;
+    tendr::reconcile::reconcile_sidecar_gone(&session, &mut meta)?;
 
     let json = serde_json::to_string_pretty(&meta)?;
     println!("{json}");

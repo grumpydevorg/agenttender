@@ -10,7 +10,7 @@ links:
 
 Tracked in [#71](https://github.com/grumpydevorg/agenttender/issues/71).
 
-If the `tender start` client is killed after the sidecar has spawned the child
+If the `tendr start` client is killed after the sidecar has spawned the child
 but before it reads the readiness message, the sidecar exits and the child keeps
 running **unsupervised**. `status` later infers `SidecarLost`
 (`lock_released` + `non_terminal_meta`); nothing records the child's exit, its

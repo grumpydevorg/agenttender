@@ -14,10 +14,10 @@ links:
 
 [Cloud PTY control and replay](../active/00_cloud-pty-control.md) revises the
 2026-07-09 path-5 decision below. The concrete consumer is a Ghostty user and
-an agent sharing a Claude PTY on an SSH-accessible exe.dev VM. Tender retains
+an agent sharing a Claude PTY on an SSH-accessible exe.dev VM. Tendr retains
 PTY/process ownership, exact recording, and transport. An optional, separately
-packaged Rust `tender-screen` executable owns VT state and uses libghostty.
-`tender pty snapshot` / screen waits may explicitly dispatch to that executable
+packaged Rust `tendr-screen` executable owns VT state and uses libghostty.
+`tendr pty snapshot` / screen waits may explicitly dispatch to that executable
 on PATH through a versioned contract. Core builds, including crates.io and
 Windows CI, do not acquire a Ghostty or Zig dependency.
 
@@ -53,7 +53,7 @@ are source-verified at that version.
   agent-written commits), MIT, POSIX-only (no Windows), 0.x with three
   breaking CLI changes in its first week.
 
-## What boo lacks (tender's moat — keep it loud)
+## What boo lacks (tendr's moat — keep it loud)
 
 - **Zero durability.** All state is daemon heap. Crash/reboot loses the
   screen, the scrollback, and the record that the session existed.
@@ -66,7 +66,7 @@ are source-verified at that version.
   frame cap.
 
 The tools bisect the space: boo = "agent drives an interactive TUI and reads
-the screen"; tender = "agent supervises processes and gets structured
+the screen"; tendr = "agent supervises processes and gets structured
 results, transcripts, and events". Every integration path below exploits
 that split.
 
@@ -75,64 +75,64 @@ that split.
 ### 1. Skill routing (do first, docs only)
 
 Agents with both tools installed get steered to boo for interactive work by
-its automation help; the using-tender skill has no boundary guidance. Add a
-section to `.claude/skills/using-tender/SKILL.md` (the maintained copy): tender for
+its automation help; the using-tendr skill has no boundary guidance. Add a
+section to `.claude/skills/using-tendr/SKILL.md` (the maintained copy): tendr for
 run-to-completion, structured results, durable logs, deps/hooks, remote,
 Windows; boo for driving/reading live TUIs; the composition pattern below
 for both at once.
 
-### 2. Composition: tender supervises boo daemons (no code)
+### 2. Composition: tendr supervises boo daemons (no code)
 
 `BOO_FOREGROUND=1` skips boo's daemon fork (`src/main.zig:338-350`), so the
-daemon can run as tender's supervised child:
+daemon can run as tendr's supervised child:
 
 ```sh
-tender start claude-tui --namespace agents -- \
+tendr start claude-tui --namespace agents -- \
   env BOO_FOREGROUND=1 boo new claude -- claude
 ```
 
-tender contributes durable lifecycle (meta.json survives reboot as a record,
+tendr contributes durable lifecycle (meta.json survives reboot as a record,
 exit capture of the daemon, `--replace`, `--timeout`, `on_exit`, `watch`
 lifecycle events); agents drive the TUI through boo's socket. Known
-limitation: tender's `output.log` records boo's lifecycle, not PTY bytes
+limitation: tendr's `output.log` records boo's lifecycle, not PTY bytes
 (those flow daemon→socket-clients only).
 
 Ownership split — the clean boundary that makes the stack work:
 
-| Tender owns (durable supervisor, underneath) | Boo owns (screen authority, on top) |
+| Tendr owns (durable supervisor, underneath) | Boo owns (screen authority, on top) |
 |---|---|
 | process lifecycle, restart / `--replace` / kill / `wait` | rendered terminal state (VT / grid) |
 | exit status, durable `meta.json` + `output.log` | `send` — keystroke injection |
 | structured events (`run.*`, `exec.*`, `hook.*`, `callback.finished`) | `peek` — read the rendered screen |
 | `--host` remote transport, deps, `on_exit` | `wait --text` / `wait --idle` — screen quiescence |
 
-Observe the session's lifecycle durably through tender (the supervised session
+Observe the session's lifecycle durably through tendr (the supervised session
 is `agents/claude-tui`); drive/read the TUI through boo (the boo session is
 `claude`):
 
 ```sh
-tender status claude-tui --namespace agents
-tender wait   claude-tui --namespace agents
-tender events --session agents/claude-tui --follow
+tendr status claude-tui --namespace agents
+tendr wait   claude-tui --namespace agents
+tendr events --session agents/claude-tui --follow
 
 boo send claude --text "run tests"
 boo wait claude --text "Done"
 boo peek claude --json
 ```
 
-Rendered-screen reads stay boo's, never tender core (see path 5). Tender keeps
+Rendered-screen reads stay boo's, never tendr core (see path 5). Tendr keeps
 the process alive and accountable; boo makes the terminal legible and
 controllable.
 
 > Documented composition pattern; live validation against a pinned Boo build remains open.
 
 **First slice — documented, not yet validated:** the composition pattern and
-the ownership boundary are documented (here + the `using-tender` skill). The
+the ownership boundary are documented (here + the `using-tendr` skill). The
 `BOO_FOREGROUND=1` recipe and `boo` syntax come from the source-verified review
 (v0.6.4), not a live run — Boo is not installed/pinned locally. The first real
 Boo slice stays **incomplete** until a pinned Boo build is validated end-to-end.
 
-### 3. A `boo` exec target in tender
+### 3. A `boo` exec target in tendr
 
 Fits the existing exec-target pattern (posix-shell / powershell /
 python-repl / duckdb): frame the command via `boo send --stdin`, await via
@@ -142,35 +142,35 @@ thing boo cannot do. Design around: the 1 MiB peek cap and 512 KiB
 scrollback bound harvestable output, so large results need a side-channel
 file (same trick as the shipped PowerShell side-channel).
 
-### 4. tender as boo's remote transport
+### 4. tendr as boo's remote transport
 
 boo has no remote story. Remote exec parity shipped 2026-07-08
 (`completed/2026-07-08-remote-exec-host-parity`), so
-`tender --host <h> exec -- boo peek … --json` already gives quoting-safe
-structured remote screen reads. Tender's remote lane is a distribution
+`tendr --host <h> exec -- boo peek … --json` already gives quoting-safe
+structured remote screen reads. Tendr's remote lane is a distribution
 advantage over boo rather than a parallel effort.
 
 ### 5. Historical 2026-07-09 decision — revised above on 2026-09-14
 
-The sharpest confirmed gap: tender waits only on exit; boo waits on screen
-content/quiescence. It is tempting to give tender's PTY lane `peek`/`wait --text`
+The sharpest confirmed gap: tendr waits only on exit; boo waits on screen
+content/quiescence. It is tempting to give tendr's PTY lane `peek`/`wait --text`
 natively, and the pieces exist (maintained `libghostty-vt` crate on crates.io —
 Uzaaft/libghostty-rs; boo as a ~1,200-LOC-of-glue reference; the sidecar already
-holds the PTY master). **The decision (2026-07-09) is not to build this in tender
+holds the PTY master). **The decision (2026-07-09) is not to build this in tendr
 core.** Rendered-screen reads are Boo's domain — Boo is the screen authority;
-tender supervises the process and owns the durable record, and keeps no terminal
+tendr supervises the process and owns the durable record, and keeps no terminal
 renderer (no libghostty) in core (see `pty-automation.md`'s "What NOT to Build"
 and the ecosystem-landscape non-goals). If a native screen layer is ever wanted
 it is a separate, deliberately-built satellite/UI decision — taken with the
 egui/block-runtime work, never smuggled into core as a bolt-on. Until then, path 4
-above (`tender --host <h> exec -- boo peek … --json`) already delivers structured
+above (`tendr --host <h> exec -- boo peek … --json`) already delivers structured
 screen reads by composition, which is the whole point of the stack.
 
 ## Ideas to steal regardless of integration
 
 - `unread` + `bell_idle_ms` turn signals: zero-tool-cooperation
-  turn-completion detection; fits tender's `status`/`watch` model.
-- Detached query answering (DA/DSR/OSC 11) for tender's PTY sessions —
+  turn-completion detection; fits tendr's `status`/`watch` model.
+- Detached query answering (DA/DSR/OSC 11) for tendr's PTY sessions —
   prevents unattended TUI hangs on its own merits.
 - Non-blocking per-connection output queue with a drop cap (fixed a real
   daemon-freeze deadlock in boo).
@@ -187,11 +187,11 @@ screen reads by composition, which is the whole point of the stack.
 
 ## Acceptance criteria (first slice = paths 1 + 2)
 
-- [x] **Done** — the tender-vs-boo routing section is documented (now in `docs/guide.md`
-  under "Tender and Boo", surfaced by `tender guide`). It moved out of the `using-tender`
-  skill when that became a thin router to `tender guide` in the 2026-07-10 guide rework.
-- [x] **Done** — no tender code changes required.
+- [x] **Done** — the tendr-vs-boo routing section is documented (now in `docs/guide.md`
+  under "Tendr and Boo", surfaced by `tendr guide`). It moved out of the `using-tendr`
+  skill when that became a thin router to `tendr guide` in the 2026-07-10 guide rework.
+- [x] **Done** — no tendr code changes required.
 - [ ] **Open** — the `BOO_FOREGROUND=1` composition pattern is *documented* with
   its limitations, but **live validation against a pinned Boo build** (a real
-  TUI session under `tender start`) is not done: Boo is not installed/pinned
+  TUI session under `tendr start`) is not done: Boo is not installed/pinned
   locally. This is what keeps the first slice incomplete.

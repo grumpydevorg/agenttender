@@ -1,6 +1,6 @@
-//! The on-disk session directory — Tender's durable record.
+//! The on-disk session directory — Tendr's durable record.
 //!
-//! A session lives at `~/.tender/sessions/<namespace>/<session>/`, holding the
+//! A session lives at `~/.tendr/sessions/<namespace>/<session>/`, holding the
 //! [`Meta`] authority file and the append-only
 //! `output.log`. This module creates, resolves, and lists those directories;
 //! it does not own the lifecycle — that is the [`sidecar`](crate::sidecar).
@@ -34,13 +34,13 @@ pub enum SessionError {
 pub struct SessionRoot(PathBuf);
 
 impl SessionRoot {
-    /// Default: ~/.tender/sessions/
+    /// Default: ~/.tendr/sessions/
     ///
     /// # Errors
     /// Returns an error if `HOME` is not set.
     pub fn default_path() -> anyhow::Result<Self> {
         let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set"))?;
-        Ok(Self(PathBuf::from(home).join(".tender").join("sessions")))
+        Ok(Self(PathBuf::from(home).join(".tendr").join("sessions")))
     }
 
     /// Explicit path (for tests or custom deployments).

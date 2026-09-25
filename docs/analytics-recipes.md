@@ -1,26 +1,26 @@
 # Event-log analytics recipes
 
-`tender query` points the external [DuckDB](https://duckdb.org) CLI at the
+`tendr query` points the external [DuckDB](https://duckdb.org) CLI at the
 on-disk JSONL event log and runs your SQL against an auto-registered `events`
-view. It is the **analytical** surface (aggregate SQL, offline); `tender events`
+view. It is the **analytical** surface (aggregate SQL, offline); `tendr events`
 remains the **streaming/replay** surface. Read-only — analytics never writes to
 the log.
 
 Requires the `duckdb` CLI on your `PATH` (the same external binary the `duckdb`
-exec target drives — not a tender dependency). Developed against DuckDB 1.x;
-check yours with `tender query --version`.
+exec target drives — not a tendr dependency). Developed against DuckDB 1.x;
+check yours with `tendr query --version`.
 
 ## CLI surface
 
 ```sh
-tender query "SELECT COUNT(*) FROM events"      # inline SQL
-tender query --file analyses/failure-rate.sql   # SQL from a file
-tender query --namespace agents "<SQL>"         # scope the view (comma-separated; default = all)
-tender query --shell                            # DuckDB REPL with `events` pre-registered
-tender query --version                          # report the DuckDB version in use
+tendr query "SELECT COUNT(*) FROM events"      # inline SQL
+tendr query --file analyses/failure-rate.sql   # SQL from a file
+tendr query --namespace agents "<SQL>"         # scope the view (comma-separated; default = all)
+tendr query --shell                            # DuckDB REPL with `events` pre-registered
+tendr query --version                          # report the DuckDB version in use
 ```
 
-A failed query propagates DuckDB's non-zero exit code, so `tender query` is safe
+A failed query propagates DuckDB's non-zero exit code, so `tendr query` is safe
 in scripts and CI.
 
 ## The `events` view
@@ -39,7 +39,7 @@ per-`kind` payload stays JSON so you query it with `->`/`->>`:
 | `run_id` | VARCHAR | supervised run (UUIDv7) |
 | `gen` | UBIGINT | generation, when known |
 | `writer`, `seq` | VARCHAR, UBIGINT | emitting process + per-writer sequence |
-| `source` | VARCHAR | semantic emitter (`tender.sidecar`, `tender.exec`, `claude.hook`, …) |
+| `source` | VARCHAR | semantic emitter (`tendr.sidecar`, `tendr.exec`, `claude.hook`, …) |
 | `block_id` | VARCHAR | command block (≈ span id) |
 | `parent_id` | VARCHAR | immediate causal parent (≈ parent span id) |
 | `data` | JSON | payload — query with `data->>'field'` (text) or `data->'field'` (JSON) |
@@ -146,5 +146,5 @@ ORDER BY runs DESC;
   *other* events by boundary, join them to their run's launch event on `run_id`
   rather than to current `meta.json` — the snapshot is the historical authority,
   `meta.json` is only current state. The optional `boundary_kind` /
-  `boundary_label` convenience columns remain a deferred `tender query` nicety.
+  `boundary_label` convenience columns remain a deferred `tendr query` nicety.
 - Save a query you run often to a `.sql` file and run it with `--file`.

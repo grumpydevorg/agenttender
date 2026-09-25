@@ -1,5 +1,5 @@
 {
-  description = "tender - agent process sitter: supervised runs, not processes";
+  description = "tendr - agent process sitter: supervised runs, not processes";
 
   inputs = {
     # Deliberately unpinned to anything clever. A consumer that already has a
@@ -29,7 +29,7 @@
       ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
-      mkTender =
+      mkTendr =
         pkgs:
         let
           inherit (pkgs) lib;
@@ -37,7 +37,7 @@
           cargo = builtins.fromTOML (builtins.readFile ./Cargo.toml);
         in
         pkgs.rustPlatform.buildRustPackage {
-          pname = "tender";
+          pname = "tendr";
 
           # Read, never restated. A second version to bump is a second version
           # to forget.
@@ -69,11 +69,11 @@
           # `cargo test` here is the real suite, run in the sandbox: it forks
           # children, opens PTYs, signals process groups and writes session state
           # under a TMPDIR-derived HOME. It passes, so the package is also the
-          # test gate -- see checks.<system>.tender.
+          # test gate -- see checks.<system>.tendr.
           doCheck = true;
 
           # Interpreters the TESTS spawn, not runtime dependencies of the binary:
-          # tender resolves whatever it is asked to run from the caller's PATH.
+          # tendr resolves whatever it is asked to run from the caller's PATH.
           # Neither test skips when its interpreter is missing, so both are
           # required for the suite to mean anything in the sandbox.
           #
@@ -95,7 +95,7 @@
           # release build:
           #
           #     src/sidecar.rs:613
-          #     if cfg!(debug_assertions) && std::env::var("TENDER_TEST_ABORT")...
+          #     if cfg!(debug_assertions) && std::env::var("TENDR_TEST_ABORT")...
           #
           # With buildRustPackage's default (checkType follows buildType) the
           # injection point vanishes, the sidecar finalises normally, and
@@ -115,17 +115,17 @@
           # only ever copies out of target/release.
           cargoBuildFlags = [
             "--bin"
-            "tender"
+            "tendr"
           ];
 
           # The skill, installed from the SAME file the binary embeds
-          # (src/commands/skill.rs include_str!s it), so `tender skill install`
-          # and the packaged copy cannot describe different versions of tender.
-          # nix-config links ~/.claude/skills/using-tender and
-          # ~/.agents/skills/using-tender straight at this directory.
+          # (src/commands/skill.rs include_str!s it), so `tendr skill install`
+          # and the packaged copy cannot describe different versions of tendr.
+          # nix-config links ~/.claude/skills/using-tendr and
+          # ~/.agents/skills/using-tendr straight at this directory.
           postInstall = ''
             install -Dm644 src/embedded/SKILL.md \
-              "$out/share/agent-skills/using-tender/SKILL.md"
+              "$out/share/agent-skills/using-tendr/SKILL.md"
           '';
 
           meta = {
@@ -135,21 +135,21 @@
               mit
               asl20
             ];
-            mainProgram = "tender";
+            mainProgram = "tendr";
             platforms = lib.platforms.unix;
           };
         };
     in
     {
       packages = forAllSystems (pkgs: rec {
-        tender = mkTender pkgs;
-        default = tender;
+        tendr = mkTendr pkgs;
+        default = tendr;
       });
 
       # The package IS the check: doCheck above runs the suite, so building this
       # is running the tests.
       checks = forAllSystems (pkgs: {
-        inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) tender;
+        inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) tendr;
       });
     };
 }

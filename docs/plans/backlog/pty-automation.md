@@ -16,11 +16,11 @@ links: []
 > broader multi-agent leases remain deferred. The separate screen extension
 > decision is revised in [boo-integration](boo-integration.md).
 
-Add lease-backed agent control for PTY sessions so Tender can honestly enforce exclusive ownership of terminal input while still allowing human takeover when needed.
+Add lease-backed agent control for PTY sessions so Tendr can honestly enforce exclusive ownership of terminal input while still allowing human takeover when needed.
 
 > **Status: deferred — correctness hardening, not roadmap (decided 2026-07-09).**
 > Keep the current PTY behavior as-is. This plan is a lease system that hardens
-> exclusive control of Tender's PTY **input** path; it is not strategic roadmap
+> exclusive control of Tendr's PTY **input** path; it is not strategic roadmap
 > and not terminal *screen* automation. Build it only if real contention actually
 > shows up — two agents, or a human and an agent, both writing into the same PTY
 > and causing bad behavior. Absent that, today's one-writer-at-a-time behavior is
@@ -37,7 +37,7 @@ Add lease-backed agent control for PTY sessions so Tender can honestly enforce e
 >
 > **Boundary with Boo:** this is input-ownership correctness, **not** screen
 > automation. Rendered-screen reads (`peek`, `wait --text`/`--idle`, a VT/grid
-> model) belong to Boo, the screen authority — Tender supervises the process and
+> model) belong to Boo, the screen authority — Tendr supervises the process and
 > owns the durable record; Boo makes the terminal legible and controllable (see
 > [boo-integration](boo-integration.md)). Between the two, Boo integration is the
 > more immediately useful, docs-and-composition work; this PTY lease system is
@@ -80,7 +80,7 @@ It includes:
 - human preemption and restore
 - lease expiry
 
-It does **not** include observe mode. `tender log --follow --raw` remains the fallback for read-only transcript consumption. Observe-only socket subscribers should be a separate follow-on plan.
+It does **not** include observe mode. `tendr log --follow --raw` remains the fallback for read-only transcript consumption. Observe-only socket subscribers should be a separate follow-on plan.
 
 ## Current State
 
@@ -266,7 +266,7 @@ Client behavior:
 - if present, surface `push rejected by sidecar: {error}`
 - otherwise report an unexpected transport close
 
-This keeps the FIFO transport, keeps file-IPC style consistent with the rest of Tender, and makes lease failures debuggable.
+This keeps the FIFO transport, keeps file-IPC style consistent with the rest of Tendr, and makes lease failures debuggable.
 
 Reject files are swept by the sidecar on startup and on the existing sidecar poll cadence. Use a conservative TTL such as 5 minutes so clients have time to read their own rejection records without racing cleanup.
 
@@ -401,10 +401,10 @@ No lease survives sidecar loss. If the sidecar dies, the run becomes `sidecar_lo
 ### `pty-control`
 
 ```bash
-tender pty-control acquire <session> --agent-id <id> [--ttl <seconds>] [--namespace NS] --json
-tender pty-control refresh <session> --agent-id <id> --lease-token <token> [--ttl <seconds>] [--namespace NS]
-tender pty-control release <session> --agent-id <id> --lease-token <token> [--namespace NS]
-tender pty-control status  <session> [--namespace NS]
+tendr pty-control acquire <session> --agent-id <id> [--ttl <seconds>] [--namespace NS] --json
+tendr pty-control refresh <session> --agent-id <id> --lease-token <token> [--ttl <seconds>] [--namespace NS]
+tendr pty-control release <session> --agent-id <id> --lease-token <token> [--namespace NS]
+tendr pty-control status  <session> [--namespace NS]
 ```
 
 `acquire --json` should return the minted `lease_token` so callers can store it explicitly.
@@ -414,7 +414,7 @@ tender pty-control status  <session> [--namespace NS]
 `push` gains:
 
 ```bash
-tender push <session> [--namespace NS] --agent-id <id> [--lease-token <token>]
+tendr push <session> [--namespace NS] --agent-id <id> [--lease-token <token>]
 ```
 
 Rules:
@@ -425,7 +425,7 @@ Rules:
 
 Token caching is explicitly out of scope for v1. Callers hold the token and pass it back explicitly.
 
-Exit codes should follow existing Tender CLI conventions. In addition, this plan assumes `2` for lease authorization failure (`WrongToken`, `TokenRequired`, `StaleRunId`, denied acquire/refresh/release) and `3` for state mismatch such as push during `HumanAttached`.
+Exit codes should follow existing Tendr CLI conventions. In addition, this plan assumes `2` for lease authorization failure (`WrongToken`, `TokenRequired`, `StaleRunId`, denied acquire/refresh/release) and `3` for state mismatch such as push during `HumanAttached`.
 
 ## State Diagram
 
@@ -458,7 +458,7 @@ HumanAttached
 - browser terminal relay
 - Windows ConPTY
 - lease persistence across sidecar restart
-- **rendered-screen automation of any kind** — `peek`, `wait --text`, `wait --idle`, or a VT/grid screen model. That is Boo's domain (screen authority); Tender owns process lifecycle + the durable record, not the rendered screen. See [boo-integration](boo-integration.md).
+- **rendered-screen automation of any kind** — `peek`, `wait --text`, `wait --idle`, or a VT/grid screen model. That is Boo's domain (screen authority); Tendr owns process lifecycle + the durable record, not the rendered screen. See [boo-integration](boo-integration.md).
 - **any terminal renderer in core** — no libghostty, no embedded VT engine. If a native screen layer is ever wanted it is a separate, deliberately-built satellite, not part of this lease work.
 
 Clarification:
@@ -472,7 +472,7 @@ Clarification:
 2. Add exhaustive pure state-machine tests for acquire, refresh, release, expire, attach, detach, and push authorization, including stale `run_id` rejection after `--replace`.
 3. Add `PushHeader` framing and observable push rejection on the existing stdin transport.
 4. Introduce `PtyStateStore` and migrate PTY state persistence to one typed write path.
-5. Add per-request lease IPC and `tender pty-control`.
+5. Add per-request lease IPC and `tendr pty-control`.
 6. Add sidecar expiry ticker using `reap_if_expired`.
 7. Rewrite attach listener transitions through `human_attach` / `human_detach` on the store.
 

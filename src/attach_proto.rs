@@ -49,7 +49,7 @@ pub fn parse_resize(payload: &[u8]) -> Option<(u16, u16)> {
 /// Session directories under temp dirs can easily exceed this limit. To stay safe,
 /// we hash the session dir path and place the socket in the system temp directory.
 ///
-/// The socket file is: `<tmp>/tender-<hash>.sock`
+/// The socket file is: `<tmp>/tendr-<hash>.sock`
 /// A breadcrumb `a.sock.path` in the session dir records the socket location.
 pub fn sock_path(session_dir: &Path) -> PathBuf {
     use sha2::{Digest, Sha256};
@@ -60,7 +60,7 @@ pub fn sock_path(session_dir: &Path) -> PathBuf {
     let hash = hasher.finalize();
     let short_hash: String = hash.iter().take(8).map(|b| format!("{b:02x}")).collect();
 
-    std::env::temp_dir().join(format!("tender-{short_hash}.sock"))
+    std::env::temp_dir().join(format!("tendr-{short_hash}.sock"))
 }
 
 /// Write a breadcrumb in the session dir pointing to the actual socket path.

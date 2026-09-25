@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{tender, wait_running, wait_terminal};
+use harness::{tendr, wait_running, wait_terminal};
 use std::sync::Mutex;
 use tempfile::TempDir;
 
@@ -8,7 +8,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 /// Start a session that exits immediately, wait for terminal state.
 fn create_terminal_session(root: &TempDir, name: &str, namespace: &str) {
-    let out = tender(root)
+    let out = tendr(root)
         .args([
             "start",
             name,
@@ -32,7 +32,7 @@ fn create_terminal_session(root: &TempDir, name: &str, namespace: &str) {
 fn wait_terminal_ns(root: &TempDir, namespace: &str, session: &str) {
     let path = root
         .path()
-        .join(format!(".tender/sessions/{namespace}/{session}/meta.json"));
+        .join(format!(".tendr/sessions/{namespace}/{session}/meta.json"));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         if let Ok(content) = std::fs::read_to_string(&path) {
@@ -63,7 +63,7 @@ fn parse_ndjson(stdout: &[u8]) -> Vec<serde_json::Value> {
 fn backdate_ended_at(root: &TempDir, namespace: &str, session: &str, age_secs: u64) {
     let meta_path = root
         .path()
-        .join(format!(".tender/sessions/{namespace}/{session}/meta.json"));
+        .join(format!(".tendr/sessions/{namespace}/{session}/meta.json"));
     let content = std::fs::read_to_string(&meta_path).unwrap();
     let mut meta: serde_json::Value = serde_json::from_str(&content).unwrap();
 
@@ -84,13 +84,13 @@ fn prune_deletes_terminal_session() {
 
     create_terminal_session(&root, "prune-del", "default");
 
-    let session_dir = root.path().join(".tender/sessions/default/prune-del");
+    let session_dir = root.path().join(".tendr/sessions/default/prune-del");
     assert!(
         session_dir.exists(),
         "session dir should exist before prune"
     );
 
-    let out = tender(&root).args(["prune", "--all"]).output().unwrap();
+    let out = tendr(&root).args(["prune", "--all"]).output().unwrap();
     assert!(
         out.status.success(),
         "prune failed: {}",
@@ -119,14 +119,14 @@ fn prune_skips_running_session() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args(["start", "prune-running", "--", "sleep", "60"])
         .output()
         .unwrap();
     assert!(out.status.success());
     wait_running(&root, "prune-running");
 
-    let out = tender(&root).args(["prune", "--all"]).output().unwrap();
+    let out = tendr(&root).args(["prune", "--all"]).output().unwrap();
     assert!(out.status.success());
 
     let lines = parse_ndjson(&out.stdout);
@@ -136,14 +136,14 @@ fn prune_skips_running_session() {
     // (lock check comes before meta read per invariant table)
     assert_eq!(session_line["skip_reason"], "locked");
 
-    let session_dir = root.path().join(".tender/sessions/default/prune-running");
+    let session_dir = root.path().join(".tendr/sessions/default/prune-running");
     assert!(
         session_dir.exists(),
         "running session dir should still exist"
     );
 
     // Cleanup
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "prune-running"])
         .output()
         .unwrap();
@@ -161,14 +161,14 @@ fn prune_respects_older_than() {
     // Backdate "prune-old" to 8 days ago
     backdate_ended_at(&root, "default", "prune-old", 8 * 24 * 3600);
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args(["prune", "--older-than", "7d"])
         .output()
         .unwrap();
     assert!(out.status.success());
 
-    let old_dir = root.path().join(".tender/sessions/default/prune-old");
-    let recent_dir = root.path().join(".tender/sessions/default/prune-recent");
+    let old_dir = root.path().join(".tendr/sessions/default/prune-old");
+    let recent_dir = root.path().join(".tendr/sessions/default/prune-recent");
     assert!(!old_dir.exists(), "old session should be deleted");
     assert!(recent_dir.exists(), "recent session should be kept");
 
@@ -200,9 +200,9 @@ fn prune_dry_run_preserves_sessions() {
 
     create_terminal_session(&root, "prune-dry", "default");
 
-    let session_dir = root.path().join(".tender/sessions/default/prune-dry");
+    let session_dir = root.path().join(".tendr/sessions/default/prune-dry");
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args(["prune", "--all", "--dry-run"])
         .output()
         .unwrap();
@@ -227,7 +227,7 @@ fn prune_without_filter_fails() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let out = tender(&root).args(["prune"]).output().unwrap();
+    let out = tendr(&root).args(["prune"]).output().unwrap();
     assert!(!out.status.success(), "prune without filter should fail");
 }
 
@@ -237,11 +237,11 @@ fn prune_skips_corrupt_meta() {
     let root = TempDir::new().unwrap();
 
     // Create a session dir with garbage meta.json
-    let session_dir = root.path().join(".tender/sessions/default/prune-corrupt");
+    let session_dir = root.path().join(".tendr/sessions/default/prune-corrupt");
     std::fs::create_dir_all(&session_dir).unwrap();
     std::fs::write(session_dir.join("meta.json"), "not valid json {{{").unwrap();
 
-    let out = tender(&root).args(["prune", "--all"]).output().unwrap();
+    let out = tendr(&root).args(["prune", "--all"]).output().unwrap();
     assert!(out.status.success());
 
     assert!(
@@ -261,10 +261,10 @@ fn prune_skips_missing_meta() {
     let root = TempDir::new().unwrap();
 
     // Create a session dir with no meta.json
-    let session_dir = root.path().join(".tender/sessions/default/prune-nometa");
+    let session_dir = root.path().join(".tendr/sessions/default/prune-nometa");
     std::fs::create_dir_all(&session_dir).unwrap();
 
-    let out = tender(&root).args(["prune", "--all"]).output().unwrap();
+    let out = tendr(&root).args(["prune", "--all"]).output().unwrap();
     assert!(out.status.success());
 
     assert!(
@@ -286,14 +286,14 @@ fn prune_respects_namespace() {
     create_terminal_session(&root, "prune-ns", "ns-a");
     create_terminal_session(&root, "prune-ns", "ns-b");
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args(["prune", "--all", "--namespace", "ns-a"])
         .output()
         .unwrap();
     assert!(out.status.success());
 
-    let dir_a = root.path().join(".tender/sessions/ns-a/prune-ns");
-    let dir_b = root.path().join(".tender/sessions/ns-b/prune-ns");
+    let dir_a = root.path().join(".tendr/sessions/ns-a/prune-ns");
+    let dir_b = root.path().join(".tendr/sessions/ns-b/prune-ns");
     assert!(!dir_a.exists(), "ns-a session should be deleted");
     assert!(dir_b.exists(), "ns-b session should be untouched");
 
@@ -310,7 +310,7 @@ fn prune_output_format() {
 
     create_terminal_session(&root, "prune-fmt", "default");
 
-    let out = tender(&root)
+    let out = tendr(&root)
         .args(["prune", "--all", "--dry-run"])
         .output()
         .unwrap();
@@ -346,7 +346,7 @@ fn prune_summary_counts_match_mixed_outcomes() {
     create_terminal_session(&root, "prune-mix-ok", "default");
 
     // 2. Running session (will be skipped)
-    let out = tender(&root)
+    let out = tendr(&root)
         .args(["start", "prune-mix-run", "--", "sleep", "60"])
         .output()
         .unwrap();
@@ -354,11 +354,11 @@ fn prune_summary_counts_match_mixed_outcomes() {
     wait_running(&root, "prune-mix-run");
 
     // 3. Corrupt meta session (will be skipped)
-    let corrupt_dir = root.path().join(".tender/sessions/default/prune-mix-bad");
+    let corrupt_dir = root.path().join(".tendr/sessions/default/prune-mix-bad");
     std::fs::create_dir_all(&corrupt_dir).unwrap();
     std::fs::write(corrupt_dir.join("meta.json"), "garbage").unwrap();
 
-    let out = tender(&root).args(["prune", "--all"]).output().unwrap();
+    let out = tendr(&root).args(["prune", "--all"]).output().unwrap();
     assert!(out.status.success());
 
     let lines = parse_ndjson(&out.stdout);
@@ -380,7 +380,7 @@ fn prune_summary_counts_match_mixed_outcomes() {
     );
 
     // Cleanup running session
-    tender(&root)
+    tendr(&root)
         .args(["kill", "--force", "prune-mix-run"])
         .output()
         .unwrap();
@@ -401,7 +401,7 @@ fn prune_delete_failure_reports_error_and_continues() {
 
     // Make one session's directory unremovable by removing write permission on parent
     // Actually, make the session dir itself unreadable so remove_dir_all fails
-    let dir_a = root.path().join(".tender/sessions/default/prune-err-a");
+    let dir_a = root.path().join(".tendr/sessions/default/prune-err-a");
     // Create a subdirectory and make it unremovable
     let blocker = dir_a.join("blocker");
     std::fs::create_dir(&blocker).unwrap();
@@ -409,7 +409,7 @@ fn prune_delete_failure_reports_error_and_continues() {
     // Remove write+execute on the blocker dir so its contents can't be removed
     std::fs::set_permissions(&blocker, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-    let out = tender(&root).args(["prune", "--all"]).output().unwrap();
+    let out = tendr(&root).args(["prune", "--all"]).output().unwrap();
     assert!(out.status.success(), "prune should succeed overall");
 
     let lines = parse_ndjson(&out.stdout);

@@ -2,12 +2,12 @@
 
 mod harness;
 
-use harness::tender;
+use harness::tendr;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
-use tender::attach_proto::{MSG_DATA, MSG_DETACH, MSG_RESIZE, read_msg, resize_payload};
+use tendr::attach_proto::{MSG_DATA, MSG_DETACH, MSG_RESIZE, read_msg, resize_payload};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -26,7 +26,7 @@ fn start_pty_flag_sets_io_mode() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["start", "pty-test", "--pty", "--", "echo", "hello"])
         .output()
         .unwrap();
@@ -46,14 +46,14 @@ fn start_pty_session_captures_output() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-echo", "--pty", "--", "echo", "pty-hello"])
         .output()
         .unwrap();
 
     harness::wait_terminal(&root, "pty-echo");
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["log", "pty-echo", "--raw"])
         .output()
         .unwrap();
@@ -70,14 +70,14 @@ fn start_pty_session_shows_pty_metadata() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-meta", "--pty", "--", "echo", "hi"])
         .output()
         .unwrap();
 
     harness::wait_terminal(&root, "pty-meta");
 
-    let output = tender(&root).args(["status", "pty-meta"]).output().unwrap();
+    let output = tendr(&root).args(["status", "pty-meta"]).output().unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let meta: serde_json::Value = serde_json::from_str(&stdout).unwrap();
@@ -91,7 +91,7 @@ fn exec_rejected_on_pty_session() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "pty-shell",
@@ -105,7 +105,7 @@ fn exec_rejected_on_pty_session() {
         .unwrap();
     harness::wait_running(&root, "pty-shell");
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["exec", "pty-shell", "--", "echo", "test"])
         .output()
         .unwrap();
@@ -117,7 +117,7 @@ fn exec_rejected_on_pty_session() {
         "should reject exec on PTY: {stderr}"
     );
 
-    tender(&root).args(["kill", "pty-shell"]).output().ok();
+    tendr(&root).args(["kill", "pty-shell"]).output().ok();
 }
 
 #[test]
@@ -125,13 +125,13 @@ fn attach_to_non_pty_session_fails() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "pipe-session", "--", "sleep", "60"])
         .output()
         .unwrap();
     harness::wait_running(&root, "pipe-session");
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["attach", "pipe-session"])
         .output()
         .unwrap();
@@ -143,7 +143,7 @@ fn attach_to_non_pty_session_fails() {
         "should reject attach on non-PTY: {stderr}"
     );
 
-    tender(&root).args(["kill", "pipe-session"]).output().ok();
+    tendr(&root).args(["kill", "pipe-session"]).output().ok();
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn attach_socket_exists_for_pty_session() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-attach", "--pty", "--", "sleep", "60"])
         .output()
         .unwrap();
@@ -159,7 +159,7 @@ fn attach_socket_exists_for_pty_session() {
 
     let breadcrumb = root
         .path()
-        .join(".tender/sessions/default/pty-attach/a.sock.path");
+        .join(".tendr/sessions/default/pty-attach/a.sock.path");
 
     // The attach listener thread may not have written the breadcrumb yet.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -182,7 +182,7 @@ fn attach_socket_exists_for_pty_session() {
         "socket file should exist at {sock_path}"
     );
 
-    tender(&root).args(["kill", "pty-attach"]).output().ok();
+    tendr(&root).args(["kill", "pty-attach"]).output().ok();
 }
 
 #[test]
@@ -191,14 +191,14 @@ fn push_to_pty_session_delivers_input() {
     let root = TempDir::new().unwrap();
 
     // Start a PTY cat session with stdin
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-push", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
     harness::wait_running(&root, "pty-push");
 
     // Push some input
-    tender(&root)
+    tendr(&root)
         .args(["push", "pty-push"])
         .write_stdin(b"hello-from-push\n")
         .output()
@@ -207,7 +207,7 @@ fn push_to_pty_session_delivers_input() {
     // Poll the log until the pushed input echoes through the PTY (no fixed sleep).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        let output = tender(&root)
+        let output = tendr(&root)
             .args(["log", "pty-push", "--raw"])
             .output()
             .unwrap();
@@ -222,7 +222,7 @@ fn push_to_pty_session_delivers_input() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 
-    tender(&root).args(["kill", "pty-push"]).output().ok();
+    tendr(&root).args(["kill", "pty-push"]).output().ok();
 }
 
 /// Python REPL exec works on PTY sessions.
@@ -231,7 +231,7 @@ fn exec_python_pty() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "py-pty",
@@ -248,7 +248,7 @@ fn exec_python_pty() {
     // No sleep: exec buffers the frame and waits for the result file, so the
     // REPL not being input-ready yet is a delay, not a lost command (PR #55).
 
-    let output = tender(&root)
+    let output = tendr(&root)
         .args([
             "exec",
             "py-pty",
@@ -269,7 +269,7 @@ fn exec_python_pty() {
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert!(result["stdout"].as_str().unwrap().contains("pty hello"));
 
-    let _ = tender(&root).args(["kill", "py-pty", "--force"]).assert();
+    let _ = tendr(&root).args(["kill", "py-pty", "--force"]).assert();
 }
 
 /// PTY exec is still rejected for shell targets.
@@ -278,7 +278,7 @@ fn exec_pty_still_rejected_for_shells() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "pty-shell",
@@ -293,22 +293,20 @@ fn exec_pty_still_rejected_for_shells() {
         .success();
     harness::wait_running(&root, "pty-shell");
 
-    tender(&root)
+    tendr(&root)
         .args(["exec", "pty-shell", "--", "echo", "test"])
         .assert()
         .failure()
         .stderr(predicates::str::contains("not supported on PTY"));
 
-    let _ = tender(&root)
-        .args(["kill", "pty-shell", "--force"])
-        .assert();
+    let _ = tendr(&root).args(["kill", "pty-shell", "--force"]).assert();
 }
 
 /// Wait for the attach socket breadcrumb and return the socket path.
 fn wait_for_attach_socket(root: &TempDir, session: &str) -> std::path::PathBuf {
     let breadcrumb = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/a.sock.path"));
+        .join(format!(".tendr/sessions/default/{session}/a.sock.path"));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if let Ok(content) = std::fs::read_to_string(&breadcrumb) {
@@ -334,7 +332,7 @@ fn attach_as_human(sock_path: &std::path::Path) -> UnixStream {
 fn wait_for_pty_control(root: &TempDir, session: &str, expected: &str) {
     let meta_path = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/meta.json"));
+        .join(format!(".tendr/sessions/default/{session}/meta.json"));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if let Ok(content) = std::fs::read_to_string(&meta_path) {
@@ -357,7 +355,7 @@ fn push_rejected_during_human_control() {
     let root = TempDir::new().unwrap();
 
     // Start a PTY session with stdin
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-hc", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
@@ -370,7 +368,7 @@ fn push_rejected_during_human_control() {
     wait_for_pty_control(&root, "pty-hc", "HumanControl");
 
     // Push should be rejected
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["push", "pty-hc"])
         .write_stdin(b"rejected\n")
         .output()
@@ -388,7 +386,7 @@ fn push_rejected_during_human_control() {
     wait_for_pty_control(&root, "pty-hc", "AgentControl");
 
     // Push should work again
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["push", "pty-hc"])
         .write_stdin(b"accepted\n")
         .output()
@@ -400,7 +398,7 @@ fn push_rejected_during_human_control() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    tender(&root).args(["kill", "pty-hc"]).output().ok();
+    tendr(&root).args(["kill", "pty-hc"]).output().ok();
 }
 
 #[test]
@@ -408,7 +406,7 @@ fn attach_contention_rejected() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-contend", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
@@ -421,7 +419,7 @@ fn attach_contention_rejected() {
     wait_for_pty_control(&root, "pty-contend", "HumanControl");
 
     // Second attach via CLI should be rejected
-    let output = tender(&root)
+    let output = tendr(&root)
         .args(["attach", "pty-contend"])
         .output()
         .unwrap();
@@ -434,7 +432,7 @@ fn attach_contention_rejected() {
     );
 
     drop(_human);
-    tender(&root).args(["kill", "pty-contend"]).output().ok();
+    tendr(&root).args(["kill", "pty-contend"]).output().ok();
 }
 
 #[test]
@@ -443,7 +441,7 @@ fn resize_reaches_child_pty() {
     let root = TempDir::new().unwrap();
 
     // An interactive shell so we can query the child's terminal size post-resize.
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-resize", "--pty", "--stdin", "--", "sh"])
         .output()
         .unwrap();
@@ -506,7 +504,7 @@ fn resize_reaches_child_pty() {
     };
 
     // Secondary safety snapshot, taken while still under human control.
-    let status = tender(&root)
+    let status = tendr(&root)
         .args(["status", "pty-resize"])
         .output()
         .unwrap();
@@ -519,7 +517,7 @@ fn resize_reaches_child_pty() {
     write_msg(&mut stream, MSG_DETACH, &[]);
     drop(stream);
     let _ = reader.join();
-    tender(&root)
+    tendr(&root)
         .args(["kill", "pty-resize", "--force"])
         .assert()
         .success();
@@ -540,7 +538,7 @@ fn attach_detach_emit_control_changed_events() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "pty-ev", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
@@ -575,7 +573,7 @@ fn attach_detach_emit_control_changed_events() {
         serde_json::json!({"control": "AgentControl", "trigger": "detach"})
     );
     for event in &changed {
-        assert_eq!(event["source"], "tender.sidecar");
+        assert_eq!(event["source"], "tendr.sidecar");
     }
 
     // The attach thread owns its own writer (multi-writer by design).
@@ -588,5 +586,5 @@ fn attach_detach_emit_control_changed_events() {
     assert_eq!(changed[0]["seq"], 1);
     assert_eq!(changed[1]["seq"], 2);
 
-    tender(&root).args(["kill", "pty-ev"]).output().ok();
+    tendr(&root).args(["kill", "pty-ev"]).output().ok();
 }

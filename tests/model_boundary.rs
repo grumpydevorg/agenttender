@@ -2,7 +2,7 @@
 //! and the `BoundaryContext` ancestry shape. See
 //! docs/plans/active/01_boundary-metadata.md.
 
-use tender::model::boundary::{Boundary, BoundaryContext, BoundaryKind};
+use tendr::model::boundary::{Boundary, BoundaryContext, BoundaryKind};
 
 #[test]
 fn parses_kind_and_label() {

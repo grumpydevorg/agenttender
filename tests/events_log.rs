@@ -3,9 +3,9 @@
 use std::path::Path;
 
 use tempfile::TempDir;
-use tender::events::{EventDraft, EventWriter, read_session_events};
-use tender::model::event::{Event, Kind, Uuid7};
-use tender::model::ids::{Namespace, RunId, SessionName, Source};
+use tendr::events::{EventDraft, EventWriter, read_session_events};
+use tendr::model::event::{Event, Kind, Uuid7};
+use tendr::model::ids::{Namespace, RunId, SessionName, Source};
 
 fn draft(kind: &str, data: serde_json::Value) -> EventDraft {
     EventDraft {
@@ -15,7 +15,7 @@ fn draft(kind: &str, data: serde_json::Value) -> EventDraft {
         session: SessionName::new("s1").unwrap(),
         run_id: RunId::new(),
         generation: Some(1),
-        source: Source::trusted("tender.sidecar").unwrap(),
+        source: Source::trusted("tendr.sidecar").unwrap(),
         block_id: None,
         parent_id: None,
         data: Some(data),
@@ -243,7 +243,7 @@ fn orphan_stamp_honors_pre_minted_id() {
     let minted = Uuid7::new();
     let mut d = draft("hook.post_tool_use", serde_json::json!({}));
     d.id = Some(minted);
-    let event = tender::events::stamp_orphan_event(d);
+    let event = tendr::events::stamp_orphan_event(d);
     assert_eq!(event.id, minted);
 }
 
@@ -440,8 +440,8 @@ fn read_missing_events_dir_is_empty_not_error() {
 #[test]
 fn lost_found_append_writes_fully_addressed_event() {
     let tmp = TempDir::new().unwrap();
-    let tender_root = tmp.path().join(".tender");
-    std::fs::create_dir_all(&tender_root).unwrap();
+    let tendr_root = tmp.path().join(".tendr");
+    std::fs::create_dir_all(&tendr_root).unwrap();
 
     // Stamp an event without a session dir (orphan emitter).
     let session_dir = tmp.path().join("gone");
@@ -454,9 +454,9 @@ fn lost_found_append_writes_fully_addressed_event() {
         )
         .unwrap();
 
-    tender::events::append_lost_found(&tender_root, &event).unwrap();
+    tendr::events::append_lost_found(&tendr_root, &event).unwrap();
 
-    let lf = tender_root.join("lost+found").join("events.jsonl");
+    let lf = tendr_root.join("lost+found").join("events.jsonl");
     let lines = read_lines(&lf);
     assert_eq!(lines.len(), 1);
     let parsed: Event = serde_json::from_str(&lines[0]).unwrap();

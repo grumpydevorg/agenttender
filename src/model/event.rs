@@ -1,7 +1,7 @@
 //! Event envelope — spec §1 of docs/plans/specs/event-protocol.md.
 //!
 //! One JSON object per line in a session's `events/*.jsonl` segments.
-//! Fields outside `data` are stamped by the tender binary (trusted tier).
+//! Fields outside `data` are stamped by the tendr binary (trusted tier).
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
@@ -14,8 +14,8 @@ use super::ids::{Namespace, RunId, SessionName, Source};
 /// Envelope version. Additive fields never bump it (spec §1).
 pub const ENVELOPE_VERSION: u32 = 1;
 
-/// Kind prefixes whose payload schemas tender itself owns. Rejected at
-/// argument validation of user-supplied kinds (`Kind::new_user`); tender's
+/// Kind prefixes whose payload schemas tendr itself owns. Rejected at
+/// argument validation of user-supplied kinds (`Kind::new_user`); tendr's
 /// internal call sites are the only writers of reserved kinds. `hook.` is
 /// deliberately unreserved.
 pub const RESERVED_KIND_PREFIXES: [&str; 9] = [
@@ -27,7 +27,7 @@ pub const RESERVED_KIND_PREFIXES: [&str; 9] = [
     "callback.",
     "segment.",
     "cursor.",
-    "tender.",
+    "tendr.",
 ];
 
 /// A UUIDv7 event identifier (event id, writer id, block id, parent id).
@@ -306,14 +306,14 @@ pub enum KindError {
     EmptySegment,
     #[error("kind too long (max {MAX_KIND_LEN} bytes)")]
     TooLong,
-    #[error("kind prefix '{0}' is reserved to tender-owned schemas")]
+    #[error("kind prefix '{0}' is reserved to tendr-owned schemas")]
     ReservedPrefix(&'static str),
 }
 
 const MAX_KIND_LEN: usize = 128;
 
 impl Kind {
-    /// Grammar-only validation — for tender's internal call sites (which are
+    /// Grammar-only validation — for tendr's internal call sites (which are
     /// the only writers of reserved kinds) and for deserialization.
     ///
     /// # Errors
@@ -327,7 +327,7 @@ impl Kind {
     /// grammar plus reserved-prefix rejection.
     ///
     /// # Errors
-    /// Returns `KindError`, including `ReservedPrefix` for tender-owned prefixes.
+    /// Returns `KindError`, including `ReservedPrefix` for tendr-owned prefixes.
     pub fn new_user(s: &str) -> Result<Self, KindError> {
         Self::validate_grammar(s)?;
         if let Some(prefix) = RESERVED_KIND_PREFIXES

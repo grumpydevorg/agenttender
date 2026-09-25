@@ -1,8 +1,8 @@
-//! `tender query` — event-log analytics v1.
+//! `tendr query` — event-log analytics v1.
 //!
 //! Points the external `duckdb` CLI at the on-disk JSONL event log: locate the
 //! event segments in scope, register an `events` view over them, run the user's
-//! SQL. Zero bespoke analytics code — DuckDB is the engine; tender only locates
+//! SQL. Zero bespoke analytics code — DuckDB is the engine; tendr only locates
 //! the segments and projects the envelope columns. Read-only over the shipped
 //! log; no new write path.
 
@@ -11,15 +11,15 @@ use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 
 use anyhow::Context;
-use tender::model::ids::Namespace;
-use tender::session::{self, SessionRoot};
+use tendr::model::ids::Namespace;
+use tendr::session::{self, SessionRoot};
 
 /// DuckDB release this slice is developed and tested against. DuckDB's JSON
 /// functions (`read_json` `records=false`, `->`/`->>`) are stable across 1.x;
-/// surfaced by `tender query --version`.
+/// surfaced by `tendr query --version`.
 const TESTED_DUCKDB: &str = "1.x";
 
-/// Options for `tender query`, mirroring the clap subcommand.
+/// Options for `tendr query`, mirroring the clap subcommand.
 pub struct QueryOptions {
     /// Inline SQL to run against the `events` view.
     pub sql: Option<String>,
@@ -83,7 +83,7 @@ pub fn cmd_query(opts: QueryOptions) -> anyhow::Result<()> {
     }
 }
 
-/// Report the DuckDB CLI version tender will use, plus the tested-against range.
+/// Report the DuckDB CLI version tendr will use, plus the tested-against range.
 fn report_version() -> anyhow::Result<()> {
     let out = Command::new("duckdb")
         .arg("--version")
@@ -91,7 +91,7 @@ fn report_version() -> anyhow::Result<()> {
         .map_err(|e| duckdb_spawn_error(&e))?;
     let version = String::from_utf8_lossy(&out.stdout);
     println!("DuckDB CLI: {}", version.trim());
-    println!("tender query is developed against DuckDB {TESTED_DUCKDB}");
+    println!("tendr query is developed against DuckDB {TESTED_DUCKDB}");
     Ok(())
 }
 
@@ -114,7 +114,7 @@ fn parse_namespaces(spec: Option<&str>) -> anyhow::Result<Vec<Namespace>> {
 
 /// Collect every `events/*.jsonl` segment path in scope, sorted. An empty
 /// `namespaces` slice means all namespaces. Reuses `session::list` for the
-/// same session discovery `tender events`/`list` use.
+/// same session discovery `tendr events`/`list` use.
 fn discover_segments(root: &SessionRoot, namespaces: &[Namespace]) -> anyhow::Result<Vec<PathBuf>> {
     let sessions = if namespaces.is_empty() {
         session::list(root, None)?
@@ -197,7 +197,7 @@ fn resolve_sql(sql: Option<String>, file: Option<PathBuf>) -> anyhow::Result<Str
 
 /// Run the preamble + user SQL through a one-shot `duckdb`, inheriting
 /// stdout/stderr so the user sees DuckDB's native output. Propagates DuckDB's
-/// exit code so a failed query fails `tender query`.
+/// exit code so a failed query fails `tendr query`.
 fn run_query(preamble: &str, sql: &str) -> anyhow::Result<()> {
     let mut child = Command::new("duckdb")
         .stdin(Stdio::piped())
@@ -225,8 +225,8 @@ fn run_shell(preamble: &str) -> anyhow::Result<()> {
     propagate_exit(status)
 }
 
-/// Mirror DuckDB's exit status as tender's own: success → `Ok`, failure → exit
-/// with DuckDB's code (the exit contract every other tender verb follows).
+/// Mirror DuckDB's exit status as tendr's own: success → `Ok`, failure → exit
+/// with DuckDB's code (the exit contract every other tendr verb follows).
 fn propagate_exit(status: ExitStatus) -> anyhow::Result<()> {
     if status.success() {
         Ok(())
@@ -241,7 +241,7 @@ fn propagate_exit(status: ExitStatus) -> anyhow::Result<()> {
 fn duckdb_spawn_error(e: &std::io::Error) -> anyhow::Error {
     if e.kind() == std::io::ErrorKind::NotFound {
         anyhow::anyhow!(
-            "duckdb not found on PATH — `tender query` requires the DuckDB CLI.\n\
+            "duckdb not found on PATH — `tendr query` requires the DuckDB CLI.\n\
              Install it from https://duckdb.org and ensure `duckdb` is on your PATH."
         )
     } else {

@@ -2,14 +2,14 @@
 
 mod harness;
 
-use harness::{tender, wait_running, wait_terminal};
+use harness::{tendr, wait_running, wait_terminal};
 use tempfile::TempDir;
 
 /// Read all events for a session, merged by (ts, writer, seq).
 fn read_events(root: &TempDir, session: &str) -> Vec<serde_json::Value> {
     let events_dir = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/events"));
+        .join(format!(".tendr/sessions/default/{session}/events"));
     let mut segments: Vec<_> = std::fs::read_dir(&events_dir)
         .unwrap_or_else(|_| panic!("events dir missing for {session}"))
         .filter_map(Result::ok)
@@ -49,7 +49,7 @@ fn wait_for_event_kind(root: &TempDir, session: &str, kind: &str) -> Vec<serde_j
     loop {
         let events_dir = root
             .path()
-            .join(format!(".tender/sessions/default/{session}/events"));
+            .join(format!(".tendr/sessions/default/{session}/events"));
         if events_dir.exists() {
             let events = read_events(root, session);
             if kinds(&events).iter().any(|k| k == kind) {
@@ -66,7 +66,7 @@ fn wait_for_event_kind(root: &TempDir, session: &str, kind: &str) -> Vec<serde_j
 #[test]
 fn normal_run_logs_starting_started_exited() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "echo", "hi"])
         .assert()
         .success();
@@ -85,7 +85,7 @@ fn normal_run_logs_starting_started_exited() {
         assert_eq!(event["run_id"].as_str().unwrap(), run_id);
         assert_eq!(event["writer"].as_str().unwrap(), run_id);
         assert_eq!(event["seq"].as_u64().unwrap(), i as u64 + 1);
-        assert_eq!(event["source"], "tender.sidecar");
+        assert_eq!(event["source"], "tendr.sidecar");
         assert_eq!(event["namespace"], "default");
         assert_eq!(event["session"], "s1");
         assert_eq!(event["gen"], 1);
@@ -109,7 +109,7 @@ fn normal_run_logs_starting_started_exited() {
 #[test]
 fn nonzero_exit_logs_exit_code() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "false"])
         .assert()
         .success();
@@ -126,8 +126,8 @@ fn nonzero_exit_logs_exit_code() {
 fn spawn_failure_logs_spawn_failed() {
     let root = TempDir::new().unwrap();
     // Spawn failure is a normal terminal outcome for start; ignore its exit.
-    let _ = tender(&root)
-        .args(["start", "s1", "--", "/nonexistent-cmd-tender-test"])
+    let _ = tendr(&root)
+        .args(["start", "s1", "--", "/nonexistent-cmd-tendr-test"])
         .assert();
     wait_terminal(&root, "s1");
     let events = wait_for_event_kind(&root, "s1", "run.spawn_failed");
@@ -140,12 +140,12 @@ fn spawn_failure_logs_spawn_failed() {
 #[test]
 fn graceful_kill_logs_run_killed() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "sleep", "30"])
         .assert()
         .success();
     wait_running(&root, "s1");
-    tender(&root).args(["kill", "s1"]).assert().success();
+    tendr(&root).args(["kill", "s1"]).assert().success();
     wait_terminal(&root, "s1");
     let events = wait_for_event_kind(&root, "s1", "run.killed");
 
@@ -158,13 +158,13 @@ fn graceful_kill_logs_run_killed() {
 #[test]
 fn failed_dependency_logs_dependency_failed() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "dep", "--", "false"])
         .assert()
         .success();
     wait_terminal(&root, "dep");
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--after", "dep", "--", "echo", "hi"])
         .assert()
         .success();
@@ -178,13 +178,13 @@ fn failed_dependency_logs_dependency_failed() {
 }
 
 // --- WAL ordering: event append precedes meta write (spec §3.6) ---
-// Crash injection via TENDER_TEST_ABORT is compiled into debug sidecars only.
+// Crash injection via TENDR_TEST_ABORT is compiled into debug sidecars only.
 
 #[test]
 fn crash_after_terminal_event_leaves_event_without_meta() {
     let root = TempDir::new().unwrap();
-    tender(&root)
-        .env("TENDER_TEST_ABORT", "before_terminal_meta")
+    tendr(&root)
+        .env("TENDR_TEST_ABORT", "before_terminal_meta")
         .args(["start", "s1", "--", "echo", "hi"])
         .assert()
         .success();
@@ -193,7 +193,7 @@ fn crash_after_terminal_event_leaves_event_without_meta() {
     let events = wait_for_event_kind(&root, "s1", "run.exited");
     assert!(kinds(&events).contains(&"run.exited".to_owned()));
 
-    let meta_path = root.path().join(".tender/sessions/default/s1/meta.json");
+    let meta_path = root.path().join(".tendr/sessions/default/s1/meta.json");
     let meta: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
     assert_eq!(
@@ -205,8 +205,8 @@ fn crash_after_terminal_event_leaves_event_without_meta() {
 #[test]
 fn crash_before_terminal_event_leaves_neither() {
     let root = TempDir::new().unwrap();
-    tender(&root)
-        .env("TENDER_TEST_ABORT", "before_terminal_event")
+    tendr(&root)
+        .env("TENDR_TEST_ABORT", "before_terminal_event")
         .args(["start", "s1", "--", "echo", "hi"])
         .assert()
         .success();
@@ -226,12 +226,12 @@ fn crash_before_terminal_event_leaves_neither() {
 }
 
 /// An unwritable event log must not eat the terminal record: the append
-/// failure is salvaged to ~/.tender/lost+found/events.jsonl and recorded as
+/// failure is salvaged to ~/.tendr/lost+found/events.jsonl and recorded as
 /// a meta warning, while supervision still writes terminal meta.
 #[test]
 fn unwritable_event_log_salvages_terminal_event_to_lost_found() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "sleep", "2"])
         .assert()
         .success();
@@ -239,7 +239,7 @@ fn unwritable_event_log_salvages_terminal_event_to_lost_found() {
 
     // Sabotage: replace the events dir with a regular file so every further
     // append fails while meta.json stays writable.
-    let session_dir = root.path().join(".tender/sessions/default/s1");
+    let session_dir = root.path().join(".tendr/sessions/default/s1");
     std::fs::remove_dir_all(session_dir.join("events")).unwrap();
     std::fs::write(session_dir.join("events"), "not a dir").unwrap();
 
@@ -255,7 +255,7 @@ fn unwritable_event_log_salvages_terminal_event_to_lost_found() {
     );
 
     // The terminal record survived in lost+found, fully addressed.
-    let lf = root.path().join(".tender/lost+found/events.jsonl");
+    let lf = root.path().join(".tendr/lost+found/events.jsonl");
     let content = std::fs::read_to_string(&lf).expect("lost+found log exists");
     let salvaged: Vec<serde_json::Value> = content
         .lines()
@@ -268,5 +268,5 @@ fn unwritable_event_log_salvages_terminal_event_to_lost_found() {
     assert_eq!(exited["session"], "s1");
     assert_eq!(exited["run_id"], meta["run_id"]);
     assert_eq!(exited["data"]["reason"], "ExitedOk");
-    assert_eq!(exited["source"], "tender.sidecar");
+    assert_eq!(exited["source"], "tendr.sidecar");
 }

@@ -10,7 +10,7 @@ links:
 # Ecosystem Landscape & Lanes — where this all sits
 
 Written 2026-07-06 after three deep reviews (the block-runtime doc wave,
-libghostty, and coder/boo). This spec answers two questions: **where tender
+libghostty, and coder/boo). This spec answers two questions: **where tendr
 sits** in the emerging agent-terminal ecosystem, and **which parts of our
 own roadmap are orthogonal** to the core and should not block it (or be
 blocked by it).
@@ -19,12 +19,12 @@ blocked by it).
 
 | Concern | Who does it today | Notes |
 |---|---|---|
-| Process supervision, durable transcripts, structured exec results, deps/hooks, remote, Windows | **tender** (shipped) | files-as-truth, sidecar-per-session, no daemon |
+| Process supervision, durable transcripts, structured exec results, deps/hooks, remote, Windows | **tendr** (shipped) | files-as-truth, sidecar-per-session, no daemon |
 | Live TUI screen state for agents (send/peek/wait, rendered screen) | **boo** (coder/boo, shipped) | in-memory only, no exit codes, no events, POSIX-only — see [boo-integration](../backlog/boo-integration.md) |
-| Agent multiplexer: panes hosting interactive agents, with per-pane working/blocked/idle from agent lifecycle hooks | **herdr** (herdrdev/herdr, shipped) | composes above tender: agents live in herdr panes, the processes they start live in tender; measured 2026-09-25, see `tender guide herdr` |
+| Agent multiplexer: panes hosting interactive agents, with per-pane working/blocked/idle from agent lifecycle hooks | **herdr** (herdrdev/herdr, shipped) | composes above tendr: agents live in herdr panes, the processes they start live in tendr; measured 2026-09-25, see `tendr guide herdr` |
 | Embeddable VT/grid engine | **libghostty-vt** (ghostty-org/ghostty) | real and good; main-branch-only, unstable C API; third-party Rust crate exists (`libghostty-vt` on crates.io) |
-| Block-style terminal UX | Warp (closed); any future Tender consumer is downstream | consumer policy, never Tender core |
-| Structured event protocol between supervision and presentation | **tender** (shipped) | daemonless event log, replay/follow/cursors, and DuckDB analytics |
+| Block-style terminal UX | Warp (closed); any future Tendr consumer is downstream | consumer policy, never Tendr core |
+| Structured event protocol between supervision and presentation | **tendr** (shipped) | daemonless event log, replay/follow/cursors, and DuckDB analytics |
 
 boo is the closest neighbour and confirms rather than refutes the gap: it is
 well-engineered screen-state-as-truth with **no** structured events, exit
@@ -36,8 +36,8 @@ motive to grow toward structured results.
 
 The [cloud PTY plan](../active/00_cloud-pty-control.md) now supplies a named
 consumer for a Rust screen satellite. It revises the Boo-only screen routing
-below: an optional external `tender-screen` may serve screen commands delegated
-by Tender. Core retains PTY ownership and recording without libghostty. Earlier
+below: an optional external `tendr-screen` may serve screen commands delegated
+by Tendr. Core retains PTY ownership and recording without libghostty. Earlier
 ecosystem observations in this document are dated evidence, not current upstream
 capability claims; the new plan governs this consumer and the active queue.
 
@@ -62,15 +62,15 @@ gate any implementation work against those docs:
    which also settles problem 1 for events.)*
 3. **Stale-reality sweep.** Multiple docs describe shipped work as pending
    (PowerShell side-channel, --namespace, on_exit, provenance) and ignore
-   shipped mechanisms (`tender wrap`, the using-tender skill). Every
+   shipped mechanisms (`tendr wrap`, the using-tendr skill). Every
    "current behavior" claim needs re-verifying against HEAD.
 
-libghostty verdict (for the egui/tender-shell satellites): the library is
+libghostty verdict (for the egui/tendr-shell satellites): the library is
 real and better than our docs assumed (full terminal-state + render API with
 dirty tracking; streaming native; serious packaging), but: no tagged release
 ships the needed headers (pin main), API explicitly unstable
 (single-maintainer), OSC 133 **exit codes are unreachable via the C ABI**
-(tender-shell must parse OSC 133 itself — as the spec already says), replay
+(tendr-shell must parse OSC 133 itself — as the spec already says), replay
 of stored PTY bytes at a different width corrupts geometry-dependent output
 (store PTY dims with recorded bytes; replay at original dims, then resize),
 and the render-state API is viewport-only (a multi-block timeline needs a
@@ -83,25 +83,25 @@ another lane** except where a dependency is stated explicitly.
 
 ### Lane A — core sitter (this repo, the active queue)
 
-The process sitter tender already is. The active queue is the typed remote-frame
+The process sitter tendr already is. The active queue is the typed remote-frame
 transport that makes general `--host` cross-platform. Remote exec parity, the
 daemonless event protocol, native Windows CI, and documentation enforcement
 have shipped; completed plans retain their implementation history.
 
 ### Lane B — downstream consumers (orthogonal; separate projects)
 
-Consumers of tender's surface. None of these may gate Lane A, and Lane A
+Consumers of tendr's surface. None of these may gate Lane A, and Lane A
 must not grow features that exist only for them. Block-terminal UI, OSC-133
 adapters, completion, and shell-vs-AI routing belong in the repository of a
-named consumer once one exists; they are not Tender backlog. Tender may retain
+named consumer once one exists; they are not Tendr backlog. Tendr may retain
 small interoperability docs such as `agent-hook-routing`, but not downstream
 product plans.
 
 _(Groomed 2026-07-09: `hermes-block-runtime-integration` and
 `skill-agent-block-runtime` were collapsed into the single small
-`agent-hook-routing` item — the skill core already shipped as `using-tender`,
+`agent-hook-routing` item — the skill core already shipped as `using-tendr`,
 and the Hermes doc was pre-`event-protocol.md` glue. The umbrella "teach agents
-the Tender CLI" epic is retired.)_
+the Tendr CLI" epic is retired.)_
 
 ### Lane C — storage architecture (decision-gated)
 
@@ -112,7 +112,7 @@ disagreed on schema/paths. **The gate is now lifted:** the Lane A event
 schema shipped (event-protocol.md, the daemonless envelope) and the daemon
 question is decided. Accordingly (2026-07-09) `event-log-analytics` was
 rewritten to the shipped v1 envelope, promoted, then shipped as
-[`tender query`](../completed/2026-07-09-event-log-analytics-v1.md) — the
+[`tendr query`](../completed/2026-07-09-event-log-analytics-v1.md) — the
 least-speculative Lane C item, DuckDB over JSONL.
 `content-addressable-storage` stays deferred: its blob
 primitive was already absorbed into event-protocol (`events/blobs/<sha256>`),
@@ -131,5 +131,5 @@ add dependencies to Lane A.
 - Competing with boo on rendered-screen UX for its own sake. If Lane B's
   egui work makes native peek/wait cheap, that decision is taken there
   (see boo-integration path 5), not smuggled into Lane A.
-- Adopting libghostty anywhere in core tender. It remains a Lane B
+- Adopting libghostty anywhere in core tendr. It remains a Lane B
   dependency only.

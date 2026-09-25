@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use tender::model::ids::{Namespace, SessionName};
-use tender::model::meta::Meta;
-use tender::model::state::{ExitReason, RunStatus};
-use tender::session::{self, SessionRoot};
+use tendr::model::ids::{Namespace, SessionName};
+use tendr::model::meta::Meta;
+use tendr::model::state::{ExitReason, RunStatus};
+use tendr::session::{self, SessionRoot};
 
 /// Poll interval for the wait loop.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
@@ -23,7 +23,7 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500)
 /// - 1: session error (not found, etc.) — handled by anyhow bail
 ///
 /// Timeout is reported via anyhow::bail (exit code 1), consistent with
-/// other Tender commands that use anyhow for operational errors.
+/// other Tendr commands that use anyhow for operational errors.
 pub fn cmd_wait(
     names: &[String],
     timeout: Option<u64>,
@@ -72,7 +72,7 @@ pub fn cmd_wait(
             // Reconciliation: non-terminal + lock not held -> sidecar gone.
             // Heals from the event log when the sidecar's own terminal event
             // exists; infers SidecarLost otherwise (spec §3.6).
-            tender::reconcile::reconcile_sidecar_gone(session_dir, &mut meta)?;
+            tendr::reconcile::reconcile_sidecar_gone(session_dir, &mut meta)?;
 
             if meta.status().is_terminal() {
                 terminal_metas.insert(name.clone(), meta);
@@ -156,8 +156,8 @@ fn severity(code: i32) -> u8 {
 
 /// Map a single terminal RunStatus to its exit code.
 ///
-/// These codes match the documented Tender exit code contract
-/// (consistent with `tender run`):
+/// These codes match the documented Tendr exit code contract
+/// (consistent with `tendr run`):
 /// - 0: success (ExitedOk, Killed, KilledForced, TimedOut)
 /// - 2: spawn failure
 /// - 3: sidecar lost
@@ -175,7 +175,7 @@ fn single_exit_code(status: &RunStatus) -> i32 {
         RunStatus::SpawnFailed { .. } => 2,
         RunStatus::SidecarLost { .. } => 3,
         RunStatus::DependencyFailed { reason, .. } => {
-            use tender::model::dep_fail::DepFailReason;
+            use tendr::model::dep_fail::DepFailReason;
             match reason {
                 DepFailReason::Failed => 4,
                 DepFailReason::TimedOut => 124,

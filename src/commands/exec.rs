@@ -2,16 +2,16 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::time::{Duration, Instant};
 
-use tender::events::{self, EventDraft, EventWriter};
-use tender::exec_frame;
-use tender::log::LogLine;
-use tender::model::event::{Event, Kind, Uuid7};
-use tender::model::ids::{Namespace, SessionName, Source};
-use tender::model::meta::Meta;
-use tender::model::spec::StdinMode;
-use tender::model::state::RunStatus;
-use tender::platform::{Current, Platform};
-use tender::session::{self, SessionDir, SessionRoot};
+use tendr::events::{self, EventDraft, EventWriter};
+use tendr::exec_frame;
+use tendr::log::LogLine;
+use tendr::model::event::{Event, Kind, Uuid7};
+use tendr::model::ids::{Namespace, SessionName, Source};
+use tendr::model::meta::Meta;
+use tendr::model::spec::StdinMode;
+use tendr::model::state::RunStatus;
+use tendr::platform::{Current, Platform};
+use tendr::session::{self, SessionDir, SessionRoot};
 
 /// Advisory flock on `session_dir/exec.lock`, non-blocking.
 /// Ensures only one exec runs on a session at a time.
@@ -109,10 +109,10 @@ pub fn cmd_exec_frame_from_stdin() -> anyhow::Result<()> {
 
     let mut buf = Vec::new();
     std::io::stdin().read_to_end(&mut buf)?;
-    let frame = match tender::exec_request::ExecRequestFrame::from_json(&buf) {
+    let frame = match tendr::exec_request::ExecRequestFrame::from_json(&buf) {
         Ok(frame) => frame,
         Err(e) => {
-            eprintln!("tender exec: {e}");
+            eprintln!("tendr exec: {e}");
             std::process::exit(2);
         }
     };
@@ -120,7 +120,7 @@ pub fn cmd_exec_frame_from_stdin() -> anyhow::Result<()> {
         Some(ns) => match Namespace::new(&ns) {
             Ok(ns) => ns,
             Err(e) => {
-                eprintln!("tender exec: invalid exec frame: {e}");
+                eprintln!("tendr exec: invalid exec frame: {e}");
                 std::process::exit(2);
             }
         },
@@ -147,14 +147,14 @@ pub fn cmd_exec(
         anyhow::bail!("session is not running");
     }
 
-    if meta.launch_spec().io_mode == tender::model::spec::IoMode::Pty
-        && meta.launch_spec().exec_target != tender::model::spec::ExecTarget::PythonRepl
+    if meta.launch_spec().io_mode == tendr::model::spec::IoMode::Pty
+        && meta.launch_spec().exec_target != tendr::model::spec::ExecTarget::PythonRepl
     {
         anyhow::bail!("exec is not supported on PTY sessions (except python-repl)");
     }
 
-    if meta.launch_spec().exec_target == tender::model::spec::ExecTarget::DuckDb
-        && meta.launch_spec().io_mode == tender::model::spec::IoMode::Pty
+    if meta.launch_spec().exec_target == tendr::model::spec::ExecTarget::DuckDb
+        && meta.launch_spec().io_mode == tendr::model::spec::IoMode::Pty
     {
         anyhow::bail!("DuckDB exec requires pipe transport, not PTY");
     }
@@ -201,7 +201,7 @@ pub fn cmd_exec(
     // Hold the exec lock and drain until the sentinel arrives (or session dies)
     // to prevent a second exec from injecting into a busy shell.
     if result.timed_out {
-        use tender::model::spec::ExecTarget;
+        use tendr::model::spec::ExecTarget;
         match meta.launch_spec().exec_target {
             ExecTarget::PosixShell => {
                 drain_until_sentinel(&session, &token);
@@ -224,7 +224,7 @@ pub fn cmd_exec(
     // fields; oversize output spills with a structured preview that keeps
     // exit_code/cwd_after queryable inline (spec example (d)).
     let result_event = {
-        use tender::annotation;
+        use tendr::annotation;
 
         let result_data = serde_json::json!({
             "exit_code": result.exit_code,
@@ -286,7 +286,7 @@ pub fn cmd_exec(
     Ok(())
 }
 
-/// Best-effort append of a tender-stamped exec event (spec §6). `exec.` is
+/// Best-effort append of a tendr-stamped exec event (spec §6). `exec.` is
 /// a reserved prefix — this internal call site is its only permitted writer
 /// (grammar-only `Kind::new`). Failures warn on stderr and never alter
 /// exec's output or exit code.
@@ -308,7 +308,7 @@ fn emit_exec_event(
         session: meta.session().clone(),
         run_id: meta.run_id(),
         generation: Some(meta.generation().as_u64()),
-        source: Source::trusted("tender.exec").expect("tender.exec is grammatical"),
+        source: Source::trusted("tendr.exec").expect("tendr.exec is grammatical"),
         block_id: Some(block_id),
         parent_id,
         data: Some(data),
@@ -317,7 +317,7 @@ fn emit_exec_event(
     match writer.append(draft, false) {
         Ok(event) => Some(event),
         Err(e) => {
-            eprintln!("tender exec: {kind} event append failed: {e}");
+            eprintln!("tendr exec: {kind} event append failed: {e}");
             None
         }
     }
@@ -325,7 +325,7 @@ fn emit_exec_event(
 
 fn run_exec(
     session: &SessionDir,
-    meta: &tender::model::meta::Meta,
+    meta: &tendr::model::meta::Meta,
     cmd: &[String],
     token: &str,
     timeout: Option<u64>,
@@ -339,7 +339,7 @@ fn run_exec(
     let cursor = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
 
     // 2. Frame the command according to the session's exec target.
-    use tender::model::spec::ExecTarget;
+    use tendr::model::spec::ExecTarget;
 
     enum WaitMode {
         /// Shell-style: sentinel in stdout, results in stdout/stderr log lines.
@@ -697,7 +697,7 @@ fn drain_trailing_stderr(session: &SessionDir, cursor: u64) -> String {
             match parsed.tag.as_str() {
                 "O" if parsed
                     .content_text()
-                    .is_some_and(|c| c.contains("__TENDER_EXEC__")) =>
+                    .is_some_and(|c| c.contains("__TENDR_EXEC__")) =>
                 {
                     saw_sentinel = true;
                 }
@@ -790,10 +790,10 @@ fn write_exec_annotation(
     event_id: Option<&str>,
     token: &str,
 ) -> std::io::Result<()> {
-    use tender::annotation;
+    use tendr::annotation;
 
     let hook_stdin = shell_words::join(cmd);
-    let sentinel = format!("TENDER_EXEC_{token}");
+    let sentinel = format!("TENDR_EXEC_{token}");
 
     let with_event_id = |mut payload: serde_json::Value| {
         if let Some(id) = event_id {
@@ -922,7 +922,7 @@ mod tests {
             // `lines()` strips the newline; the stored line includes it, so the
             // on-disk length is line.len() + 1 and must not exceed MAX_LINE.
             assert!(
-                line.len() < tender::annotation::MAX_LINE,
+                line.len() < tendr::annotation::MAX_LINE,
                 "line of {} bytes exceeds MAX_LINE",
                 line.len() + 1
             );
@@ -1027,7 +1027,7 @@ mod tests {
         let data = &content["data"];
         assert_eq!(data["truncated"], true);
         let out = data["hook_stdout"].as_str().unwrap();
-        assert!(out.len() <= tender::annotation::MAX_FIELD_BYTES);
+        assert!(out.len() <= tendr::annotation::MAX_FIELD_BYTES);
         assert!(out.starts_with("zzz"));
         assert_eq!(data["hook_stderr"], "small");
         assert_all_lines_fit(&log);

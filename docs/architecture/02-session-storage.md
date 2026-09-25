@@ -1,10 +1,10 @@
 # Session Storage
 
-Tender persists one directory per session under `~/.tender/sessions/<namespace>/<session>/`. Some files are durable record, some are transient control breadcrumbs, and some exist only for specific execution lanes.
+Tendr persists one directory per session under `~/.tendr/sessions/<namespace>/<session>/`. Some files are durable record, some are transient control breadcrumbs, and some exist only for specific execution lanes.
 
 ```mermaid
 flowchart TD
-    Root["~/.tender/"] --> Sessions["sessions/"]
+    Root["~/.tendr/"] --> Sessions["sessions/"]
     Root --> Callbacks["callbacks/<run_id>.json"]
 
     Sessions --> Namespace["<namespace>/"]

@@ -1,4 +1,4 @@
-//! `tender events --follow` — poll-based live tailing with warm starts
+//! `tendr events --follow` — poll-based live tailing with warm starts
 //! (spec §5.1, slice 2 plan scope items 1–2).
 
 mod harness;
@@ -8,7 +8,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use harness::{tender, wait_running, wait_terminal};
+use harness::{tendr, wait_running, wait_terminal};
 use predicates::prelude::*;
 use tempfile::TempDir;
 
@@ -20,7 +20,7 @@ fn ready_file_requires_follow() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
     let ready = root.path().join("ready");
-    tender(&root)
+    tendr(&root)
         .args(["events", "--ready-file", ready.to_str().unwrap()])
         .assert()
         .failure()
@@ -38,7 +38,7 @@ fn ready_file_requires_follow() {
 fn follow_from_now_ready_then_surfaces_live_event() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "live", "--", "sleep", "5"])
         .assert()
         .success();
@@ -46,7 +46,7 @@ fn follow_from_now_ready_then_surfaces_live_event() {
 
     let follower = harness::ReadyFollower::spawn(&root, "events", &["--follow", "--from-now"]);
     // Baseline proven established: a live emit must now surface downstream.
-    tender(&root)
+    tendr(&root)
         .args(["emit", "--kind", "hook.live_probe", "--session", "live"])
         .assert()
         .success();
@@ -69,7 +69,7 @@ fn follow_from_now_ready_then_surfaces_live_event() {
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn spawn_events(root: &TempDir, args: &[&str]) -> Child {
-    let bin = assert_cmd::cargo::cargo_bin("tender");
+    let bin = assert_cmd::cargo::cargo_bin("tendr");
     Command::new(bin)
         .arg("events")
         .args(args)
@@ -77,13 +77,13 @@ fn spawn_events(root: &TempDir, args: &[&str]) -> Child {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn tender events")
+        .expect("failed to spawn tendr events")
 }
 
 fn newest_segment(root: &TempDir, session: &str) -> std::path::PathBuf {
     let events_dir = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/events"));
+        .join(format!(".tendr/sessions/default/{session}/events"));
     let mut segs: Vec<_> = std::fs::read_dir(&events_dir)
         .unwrap()
         .filter_map(Result::ok)
@@ -98,7 +98,7 @@ fn newest_segment(root: &TempDir, session: &str) -> std::path::PathBuf {
 fn follow_from_now_replays_later_discovered_sessions_from_start() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "old", "--", "echo", "old-hi"])
         .assert()
         .success();
@@ -106,7 +106,7 @@ fn follow_from_now_replays_later_discovered_sessions_from_start() {
 
     let follower = harness::ReadyFollower::spawn(&root, "events", &["--follow", "--from-now"]);
 
-    tender(&root)
+    tendr(&root)
         .args(["start", "fresh", "--", "echo", "fresh-hi"])
         .assert()
         .success();
@@ -138,7 +138,7 @@ fn follow_from_now_replays_later_discovered_sessions_from_start() {
 fn follow_replays_history_then_streams_new_events() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "sleep", "5"])
         .assert()
         .success();
@@ -149,7 +149,7 @@ fn follow_replays_history_then_streams_new_events() {
     // spawn returns.
     let follower = harness::ReadyFollower::spawn(&root, "events", &["--follow"]);
 
-    tender(&root)
+    tendr(&root)
         .args(["emit", "--kind", "test.after_replay", "--session", "s1"])
         .assert()
         .success();
@@ -177,7 +177,7 @@ fn follow_replays_history_then_streams_new_events() {
 fn follow_output_is_merge_ordered_by_ts_writer_seq() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "sleep", "5"])
         .assert()
         .success();
@@ -185,7 +185,7 @@ fn follow_output_is_merge_ordered_by_ts_writer_seq() {
     // A burst of events from distinct writers, all before the follower's
     // next poll — they arrive in one batch and must come out merge-ordered.
     for i in 0..5 {
-        tender(&root)
+        tendr(&root)
             .args([
                 "emit",
                 "--kind",
@@ -224,7 +224,7 @@ fn follow_output_is_merge_ordered_by_ts_writer_seq() {
 fn follow_picks_up_new_segments() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "sleep", "5"])
         .assert()
         .success();
@@ -258,7 +258,7 @@ fn follow_picks_up_new_segments() {
 fn follow_strict_exits_65_on_first_observed_parse_skip() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "s1", "--", "sleep", "5"])
         .assert()
         .success();
@@ -308,7 +308,7 @@ fn follow_strict_exits_65_on_first_observed_parse_skip() {
 fn ready_follower_survives_replay_larger_than_pipe_buffer() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["start", "big", "--", "sleep", "30"])
         .assert()
         .success();
@@ -318,7 +318,7 @@ fn ready_follower_survives_replay_larger_than_pipe_buffer() {
     // well past any OS pipe buffer (64 KB on Linux, smaller elsewhere).
     let payload = format!("{{\"blob\":\"{}\"}}", "x".repeat(15 * 1024));
     for i in 0..20 {
-        tender(&root)
+        tendr(&root)
             .args([
                 "emit",
                 "--kind",

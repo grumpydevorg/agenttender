@@ -2,11 +2,11 @@ use std::path::{Path, PathBuf};
 use std::thread;
 
 use anyhow::Context;
-use tender::directive::{self, Directives};
-use tender::log::{LogQuery, follow_log};
-use tender::model::ids::Namespace;
-use tender::model::state::{ExitReason, RunStatus};
-use tender::session;
+use tendr::directive::{self, Directives};
+use tendr::log::{LogQuery, follow_log};
+use tendr::model::ids::Namespace;
+use tendr::model::state::{ExitReason, RunStatus};
+use tendr::session;
 
 #[allow(clippy::too_many_arguments)] // launch surface; bundled into a request DTO by the frame-transport work
 pub fn cmd_run(
@@ -65,7 +65,7 @@ pub fn cmd_run(
         any_exit,
     );
 
-    // --foreground overrides #tender: detach. --detach forces detach.
+    // --foreground overrides #tendr: detach. --detach forces detach.
     // Without either CLI flag, honor the directive.
     let effective_detach = if foreground {
         false
@@ -89,7 +89,7 @@ pub fn cmd_run(
         effective.any_exit,
         &effective.namespace,
         false, // pty not supported via `run`
-        Some(tender::model::spec::ExecTarget::None),
+        Some(tendr::model::spec::ExecTarget::None),
         None, // `run` does not expose --boundary
     )?;
 
@@ -136,7 +136,7 @@ fn foreground_wait(session: &session::SessionDir) -> anyhow::Result<()> {
         let should_stop = || {
             std::fs::read_to_string(&meta_path_clone)
                 .ok()
-                .and_then(|c| serde_json::from_str::<tender::model::meta::Meta>(&c).ok())
+                .and_then(|c| serde_json::from_str::<tendr::model::meta::Meta>(&c).ok())
                 .map(|m| m.status().is_terminal())
                 .unwrap_or(false)
         };
@@ -150,12 +150,12 @@ fn foreground_wait(session: &session::SessionDir) -> anyhow::Result<()> {
     // Now read the final meta.json for exit code. The follow thread already
     // confirmed terminal state, so this read should succeed.
     let content = std::fs::read_to_string(&meta_path)?;
-    let mut meta: tender::model::meta::Meta = serde_json::from_str(&content)?;
+    let mut meta: tendr::model::meta::Meta = serde_json::from_str(&content)?;
 
     // Reconciliation: if the sidecar crashed between the follow thread's last
     // check and now (unlikely but possible). Best-effort — heals from the
     // event log or infers SidecarLost (spec §3.6).
-    let _ = tender::reconcile::reconcile_sidecar_gone(session, &mut meta);
+    let _ = tendr::reconcile::reconcile_sidecar_gone(session, &mut meta);
 
     // Propagate exit code.
     match meta.status() {
@@ -168,7 +168,7 @@ fn foreground_wait(session: &session::SessionDir) -> anyhow::Result<()> {
         RunStatus::SpawnFailed { .. } => std::process::exit(2),
         RunStatus::SidecarLost { .. } => std::process::exit(3),
         RunStatus::DependencyFailed { reason, .. } => {
-            use tender::model::dep_fail::DepFailReason;
+            use tendr::model::dep_fail::DepFailReason;
             match reason {
                 DepFailReason::Failed => std::process::exit(4),
                 DepFailReason::TimedOut => std::process::exit(124),
@@ -239,7 +239,7 @@ fn resolve_shell_argv(
         anyhow::bail!(
             "cannot determine interpreter for '{}'\n  \
              hint: use --shell to specify the interpreter\n  \
-             example: tender run --shell bash {}",
+             example: tendr run --shell bash {}",
             script_path.display(),
             script_path.display(),
         );

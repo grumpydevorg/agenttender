@@ -550,7 +550,7 @@ impl LifecycleEvents {
             session: self.session.clone(),
             run_id: self.run_id,
             generation: Some(self.generation.as_u64()),
-            source: Source::trusted("tender.sidecar").expect("tender.sidecar is grammatical"),
+            source: Source::trusted("tendr.sidecar").expect("tendr.sidecar is grammatical"),
             block_id: None,
             parent_id: None,
             data: Some(events::lifecycle_data(
@@ -581,7 +581,7 @@ impl LifecycleEvents {
             session: self.session.clone(),
             run_id: self.run_id,
             generation: Some(self.generation.as_u64()),
-            source: Source::trusted("tender.sidecar").expect("tender.sidecar is grammatical"),
+            source: Source::trusted("tendr.sidecar").expect("tendr.sidecar is grammatical"),
             block_id: None,
             parent_id: None,
             data: Some(data),
@@ -591,10 +591,10 @@ impl LifecycleEvents {
     }
 
     /// Last-resort preservation when the session's event log is unwritable:
-    /// the fully-addressed record lands in `~/.tender/lost+found/events.jsonl`
+    /// the fully-addressed record lands in `~/.tendr/lost+found/events.jsonl`
     /// (spec §7 machinery) instead of vanishing. Best-effort by design.
     fn salvage_to_lost_found(&self, draft: EventDraft) {
-        let Some(tender_root) = self
+        let Some(tendr_root) = self
             .session_dir
             .ancestors()
             .find(|p| p.ends_with("sessions"))
@@ -603,14 +603,14 @@ impl LifecycleEvents {
             return;
         };
         let event = events::stamp_orphan_event(draft);
-        let _ = events::append_lost_found(tender_root, &event);
+        let _ = events::append_lost_found(tendr_root, &event);
     }
 }
 
 /// Test-only crash injection for WAL-ordering tests. Compiled into debug
 /// builds only; release sidecars ignore the variable entirely.
 fn test_abort_point(point: &str) {
-    if cfg!(debug_assertions) && std::env::var("TENDER_TEST_ABORT").as_deref() == Ok(point) {
+    if cfg!(debug_assertions) && std::env::var("TENDR_TEST_ABORT").as_deref() == Ok(point) {
         std::process::abort();
     }
 }
@@ -712,17 +712,17 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
         *ready = Some(sealed);
     }
 
-    // Build effective env: user-supplied first, then TENDER_* overlay (authoritative).
+    // Build effective env: user-supplied first, then TENDR_* overlay (authoritative).
     let mut effective_env = meta.launch_spec().env.clone();
     effective_env.insert(
-        "TENDER_SESSION".to_owned(),
+        "TENDR_SESSION".to_owned(),
         meta.session().as_str().to_owned(),
     );
-    effective_env.insert("TENDER_NAMESPACE".to_owned(), namespace.as_str().to_owned());
-    effective_env.insert("TENDER_RUN_ID".to_owned(), run_id.to_string());
-    effective_env.insert("TENDER_GENERATION".to_owned(), generation.to_string());
+    effective_env.insert("TENDR_NAMESPACE".to_owned(), namespace.as_str().to_owned());
+    effective_env.insert("TENDR_RUN_ID".to_owned(), run_id.to_string());
+    effective_env.insert("TENDR_GENERATION".to_owned(), generation.to_string());
     effective_env.insert(
-        "TENDER_SESSION_DIR".to_owned(),
+        "TENDR_SESSION_DIR".to_owned(),
         session_dir.to_str().unwrap_or("").to_owned(),
     );
 
@@ -1074,12 +1074,12 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
             }
             let result = std::process::Command::new(&argv[0])
                 .args(&argv[1..])
-                .env("TENDER_SESSION", &session_name)
-                .env("TENDER_NAMESPACE", &namespace)
-                .env("TENDER_RUN_ID", &run_id)
-                .env("TENDER_GENERATION", &generation)
-                .env("TENDER_EXIT_REASON", &exit_reason_debug)
-                .env("TENDER_SESSION_DIR", &session_dir_str)
+                .env("TENDR_SESSION", &session_name)
+                .env("TENDR_NAMESPACE", &namespace)
+                .env("TENDR_RUN_ID", &run_id)
+                .env("TENDR_GENERATION", &generation)
+                .env("TENDR_EXIT_REASON", &exit_reason_debug)
+                .env("TENDR_SESSION_DIR", &session_dir_str)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::piped())
                 .output();
@@ -1119,7 +1119,7 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
             .ancestors()
             .find(|p| p.ends_with("sessions"))
             .and_then(|p| p.parent())
-            .map(|tender_root| tender_root.join("callbacks"));
+            .map(|tendr_root| tendr_root.join("callbacks"));
 
         if let Some(dir) = callbacks_dir {
             let _ = std::fs::create_dir_all(&dir);

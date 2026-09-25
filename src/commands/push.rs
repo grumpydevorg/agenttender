@@ -1,9 +1,9 @@
-use tender::model::ids::{Namespace, SessionName};
-use tender::model::pty::PtyControl;
-use tender::model::spec::StdinMode;
-use tender::model::state::RunStatus;
-use tender::platform::{Current, Platform};
-use tender::session::{self, SessionRoot};
+use tendr::model::ids::{Namespace, SessionName};
+use tendr::model::pty::PtyControl;
+use tendr::model::spec::StdinMode;
+use tendr::model::state::RunStatus;
+use tendr::platform::{Current, Platform};
+use tendr::session::{self, SessionRoot};
 
 pub fn cmd_push(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
     let session_name = SessionName::new(name)?;

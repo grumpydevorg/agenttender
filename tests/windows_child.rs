@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read};
-use tender::platform::Platform;
-use tender::platform::windows::WindowsPlatform;
+use tendr::platform::Platform;
+use tendr::platform::windows::WindowsPlatform;
 
 /// Spawn a child, verify it gets a valid identity.
 #[test]
@@ -142,9 +142,9 @@ fn windows_spawn_with_stdin() {
 #[test]
 fn windows_spawn_with_env() {
     let mut env = BTreeMap::new();
-    env.insert("TENDER_TEST_VAR".into(), "hello-env".into());
+    env.insert("TENDR_TEST_VAR".into(), "hello-env".into());
 
-    let argv = vec!["cmd".into(), "/C".into(), "echo %TENDER_TEST_VAR%".into()];
+    let argv = vec!["cmd".into(), "/C".into(), "echo %TENDR_TEST_VAR%".into()];
     let mut child =
         WindowsPlatform::spawn_child(&argv, false, None, &env).expect("spawn_child should succeed");
 

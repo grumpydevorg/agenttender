@@ -1,13 +1,13 @@
 //! Test fixture for tests/windows_breakaway.rs.
 //!
 //! Opens a named Job Object passed via TEST_JOB_NAME, assigns itself to it,
-//! then spawns `tender start <session> -- powershell -NoProfile -Command "Start-Sleep 30"`.
-//! After tender start returns, runs `tender status <session>` to read the
+//! then spawns `tendr start <session> -- powershell -NoProfile -Command "Start-Sleep 30"`.
+//! After tendr start returns, runs `tendr status <session>` to read the
 //! sidecar PID and writes it to the file path given as the fourth argv.
 //!
 //! Usage:
 //! ```text
-//! test_breakaway_parent <tender_bin> <home_dir> <session> <sidecar_pid_out_path>
+//! test_breakaway_parent <tendr_bin> <home_dir> <session> <sidecar_pid_out_path>
 //! ```
 //!
 //! Env:
@@ -18,12 +18,12 @@ fn main() {
     use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, OpenJobObjectW};
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
-    // From wincon.h / Win32::System::SystemServices (not in tender's
+    // From wincon.h / Win32::System::SystemServices (not in tendr's
     // windows-sys feature set). All we need is "may assign processes".
     const JOB_OBJECT_ASSIGN_PROCESS: u32 = 0x0001;
 
     let mut args = std::env::args().skip(1);
-    let tender_bin = args.next().unwrap_or_else(|| die("missing tender_bin arg"));
+    let tendr_bin = args.next().unwrap_or_else(|| die("missing tendr_bin arg"));
     let home = args.next().unwrap_or_else(|| die("missing home arg"));
     let session = args.next().unwrap_or_else(|| die("missing session arg"));
     let sidecar_pid_out = args
@@ -53,8 +53,8 @@ fn main() {
         ));
     }
 
-    // Spawn `tender start` — inherits this process's job assignment.
-    let status = Command::new(&tender_bin)
+    // Spawn `tendr start` — inherits this process's job assignment.
+    let status = Command::new(&tendr_bin)
         .env("HOME", &home)
         .args([
             "start",
@@ -66,17 +66,17 @@ fn main() {
             "Start-Sleep 30",
         ])
         .status()
-        .unwrap_or_else(|e| die(&format!("tender start spawn failed: {e}")));
+        .unwrap_or_else(|e| die(&format!("tendr start spawn failed: {e}")));
     if !status.success() {
-        die(&format!("tender start exited non-zero: {status:?}"));
+        die(&format!("tendr start exited non-zero: {status:?}"));
     }
 
-    // Read sidecar PID from `tender status <session>` (JSON output).
-    let out = Command::new(&tender_bin)
+    // Read sidecar PID from `tendr status <session>` (JSON output).
+    let out = Command::new(&tendr_bin)
         .env("HOME", &home)
         .args(["status", &session])
         .output()
-        .unwrap_or_else(|e| die(&format!("tender status spawn failed: {e}")));
+        .unwrap_or_else(|e| die(&format!("tendr status spawn failed: {e}")));
     let stdout = String::from_utf8_lossy(&out.stdout);
     let v: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| die(&format!("status JSON parse failed: {e}\noutput:\n{stdout}")));

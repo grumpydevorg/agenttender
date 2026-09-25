@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use tender::model::ids::Namespace;
-use tender::model::state::{ExitReason, RunStatus};
-use tender::session::{self, SessionRoot};
+use tendr::model::ids::Namespace;
+use tendr::model::state::{ExitReason, RunStatus};
+use tendr::session::{self, SessionRoot};
 
 pub fn cmd_prune(
     older_than: Option<Duration>,
@@ -145,7 +145,7 @@ pub fn cmd_prune(
 
 fn emit_skip(
     ns: &Namespace,
-    name: &tender::model::ids::SessionName,
+    name: &tendr::model::ids::SessionName,
     reason: &str,
     ended_at: Option<u64>,
 ) {
@@ -164,7 +164,7 @@ fn emit_skip(
 
 fn emit_delete(
     ns: &Namespace,
-    name: &tender::model::ids::SessionName,
+    name: &tendr::model::ids::SessionName,
     ended_at: u64,
     reason: &str,
     bytes: Option<u64>,
@@ -182,7 +182,7 @@ fn emit_delete(
     println!("{}", serde_json::to_string(&line).unwrap());
 }
 
-fn emit_error(ns: &Namespace, name: &tender::model::ids::SessionName, error: &str) {
+fn emit_error(ns: &Namespace, name: &tendr::model::ids::SessionName, error: &str) {
     let line = PruneOutput::Session {
         action: "error",
         namespace: ns.as_str().to_owned(),

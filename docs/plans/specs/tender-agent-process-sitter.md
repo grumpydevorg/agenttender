@@ -1,8 +1,8 @@
-# Tender — Agent Process Sitter
+# Tendr — Agent Process Sitter
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** A cross-platform Rust CLI that lets AI agents start, observe, chain, and kill supervised runs — locally or over SSH — without ever needing an interactive terminal. Tender is the execution substrate under agent workflows, hook wrappers, and future frontends — not a frontend itself.
+**Goal:** A cross-platform Rust CLI that lets AI agents start, observe, chain, and kill supervised runs — locally or over SSH — without ever needing an interactive terminal. Tendr is the execution substrate under agent workflows, hook wrappers, and future frontends — not a frontend itself.
 
 **Tech Stack:** Rust, serde_json, clap, cross-compiled to static binaries (musl on Linux, native on macOS/Windows).
 
@@ -12,13 +12,13 @@
 
 ## The Model
 
-**Tender models supervised runs, not processes. The sidecar is the supervisor. The OS backend only provides spawn, wait, identity, and tree-kill.**
+**Tendr models supervised runs, not processes. The sidecar is the supervisor. The OS backend only provides spawn, wait, identity, and tree-kill.**
 
 ```
-Tender = stateless CLI + durable session record + per-session supervisor + OS-native kill/wait
+Tendr = stateless CLI + durable session record + per-session supervisor + OS-native kill/wait
 ```
 
-Tender is **not**: a daemon, a portable systemd, a shell wrapper, a PTY/session manager, or a parent-PID-tree inspector.
+Tendr is **not**: a daemon, a portable systemd, a shell wrapper, a PTY/session manager, or a parent-PID-tree inspector.
 
 ### Core Abstraction: the Run
 
@@ -35,23 +35,23 @@ Tender is **not**: a daemon, a portable systemd, a shell wrapper, a PTY/session 
 
 ### Architectural Layers
 
-Tender has one lifecycle model and multiple access paths.
+Tendr has one lifecycle model and multiple access paths.
 
 | Layer | Responsibility |
 |------|----------------|
-| **Tender core** | Run model, state machine, sidecar, session store, log store, canonical event schema |
+| **Tendr core** | Run model, state machine, sidecar, session store, log store, canonical event schema |
 | **Semantic backend API** | `start`, `status`, `list`, `log`, `push`, `kill`, `wait`, `watch` |
 | **Backend implementations** | Local first; SSH-backed remote later |
 | **Helper infrastructure** | Bootstrap, auth, connection reuse, optional broker/relay |
 | **Orchestration** | Fanout over one or more backends |
 | **Human mode** | PTY attach/detach, explicitly secondary |
 
-Tender is substrate, not frontend. Agent frameworks, hook wrappers, CI systems, and interactive tools are consumers of the semantic backend API. Tender itself never decides what to run or when — it provides the supervised execution, structured output, and composition primitives that callers build on.
+Tendr is substrate, not frontend. Agent frameworks, hook wrappers, CI systems, and interactive tools are consumers of the semantic backend API. Tendr itself never decides what to run or when — it provides the supervised execution, structured output, and composition primitives that callers build on.
 
 The important boundary is the **semantic backend API**, not raw packet transport.
 
-- Local execution should call Tender core directly.
-- Remote execution may invoke remote `tender` over SSH.
+- Local execution should call Tendr core directly.
+- Remote execution may invoke remote `tendr` over SSH.
 - Any future broker/relay is helper infrastructure below the backend boundary, not a second lifecycle system.
 
 ### Invariants
@@ -59,7 +59,7 @@ The important boundary is the **semantic backend API**, not raw packet transport
 1. **Sidecar is sole writer of lifecycle state.** CLI never "helpfully" writes lifecycle conclusions. If the sidecar didn't write it, it didn't happen.
 2. **run_id is globally unique.** Safe for remote references, log correlation, webhook payloads. UUID v7 (time-sortable).
 3. **run_id binds dependencies.** `--after job1` captures job1's current run_id at bind time. If job1 is replaced (new run_id), the dependency fails rather than observing a different execution.
-4. **Crash recovery is explicit.** If sidecar disappears without writing terminal state (reboot, OOM-kill, kernel panic), `tender status` detects the released lock + missing terminal state and writes `sidecar_lost`. This is the only case where CLI writes state — and it's a reconciliation, not a lifecycle transition.
+4. **Crash recovery is explicit.** If sidecar disappears without writing terminal state (reboot, OOM-kill, kernel panic), `tendr status` detects the released lock + missing terminal state and writes `sidecar_lost`. This is the only case where CLI writes state — and it's a reconciliation, not a lifecycle transition.
 5. **`--replace` is atomic.** Uses lock acquisition to serialize. Two agents racing `--replace` on the same session: one wins the lock, kills the old run, starts the new one. The other blocks on the lock, then sees the new run and gets a conflict error (different launch spec) or returns it (same spec). No dual-winner.
 6. **Remote is backend access, not a second lifecycle model.** The local and remote paths expose the same semantic operations and the same event model. `--host` is a CLI affordance over a remote backend, not the architecture itself.
 7. **Broker/relay is helper infrastructure only.** If introduced later, it may help with bootstrap, connection reuse, auth, or persistent streams, but it must not invent a separate run model, state machine, or event schema.
@@ -161,23 +161,23 @@ Phase 2B uses polling. WatchBackend is an optimization seam for later — the po
 
 Not in Platform. Not in WatchBackend. These are optional adapters that live in a separate `integrations/` layer if ever needed:
 
-- **sd_notify** — systemd readiness. Linux-only, service-manager integration, not needed for Tender's core model.
+- **sd_notify** — systemd readiness. Linux-only, service-manager integration, not needed for Tendr's core model.
 - **Desktop notifications** — macOS (`osascript`), Linux (`notify-send`), Windows (toast). These are `on_exit` callback concerns or frontend concerns, not supervision primitives.
-- **Terminal escapes** — OSC 9 etc. Consumer-side, not Tender's job.
+- **Terminal escapes** — OSC 9 etc. Consumer-side, not Tendr's job.
 
-Tender emits durable state and watch events. Consumers decide how to surface them.
+Tendr emits durable state and watch events. Consumers decide how to surface them.
 
 ### Retention and GC
 
 Durable sessions accumulate forever unless pruned. Policy:
 
-- `tender prune --older-than 30d` — delete session dirs with terminal state older than threshold
-- `tender prune --namespace ci-42` — delete all sessions in a namespace
+- `tendr prune --older-than 30d` — delete session dirs with terminal state older than threshold
+- `tendr prune --namespace ci-42` — delete all sessions in a namespace
 - No automatic GC. Agents or cron call `prune` explicitly. Silent data deletion is not agent-friendly.
 
 ### Event Model
 
-Tender has one event envelope shared across all event kinds. The envelope is frozen — new event kinds may be added, but the envelope shape does not change.
+Tendr has one event envelope shared across all event kinds. The envelope is frozen — new event kinds may be added, but the envelope shape does not change.
 
 #### Envelope
 
@@ -187,7 +187,7 @@ Tender has one event envelope shared across all event kinds. The envelope is fro
   "namespace": "ws-1",
   "session": "claude-1",
   "run_id": "019...",
-  "source": "tender.sidecar",
+  "source": "tendr.sidecar",
   "kind": "run",
   "name": "run.exited",
   "data": {
@@ -214,7 +214,7 @@ No global sequence number. Ordering is by stream order plus timestamp. Source-lo
 
 #### Event Kinds
 
-**`run` — canonical lifecycle truth.** Produced only by Tender sidecar. These are supervision facts.
+**`run` — canonical lifecycle truth.** Produced only by Tendr sidecar. These are supervision facts.
 
 | Name | Data | When |
 |------|------|------|
@@ -226,7 +226,7 @@ No global sequence number. Ordering is by stream order plus timestamp. Source-lo
 | `run.spawn_failed` | `{"error": "..."}` | Child failed to exec |
 | `run.sidecar_lost` | `{}` | Reconciliation detected crashed sidecar |
 
-**`log` — observability.** Produced by Tender sidecar. First-class but not lifecycle truth.
+**`log` — observability.** Produced by Tendr sidecar. First-class but not lifecycle truth.
 
 | Name | Data | When |
 |------|------|------|
@@ -245,17 +245,17 @@ No global sequence number. Ordering is by stream order plus timestamp. Source-lo
 
 Dotted prefix, not an enum:
 
-- `tender.*` — reserved for Tender core. Only `tender.*` may emit `run` events.
+- `tendr.*` — reserved for Tendr core. Only `tendr.*` may emit `run` events.
 - `external.*` — external producers. May only emit `annotation` events.
 
 This is the safety boundary: apps cannot forge lifecycle truth.
 
-#### Annotation Ingestion: `tender wrap`
+#### Annotation Ingestion: `tendr wrap`
 
-Agents emit hook events via stdin/stdout JSON (Claude Code, Codex, Cursor, Cline, GitHub Copilot all use this pattern). Tender does not modify agents or their hook configurations. Instead, Tender provides a transparent wrapper that taps the wire:
+Agents emit hook events via stdin/stdout JSON (Claude Code, Codex, Cursor, Cline, GitHub Copilot all use this pattern). Tendr does not modify agents or their hook configurations. Instead, Tendr provides a transparent wrapper that taps the wire:
 
 ```bash
-tender wrap --session claude-1 --namespace ws-1 --source claude_hook -- <hook-command> [args...]
+tendr wrap --session claude-1 --namespace ws-1 --source claude_hook -- <hook-command> [args...]
 ```
 
 **`wrap` is the public annotation primitive. There is no public `emit` command.**
@@ -263,7 +263,7 @@ tender wrap --session claude-1 --namespace ws-1 --source claude_hook -- <hook-co
 > **Superseded 2026-07-06:** the no-public-`emit` policy, the watch
 > envelope, and the annotation-ingestion event model in this section are
 > superseded by [event-protocol.md](event-protocol.md), which adds a public
-> `tender emit` (daemonless O_APPEND to the per-session event log, granular
+> `tendr emit` (daemonless O_APPEND to the per-session event log, granular
 > exit codes, `--best-effort`) alongside `wrap`, now sugar over the same
 > append. The forgery concern below is answered differently: reserved
 > `kind` prefixes (`run.` etc.) are rejected for user-supplied kinds, so
@@ -289,7 +289,7 @@ If internal annotation ingestion is ever needed (SDK integrations, trusted local
 5. Emits an `annotation` event to the session's event log
 6. Returns the wrapped command's stdout to the agent's stdout, stderr to stderr, and exits with the wrapped command's exit code
 
-The agent does not know Tender exists. The hook script does not know Tender exists.
+The agent does not know Tendr exists. The hook script does not know Tendr exists.
 
 **Annotation payload shape:**
 
@@ -321,24 +321,24 @@ cmux's Claude wrapper currently injects:
 {"hooks":{"PreToolUse":[{"type":"command","command":"cmux claude-hook pre-tool-use"}]}}
 ```
 
-With Tender wrapping:
+With Tendr wrapping:
 
 ```json
-{"hooks":{"PreToolUse":[{"type":"command","command":"tender wrap --session claude-1 --namespace ws-1 --source claude_hook -- cmux claude-hook pre-tool-use"}]}}
+{"hooks":{"PreToolUse":[{"type":"command","command":"tendr wrap --session claude-1 --namespace ws-1 --source claude_hook -- cmux claude-hook pre-tool-use"}]}}
 ```
 
-cmux still gets its hook call. Tender also gets the event in the watch stream. No changes to Claude Code. No changes to cmux's hook handler.
+cmux still gets its hook call. Tendr also gets the event in the watch stream. No changes to Claude Code. No changes to cmux's hook handler.
 
 #### Phasing
 
-- **Phase 2B:** `run` and `log` kinds only. Source is `tender.sidecar`. No annotations, no `wrap`, no global sequencing.
-- **Later:** `tender wrap` for annotation ingestion, `--annotations` flag on watch, `external.*` sources. No public `emit`.
+- **Phase 2B:** `run` and `log` kinds only. Source is `tendr.sidecar`. No annotations, no `wrap`, no global sequencing.
+- **Later:** `tendr wrap` for annotation ingestion, `--annotations` flag on watch, `external.*` sources. No public `emit`.
 
 ---
 
 ## Positioning
 
-Tender sits at the **process supervision** layer — below agent internal hooks and above OS process primitives.
+Tendr sits at the **process supervision** layer — below agent internal hooks and above OS process primitives.
 
 ```
 ┌─────────────────────────────┐
@@ -346,7 +346,7 @@ Tender sits at the **process supervision** layer — below agent internal hooks 
 ├─────────────────────────────┤
 │  Agent Internal Hooks       │  Claude Code, Codex, Cursor, Cline
 ├─────────────────────────────┤
-│  Process Supervision        │  ← Tender
+│  Process Supervision        │  ← Tendr
 │  Event Protocol             │
 ├─────────────────────────────┤
 │  OS Process Primitives      │  pid, signals, waitpid, Job Objects
@@ -361,9 +361,9 @@ Every external tool that wraps agents (AMUX, Batty, AgentDeck) resorts to termin
 
 Nobody owns the layer between "what the agent thinks internally" and "is the process alive."
 
-### What Tender provides
+### What Tendr provides
 
-| Problem | Current state of the art | Tender |
+| Problem | Current state of the art | Tendr |
 |---------|--------------------------|--------|
 | Is the agent alive? | Scrape tmux / poll pane_dead | ProcessIdentity + lock-based liveness |
 | Is the agent ready? | Wait and hope | Readiness handshake over pipe |
@@ -372,7 +372,7 @@ Nobody owns the layer between "what the agent thinks internally" and "is the pro
 | Group related agents? | Ad-hoc session names | `--namespace` |
 | Send input to running agent? | tmux send-keys (unstructured) | FIFO stdin push |
 | Agent exited — now what? | 5-second poll loop discovers it | `on_exit` callback fires immediately |
-| Capture agent hook semantics? | Build a custom bridge per agent | `tender wrap` taps the wire |
+| Capture agent hook semantics? | Build a custom bridge per agent | `tendr wrap` taps the wire |
 
 ### Agent execution backend
 
@@ -386,38 +386,38 @@ Every AI coding agent independently rebuilds the same process management primiti
 | Background work | Temp file + notify | PTY session cache | "Proceed While Running" | None | None |
 | Orphan recovery | None (leaks 400MB/agent) | None (PTY sessions leak) | None | None | Docker kills all |
 
-Tender replaces the bottom half of every agent's execution stack:
+Tendr replaces the bottom half of every agent's execution stack:
 
 **What agents keep:** tool routing, LLM context management, sandboxing policy, permission UI.
 
-**What Tender provides:**
+**What Tendr provides:**
 - Persistent supervised shell (`start --stdin`)
 - Framed command execution (`exec` = `push` + `wrap`)
 - Output capture with timestamps (`log`)
 - Timeout + graceful kill (`--timeout`, `kill`)
 - Background work that survives agent crashes (sidecar)
 - Orphan recovery (`ProcessIdentity` + reconciliation)
-- CWD/env persistence (the shell lives in Tender, not the agent)
+- CWD/env persistence (the shell lives in Tendr, not the agent)
 - Event stream for any consumer (`watch`)
 
-Tender does not handle sandboxing. That stays with the agent or its host (seatbelt, bubblewrap, Docker, restricted tokens). Tender runs inside or alongside the sandbox — it is the process lifecycle layer, not the security policy layer.
+Tendr does not handle sandboxing. That stays with the agent or its host (seatbelt, bubblewrap, Docker, restricted tokens). Tendr runs inside or alongside the sandbox — it is the process lifecycle layer, not the security policy layer.
 
 The integration path for any agent:
-1. Agent calls `tender start` instead of spawning its own persistent shell
-2. Agent sends commands via `tender exec` instead of writing to a private stdin pipe
-3. Agent reads output via `tender log` instead of its own capture threads
-4. If agent crashes, `tender` keeps the shell alive — agent reconnects via `tender list` + `tender exec`
-5. Terminal/orchestrator consumes `tender watch` instead of scraping
+1. Agent calls `tendr start` instead of spawning its own persistent shell
+2. Agent sends commands via `tendr exec` instead of writing to a private stdin pipe
+3. Agent reads output via `tendr log` instead of its own capture threads
+4. If agent crashes, `tendr` keeps the shell alive — agent reconnects via `tendr list` + `tendr exec`
+5. Terminal/orchestrator consumes `tendr watch` instead of scraping
 
-### What Tender standardizes
+### What Tendr standardizes
 
 - Run/session identity: namespace, session, run_id
 - Canonical event envelope (frozen shape, extensible kinds)
 - Canonical run and log events
-- Source naming convention (tender.* reserved)
+- Source naming convention (tendr.* reserved)
 - Annotation carriage (later, via wrap)
 
-### What Tender does not standardize
+### What Tendr does not standardize
 
 - Hook names across agents (Claude's PreToolUse ≠ Cursor's beforeShellExecution)
 - Hook payload schemas across agents
@@ -425,22 +425,22 @@ The integration path for any agent:
 - UI-derived state like "needs input" or "thinking"
 - Agent-specific control behavior
 
-If Tender tries to unify agent hook semantics, it will fail. If it defines the universal supervised-run and event envelope, it has a real shot.
+If Tendr tries to unify agent hook semantics, it will fail. If it defines the universal supervised-run and event envelope, it has a real shot.
 
-### What Tender does not do
+### What Tendr does not do
 
 - Replace agent internal hooks (Claude Code hooks, Cursor hooks, etc.)
 - Replace frontend rendering protocols (AG-UI)
-- Provide an agent orchestration framework (that's above Tender)
+- Provide an agent orchestration framework (that's above Tendr)
 - Require any agent modification (wrap is transparent)
 - Handle sandboxing (that's the agent's or host's job)
 
 ### Precedents
 
-- **Quine** (arXiv:2603.18030, March 2026) — academic paper proposing LLM agents as native POSIX processes. Identity = PID, interface = stdin/stdout/stderr + exit status. Tender is the practical implementation.
-- **Claude Code hooks** — the current hook-command pattern. Tender carries these as annotations, does not replace them.
-- **Aider notifications** — "keep notifications as a separate command hook" pattern. Tender's `on_exit` is the supervision-native version.
-- **Ghostty terminal escapes** — terminal-native notification delivery. Tender is transport-agnostic; terminals consume the watch stream however they want.
+- **Quine** (arXiv:2603.18030, March 2026) — academic paper proposing LLM agents as native POSIX processes. Identity = PID, interface = stdin/stdout/stderr + exit status. Tendr is the practical implementation.
+- **Claude Code hooks** — the current hook-command pattern. Tendr carries these as annotations, does not replace them.
+- **Aider notifications** — "keep notifications as a separate command hook" pattern. Tendr's `on_exit` is the supervision-native version.
+- **Ghostty terminal escapes** — terminal-native notification delivery. Tendr is transport-agnostic; terminals consume the watch stream however they want.
 - **AMUX/Batty/AgentDeck** — demonstrate the demand for external agent supervision. All resort to scraping because no supervision event protocol exists.
 
 ---
@@ -452,9 +452,9 @@ These are non-negotiable. Every PR, every feature, every decision filters throug
 ### 1. Structured Output is the Only Output
 
 ```
-tender start job cmd  →  {"session":"job","pid":1234,"state":"running"}
-tender status job     →  {"session":"job","state":"exited","exit_code":0,"duration_s":3600}
-tender list           →  [{"session":"job","state":"running","age_s":120}, ...]
+tendr start job cmd  →  {"session":"job","pid":1234,"state":"running"}
+tendr status job     →  {"session":"job","state":"exited","exit_code":0,"duration_s":3600}
+tendr list           →  [{"session":"job","state":"running","age_s":120}, ...]
 ```
 
 Human-readable is a flag (`--human`, `-H`), not the default. Agents are the primary consumer.
@@ -499,16 +499,16 @@ starting → running → exited_ok          (code 0)
                    → sidecar_lost        (sidecar crashed, detected lazily)
 ```
 
-State is queryable via `tender status`. Agents branch on the state enum, never infer from output. Terminal states are durable in `meta.json`.
+State is queryable via `tendr status`. Agents branch on the state enum, never infer from output. Terminal states are durable in `meta.json`.
 
 ### 5. Composition Over Scripting
 
 ```
-tender start job2 cmd --after job1              # wait for job1 exit 0
-tender start job2 cmd --after job1 --any-exit   # wait regardless of exit code
-tender start job cmd --timeout 3600             # kill after 1h
-tender start job cmd --on-exit webhook:URL      # notify when done
-tender start job cmd --on-exit file:/tmp/done   # touch file when done
+tendr start job2 cmd --after job1              # wait for job1 exit 0
+tendr start job2 cmd --after job1 --any-exit   # wait regardless of exit code
+tendr start job cmd --timeout 3600             # kill after 1h
+tendr start job cmd --on-exit webhook:URL      # notify when done
+tendr start job cmd --on-exit file:/tmp/done   # touch file when done
 ```
 
 **Rule: if an agent needs a wrapper script, the API is missing a primitive.**
@@ -516,28 +516,28 @@ tender start job cmd --on-exit file:/tmp/done   # touch file when done
 ### 6. Addressable Across Hosts
 
 ```
-tender --host nas-01 start upload cmd
-tender --host nas-01 log upload
-tender status nas-01:upload
+tendr --host nas-01 start upload cmd
+tendr --host nas-01 log upload
+tendr status nas-01:upload
 ```
 
 Host registry comes from SSH config or later backend-specific discovery.
 
-The CLI should hide transport details from the caller. The agent should not construct `ssh host tender ...` strings manually.
+The CLI should hide transport details from the caller. The agent should not construct `ssh host tendr ...` strings manually.
 
 The architectural point is:
 
 - `--host` is a frontend affordance
-- the real abstraction is a remote backend exposing the same semantic Tender API
+- the real abstraction is a remote backend exposing the same semantic Tendr API
 
 ### 7. Log is Queryable
 
 ```
-tender log job                    # raw stdout/stderr
-tender log job | rg "ERROR"       # pipe to standard search tools
-tender log job --since 5m         # time-windowed
-tender log job --tail 50          # last N lines
-tender log job --follow           # stream
+tendr log job                    # raw stdout/stderr
+tendr log job | rg "ERROR"       # pipe to standard search tools
+tendr log job --since 5m         # time-windowed
+tendr log job --tail 50          # last N lines
+tendr log job --follow           # stream
 ```
 
 **Rule: don't make agents download 100MB of logs to search for one line.**
@@ -545,7 +545,7 @@ tender log job --follow           # stream
 ### 8. Fan-Out is Native
 
 ```
-tender fanout "roost-*" -- df -h /data
+tendr fanout "roost-*" -- df -h /data
 → [{"host":"roost-01","session":"fanout-abc-01","state":"exited","exit_code":0}, ...]
 ```
 
@@ -558,18 +558,18 @@ Fanout is orchestration over many backends. It is not part of transport internal
 ### 10. Observability Without Polling
 
 ```
-tender wait job                          # block until exit
-tender wait job --timeout 60             # with timeout
-tender wait --any job1 job2 job3         # first to finish
-tender wait --all job1 job2 job3         # all finish
+tendr wait job                          # block until exit
+tendr wait job --timeout 60             # with timeout
+tendr wait --any job1 job2 job3         # first to finish
+tendr wait --all job1 job2 job3         # all finish
 ```
 
 ### 11. Namespacing
 
 ```
-tender start --namespace ci-42 build cmd
-tender list --namespace ci-42
-tender kill --namespace ci-42 --all
+tendr start --namespace ci-42 build cmd
+tendr list --namespace ci-42
+tendr kill --namespace ci-42 --all
 ```
 
 ### 12. Human Escape Hatch
@@ -583,20 +583,20 @@ tender kill --namespace ci-42 --all
 No central daemon. Each session is a directory with a **sidecar process**:
 
 ```
-~/.tender/sessions/
+~/.tendr/sessions/
   upload/
     meta.json       # schema v1, full run identity and state (see Model section)
     output.log      # line-oriented observability stream (see Log Format)
-    stdin.pipe      # mkfifo (Unix) / named pipe \\.\pipe\tender-<session> (Windows)
+    stdin.pipe      # mkfifo (Unix) / named pipe \\.\pipe\tendr-<session> (Windows)
     lock            # flock / LockFileEx — owned by sidecar while running
 ```
 
 ### The Sidecar
 
-`tender start job cmd` does this:
+`tendr start job cmd` does this:
 
 1. CLI creates session directory and writes initial `meta.json` (state: `starting`)
-2. CLI spawns **sidecar** — a detached `tender _sidecar` process (same binary)
+2. CLI spawns **sidecar** — a detached `tendr _sidecar` process (same binary)
 3. CLI **blocks** until sidecar signals readiness via a pipe/eventfd
 4. Sidecar acquires session lock, waits for `--after` dependencies if any
 5. Sidecar spawns **child** (the actual command)
@@ -604,7 +604,7 @@ No central daemon. Each session is a directory with a **sidecar process**:
 7. Sidecar signals readiness back to CLI
 8. CLI reads final `meta.json`, prints JSON output, exits
 
-If the sidecar fails to start or the child fails to spawn, the sidecar writes a terminal state (`spawn_failed`) to `meta.json` and signals the CLI. The CLI exits with the appropriate error code. **`tender start` never returns success for a half-initialized session.**
+If the sidecar fails to start or the child fails to spawn, the sidecar writes a terminal state (`spawn_failed`) to `meta.json` and signals the CLI. The CLI exits with the appropriate error code. **`tendr start` never returns success for a half-initialized session.**
 
 The sidecar then runs independently:
 - Captures child stdout/stderr into `output.log` with timestamps and stream tags
@@ -641,7 +641,7 @@ Single `output.log` file with interleaved stdout/stderr. Each line is prefixed b
 
 `O` = stdout, `E` = stderr. Unix epoch with microseconds. This preserves interleaving chronology and enables `--since` and downstream filtering.
 
-**This is a line-oriented observability log, not a byte-exact replay stream.** Partial lines are buffered until newline. Binary output is not faithfully reproduced. `tender log --raw` strips the timestamp and stream tag prefixes for human readability, but does not guarantee byte-identical reproduction of original output. If exact byte replay is needed (e.g. binary protocols), use the child's own file redirection instead of tender's log capture.
+**This is a line-oriented observability log, not a byte-exact replay stream.** Partial lines are buffered until newline. Binary output is not faithfully reproduced. `tendr log --raw` strips the timestamp and stream tag prefixes for human readability, but does not guarantee byte-identical reproduction of original output. If exact byte replay is needed (e.g. binary protocols), use the child's own file redirection instead of tendr's log capture.
 
 ### Detachment
 
@@ -663,7 +663,7 @@ struct ProcessId {
 
 trait ProcessSpawner {
     /// Spawn sidecar as detached process. Returns sidecar's ProcessId.
-    fn spawn_sidecar(tender_bin: &Path, session_dir: &Path, cmd: &[String]) -> Result<ProcessId>;
+    fn spawn_sidecar(tendr_bin: &Path, session_dir: &Path, cmd: &[String]) -> Result<ProcessId>;
     /// Check if process is alive AND matches the expected birth time.
     fn is_alive(id: &ProcessId) -> bool;
     /// Kill process. Graceful attempts cooperative shutdown first.
@@ -692,7 +692,7 @@ trait PtySession {  // only for `attach`
 | Is alive | kill(pid, 0) + check /proc starttime | OpenProcess + GetProcessTimes |
 | Kill (graceful) | SIGTERM → sleep → SIGKILL | Job Object: TerminateJobObject (kills entire tree) |
 | Kill (tree) | kill process group (-pid) | Job Object handles this natively |
-| stdin push | mkfifo in session dir | CreateNamedPipe in `\\.\pipe\tender-<session>` |
+| stdin push | mkfifo in session dir | CreateNamedPipe in `\\.\pipe\tendr-<session>` |
 | PTY (attach) | openpty/forkpty | CreatePseudoConsole (ConPTY) |
 | File lock | flock | LockFileEx |
 
@@ -701,11 +701,11 @@ trait PtySession {  // only for `attach`
 Windows does not have Unix-style signals. The plan does **not** try to map SIGTERM → GenerateConsoleCtrlEvent (which doesn't work for DETACHED_PROCESS). Instead:
 
 - Child is spawned inside a **Job Object** with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
-- **Cooperative shutdown** (not "graceful"): sidecar sets a "stop requested" flag in meta.json, then waits a grace period. Processes that are aware of tender can poll this flag. Most processes will not — this is best-effort, not a general mechanism.
+- **Cooperative shutdown** (not "graceful"): sidecar sets a "stop requested" flag in meta.json, then waits a grace period. Processes that are aware of tendr can poll this flag. Most processes will not — this is best-effort, not a general mechanism.
 - If child doesn't exit within grace period, Job Object terminates the entire process tree via TerminateJobObject.
 - For tree cleanup, this is actually *better* than Unix — Job Objects kill all descendants, not just the immediate child.
 
-The stdin pipe lives in `\\.\pipe\tender-<session>`, not as a file in the session directory. The `StdinPipe` trait abstracts this — callers never see the path difference.
+The stdin pipe lives in `\\.\pipe\tendr-<session>`, not as a file in the session directory. The `StdinPipe` trait abstracts this — callers never see the path difference.
 
 ---
 
@@ -715,22 +715,22 @@ This is the **target shape**, not the current repository layout.
 
 Current reality:
 
-- Tender is still implemented as a single crate
+- Tendr is still implemented as a single crate
 - the module boundaries in `src/` are the immediate design boundary
 - Phase 2B does not require a workspace split
 
 The workspace/crate split should happen when backend and remote pressure make the boundaries concrete enough to justify the churn.
 
 ```
-tender-cli/
+tendr-cli/
   Cargo.toml          # workspace root
   crates/
-    tender-core/      # run model, state machine, session dir, log reader, event schema
-    tender-platform/  # ProcessSpawner, StdinPipe, PtySession per OS
-    tender-backend/   # semantic backend API + local/remote backend glue
-    tender-remote/    # SSH backend, bootstrap hooks, remote execution helpers
-    tender-fanout/    # parallel ops over one or more backends
-    tender-broker/    # optional helper for connection reuse / bootstrap / persistent streams
+    tendr-core/      # run model, state machine, session dir, log reader, event schema
+    tendr-platform/  # ProcessSpawner, StdinPipe, PtySession per OS
+    tendr-backend/   # semantic backend API + local/remote backend glue
+    tendr-remote/    # SSH backend, bootstrap hooks, remote execution helpers
+    tendr-fanout/    # parallel ops over one or more backends
+    tendr-broker/    # optional helper for connection reuse / bootstrap / persistent streams
   src/
     main.rs           # CLI entry point (clap)
   tests/
@@ -759,9 +759,9 @@ Single binary, no runtime dependencies.
 The minimum viable agent process sitter. Replaces atch for local use.
 
 1. Scaffold workspace, crates, CI
-2. `tender-core`: session directory layout, meta.json schema, state machine types
-3. `tender-core`: ProcessId with (pid, start_time_ns) identity
-4. `tender-platform` (Unix): spawn_sidecar, is_alive (with birth time check), kill (SIGTERM → SIGKILL), get_start_time
+2. `tendr-core`: session directory layout, meta.json schema, state machine types
+3. `tendr-core`: ProcessId with (pid, start_time_ns) identity
+4. `tendr-platform` (Unix): spawn_sidecar, is_alive (with birth time check), kill (SIGTERM → SIGKILL), get_start_time
 5. Sidecar: internal `_sidecar` subcommand — spawn child, capture output with timestamps, write exit state to meta.json
 6. CLI commands: `start`, `status`, `list`, `kill`
 7. Log capture: combined output.log with timestamp + stream tag per line
@@ -777,8 +777,8 @@ The minimum viable agent process sitter. Replaces atch for local use.
 
 ### Phase 2: Windows
 
-15. `tender-platform` (Windows): CreateProcess + DETACHED_PROCESS, Job Objects for child, GetProcessTimes for identity
-16. Windows stdin: CreateNamedPipe in `\\.\pipe\tender-<session>`
+15. `tendr-platform` (Windows): CreateProcess + DETACHED_PROCESS, Job Objects for child, GetProcessTimes for identity
+16. Windows stdin: CreateNamedPipe in `\\.\pipe\tendr-<session>`
 17. Windows kill: Job Object termination (not GenerateConsoleCtrlEvent)
 18. Windows CI (cross-compile + test on GitHub Actions)
 19. Integration tests on Windows
@@ -800,19 +800,19 @@ All composition features are implemented in the sidecar — no new processes or 
 ### Phase 4: Remote Backend
 
 25. Define semantic backend boundary for local and remote execution
-26. `tender-remote`: SSH-backed remote backend exposed via `--host`
+26. `tendr-remote`: SSH-backed remote backend exposed via `--host`
 27. Host resolution from SSH config
 28. `host:session` addressing
-29. Error classification (SSH fail vs tender fail vs process fail)
-30. `tender fanout` with parallel execution and result collection over backends
-31. Optional bootstrap hooks for ensuring remote `tender` exists
+29. Error classification (SSH fail vs tendr fail vs process fail)
+30. `tendr fanout` with parallel execution and result collection over backends
+31. Optional bootstrap hooks for ensuring remote `tendr` exists
 32. Broker/relay explicitly deferred unless SSH proves insufficient
 
 **Deliverable:** fleet operations from a single command.
 
 ### Phase 5: Human Escape Hatch
 
-33. `tender-platform` PTY support (Unix: forkpty, Windows: ConPTY)
+33. `tendr-platform` PTY support (Unix: forkpty, Windows: ConPTY)
 34. `attach` command
 35. Detach key handling
 
@@ -820,21 +820,21 @@ All composition features are implemented in the sidecar — no new processes or 
 
 ### Phase 6: Skill + Migration
 
-36. Write tender skill for Claude Code / Codex / other agents
-37. Migration guide from atch → tender
-35. Update fleet: install tender alongside atch, validate, cut over
+36. Write tendr skill for Claude Code / Codex / other agents
+37. Migration guide from atch → tendr
+35. Update fleet: install tendr alongside atch, validate, cut over
 
 ---
 
-## What Tender Replaces
+## What Tendr Replaces
 
-| Today | Tender |
+| Today | Tendr |
 |-------|--------|
-| `ssh host atch start ...` | `tender --host start ...` |
+| `ssh host atch start ...` | `tendr --host start ...` |
 | Wrapper scripts for chaining | `--after`, `--on-exit` |
-| `sleep && check` loops | `tender wait` |
-| Bash for-loops over hosts | `tender fanout` |
-| Searching log output | `tender log \| rg ...` |
+| `sleep && check` loops | `tendr wait` |
+| Bash for-loops over hosts | `tendr fanout` |
+| Searching log output | `tendr log \| rg ...` |
 | Parsing human text | JSON by default |
 | Screen/tmux | `attach` as explicit human mode |
 | Broken on Windows | First-class Windows support |
@@ -852,7 +852,7 @@ All composition features are implemented in the sidecar — no new processes or 
 | 3 | GenerateConsoleCtrlEvent doesn't work with DETACHED_PROCESS | **Job Objects** — child spawned inside Job Object. Cooperative shutdown via flag in meta.json + timeout. Tree kill via TerminateJobObject. Better than Unix for descendant cleanup. |
 | 4 | Split stdout/stderr loses interleaving | **Single output.log** — sidecar captures both streams, prefixes each line with `<epoch_us> <O\|E>`. Interleaving preserved. |
 | 5 | Idempotent start masks command mismatches | **Full launch-spec matching** — idempotent only if full spec matches. Different spec with same session name → exit 1 conflict error. `--replace` for explicit override. |
-| 6 | Windows named pipes don't live in session dir | **Acknowledged in trait** — `StdinPipe::create` takes session name, Unix uses session dir path, Windows uses `\\.\pipe\tender-<session>`. Abstraction is honest about the difference. |
+| 6 | Windows named pipes don't live in session dir | **Acknowledged in trait** — `StdinPipe::create` takes session name, Unix uses session dir path, Windows uses `\\.\pipe\tendr-<session>`. Abstraction is honest about the difference. |
 
 ### Round 2 (semantic)
 
@@ -866,16 +866,16 @@ All composition features are implemented in the sidecar — no new processes or 
 
 ---
 
-## OTP Lessons for Tender
+## OTP Lessons for Tendr
 
-Tender's architecture maps to OTP concepts. Learn structure from OTP, but be more conservative about automatic recovery — OS processes have side effects that make blind restart dangerous.
+Tendr's architecture maps to OTP concepts. Learn structure from OTP, but be more conservative about automatic recovery — OS processes have side effects that make blind restart dangerous.
 
 ### Mapping
 
-| OTP | Tender | Notes |
+| OTP | Tendr | Notes |
 |-----|--------|-------|
-| Client process | CLI (`tender start`, `tender status`) | Short-lived, exits after command |
-| supervisor / supervisor_bridge | Sidecar (`tender _sidecar`) | Per-session, stateful control loop around one child |
+| Client process | CLI (`tendr start`, `tendr status`) | Short-lived, exits after command |
+| supervisor / supervisor_bridge | Sidecar (`tendr _sidecar`) | Per-session, stateful control loop around one child |
 | Worker | Child OS process | The actual command |
 | Process state (in-memory) | `meta.json` + `output.log` | Externalized to disk — no BEAM to keep it in memory |
 | Registered name | Session name | Mutable binding — can be `--replace`d |
@@ -884,13 +884,13 @@ Tender's architecture maps to OTP concepts. Learn structure from OTP, but be mor
 
 ### Exit Classification
 
-OTP distinguishes normal, shutdown, and error exits. Tender must do the same in `meta.json`:
+OTP distinguishes normal, shutdown, and error exits. Tendr must do the same in `meta.json`:
 
 | Exit reason | Meaning | `meta.json` state |
 |-------------|---------|-------------------|
 | Code 0 | Child completed successfully | `exited_ok` |
 | Code != 0 | Child failed | `exited_error(code)` |
-| SIGTERM/cooperative | Tender killed it (user or dependency) | `killed` |
+| SIGTERM/cooperative | Tendr killed it (user or dependency) | `killed` |
 | SIGKILL/TerminateJobObject | Force kill after grace period | `killed_forced` |
 | Timeout | `--timeout` exceeded | `timed_out` |
 | Spawn failure | Command not found, permission denied | `spawn_failed` |
@@ -898,9 +898,9 @@ OTP distinguishes normal, shutdown, and error exits. Tender must do the same in 
 
 ### Restart Policy
 
-Tender does **not** auto-restart by default. OS process restart is more dangerous than BEAM process restart — environment, cwd, pipes, partial external work, and side effects make blind restart unsafe.
+Tendr does **not** auto-restart by default. OS process restart is more dangerous than BEAM process restart — environment, cwd, pipes, partial external work, and side effects make blind restart unsafe.
 
-Define policy as a first-class field on `tender start`:
+Define policy as a first-class field on `tendr start`:
 
 | Policy | Behavior | OTP equivalent |
 |--------|----------|----------------|
@@ -940,11 +940,11 @@ Restart is a Phase 3+ feature. The contract is defined now so the state machine 
 
 ### Decision: single binary, no external manager required
 
-Tender does not depend on systemd, SCM, or any platform supervisor. The sidecar *is* the supervisor. This is deliberate — agents need uniform semantics across Linux, macOS, and Windows. An external manager dependency would fracture that.
+Tendr does not depend on systemd, SCM, or any platform supervisor. The sidecar *is* the supervisor. This is deliberate — agents need uniform semantics across Linux, macOS, and Windows. An external manager dependency would fracture that.
 
 ### What we steal from each platform
 
-| Platform feature | What it does well | What Tender takes |
+| Platform feature | What it does well | What Tendr takes |
 |-----------------|-------------------|-------------------|
 | **systemd** (Linux) | Readiness notification (sd_notify), exit classification, cgroup tree kill, RuntimeMaxSec, restart policies | Readiness handshake, exit taxonomy, timeout as first-class, restart policy contract |
 | **Job Objects** (Windows) | Process tree containment, kill-all-descendants, accounting | **Used directly** — child spawned inside Job Object. This is the Windows implementation, not inspiration. |
@@ -959,12 +959,12 @@ Tender does not depend on systemd, SCM, or any platform supervisor. The sidecar 
 | **systemd as backend** | Linux-only. Not available in containers, minimal distros, WSL, CI. Agents would need two code paths. |
 | **SCM / Windows Services** | Too heavyweight — designed for persistent system components, not ad-hoc agent processes. Registration requires admin. |
 | **Task Scheduler** | Trigger-based, not supervision. Wrong abstraction. |
-| **Event Log / ETW** | Vendor-specific log sink. Tender's output.log is portable and self-contained. |
+| **Event Log / ETW** | Vendor-specific log sink. Tendr's output.log is portable and self-contained. |
 | **launchd agents/daemons** | plist registration, macOS-only, same portability problem as systemd. |
 
 ### Future: optional systemd backend
 
-A `--backend systemd` flag could map to `systemd-run --user` on Linux hosts where it's available. This would give cgroup tree kill and journal integration for free. But it's Phase 6+ at earliest, and agents would still use the same tender CLI — the backend is an implementation detail, not exposed to callers.
+A `--backend systemd` flag could map to `systemd-run --user` on Linux hosts where it's available. This would give cgroup tree kill and journal integration for free. But it's Phase 6+ at earliest, and agents would still use the same tendr CLI — the backend is an implementation detail, not exposed to callers.
 
 ---
 
@@ -972,6 +972,6 @@ A `--backend systemd` flag could map to `systemd-run --user` on Linux hosts wher
 
 - **Crate name:** `tender-cli` on crates.io (binary name `tender`). The `tender` crate (v0.1.1, Raft lib, dead since 2022) is not a blocker but we avoid collision.
 - **Repo location:** new repo `rmorgans/tender` or keep in atch repo with rename?
-- **atch compatibility:** should tender understand atch session directories for migration, or clean break?
+- **atch compatibility:** should tendr understand atch session directories for migration, or clean break?
 - **Log rotation:** sessions that run for weeks will accumulate huge logs. Built-in rotation or leave to the user?
 - **Auth for remote:** SSH keys only, or support SSH agent forwarding, certificates, etc.?

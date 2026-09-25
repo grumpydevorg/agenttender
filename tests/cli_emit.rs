@@ -1,15 +1,15 @@
-//! `tender emit` — spec §6 (write surface) and §7 (orphan emitters).
+//! `tendr emit` — spec §6 (write surface) and §7 (orphan emitters).
 
 mod harness;
 
-use harness::{tender, wait_terminal};
+use harness::{tendr, wait_terminal};
 use tempfile::TempDir;
 
 /// Read all events for a session, merged by (ts, writer, seq).
 fn read_events(root: &TempDir, session: &str) -> Vec<serde_json::Value> {
     let events_dir = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/events"));
+        .join(format!(".tendr/sessions/default/{session}/events"));
     let mut segments: Vec<_> = std::fs::read_dir(&events_dir)
         .expect("events dir exists")
         .filter_map(Result::ok)
@@ -38,7 +38,7 @@ fn read_events(root: &TempDir, session: &str) -> Vec<serde_json::Value> {
 
 /// Start a session running `echo hi`, wait for it to finish, return run_id.
 fn finished_session(root: &TempDir, name: &str) -> String {
-    tender(root)
+    tendr(root)
         .args(["start", name, "--", "echo", "hi"])
         .assert()
         .success();
@@ -52,11 +52,11 @@ fn emit_with_env_context_appends_event() {
     let root = TempDir::new().unwrap();
     let run_id = finished_session(&root, "s1");
 
-    tender(&root)
-        .env("TENDER_SESSION", "s1")
-        .env("TENDER_NAMESPACE", "default")
-        .env("TENDER_RUN_ID", &run_id)
-        .env("TENDER_GENERATION", "1")
+    tendr(&root)
+        .env("TENDR_SESSION", "s1")
+        .env("TENDR_NAMESPACE", "default")
+        .env("TENDR_RUN_ID", &run_id)
+        .env("TENDR_GENERATION", "1")
         .args([
             "emit",
             "--kind",
@@ -89,7 +89,7 @@ fn emit_with_explicit_session_resolves_run_id_from_meta() {
     let root = TempDir::new().unwrap();
     let run_id = finished_session(&root, "s1");
 
-    tender(&root)
+    tendr(&root)
         .args([
             "emit",
             "--kind",
@@ -117,7 +117,7 @@ fn emit_bare_session_name_defaults_namespace() {
     let root = TempDir::new().unwrap();
     finished_session(&root, "s1");
 
-    tender(&root)
+    tendr(&root)
         .args(["emit", "--kind", "ci.done", "--session", "s1"])
         .assert()
         .success();
@@ -134,7 +134,7 @@ fn emit_parent_flag_sets_parent_id() {
     finished_session(&root, "s1");
 
     let parent = uuid::Uuid::now_v7().to_string();
-    tender(&root)
+    tendr(&root)
         .args([
             "emit",
             "--kind",
@@ -153,8 +153,8 @@ fn emit_parent_flag_sets_parent_id() {
 }
 
 // --- Slice 3: ambient causality — one chaining rule (plan scope 4) ---
-// block_id ← TENDER_BLOCK_ID; parent_id ← --parent > TENDER_PARENT_EVENT_ID
-// > TENDER_BLOCK_ID. Malformed env warns + is ignored.
+// block_id ← TENDR_BLOCK_ID; parent_id ← --parent > TENDR_PARENT_EVENT_ID
+// > TENDR_BLOCK_ID. Malformed env warns + is ignored.
 
 #[test]
 fn emit_defaults_block_and_parent_from_block_env() {
@@ -162,8 +162,8 @@ fn emit_defaults_block_and_parent_from_block_env() {
     finished_session(&root, "s1");
 
     let block = uuid::Uuid::now_v7().to_string();
-    tender(&root)
-        .env("TENDER_BLOCK_ID", &block)
+    tendr(&root)
+        .env("TENDR_BLOCK_ID", &block)
         .args(["emit", "--kind", "ci.step", "--session", "s1"])
         .assert()
         .success();
@@ -185,9 +185,9 @@ fn emit_parent_event_env_beats_block_for_parent() {
 
     let block = uuid::Uuid::now_v7().to_string();
     let parent_event = uuid::Uuid::now_v7().to_string();
-    tender(&root)
-        .env("TENDER_BLOCK_ID", &block)
-        .env("TENDER_PARENT_EVENT_ID", &parent_event)
+    tendr(&root)
+        .env("TENDR_BLOCK_ID", &block)
+        .env("TENDR_PARENT_EVENT_ID", &parent_event)
         .args(["emit", "--kind", "ci.step", "--session", "s1"])
         .assert()
         .success();
@@ -204,9 +204,9 @@ fn emit_parent_flag_beats_env_chain() {
     finished_session(&root, "s1");
 
     let explicit = uuid::Uuid::now_v7().to_string();
-    tender(&root)
-        .env("TENDER_BLOCK_ID", uuid::Uuid::now_v7().to_string())
-        .env("TENDER_PARENT_EVENT_ID", uuid::Uuid::now_v7().to_string())
+    tendr(&root)
+        .env("TENDR_BLOCK_ID", uuid::Uuid::now_v7().to_string())
+        .env("TENDR_PARENT_EVENT_ID", uuid::Uuid::now_v7().to_string())
         .args([
             "emit",
             "--kind",
@@ -229,12 +229,12 @@ fn emit_malformed_env_chain_warns_and_is_ignored() {
     let root = TempDir::new().unwrap();
     finished_session(&root, "s1");
 
-    tender(&root)
-        .env("TENDER_BLOCK_ID", "not-a-uuid")
+    tendr(&root)
+        .env("TENDR_BLOCK_ID", "not-a-uuid")
         .args(["emit", "--kind", "ci.step", "--session", "s1"])
         .assert()
         .success()
-        .stderr(predicates::str::contains("TENDER_BLOCK_ID"));
+        .stderr(predicates::str::contains("TENDR_BLOCK_ID"));
 
     let events = read_events(&root, "s1");
     let event = events.iter().find(|e| e["kind"] == "ci.step").unwrap();
@@ -252,14 +252,14 @@ fn emit_reserved_kind_exits_6() {
     let root = TempDir::new().unwrap();
     finished_session(&root, "s1");
 
-    for kind in ["run.custom", "tender.x", "exec.thing"] {
-        tender(&root)
+    for kind in ["run.custom", "tendr.x", "exec.thing"] {
+        tendr(&root)
             .args(["emit", "--kind", kind, "--session", "s1"])
             .assert()
             .code(6);
     }
     // hook. is deliberately unreserved.
-    tender(&root)
+    tendr(&root)
         .args(["emit", "--kind", "hook.custom", "--session", "s1"])
         .assert()
         .success();
@@ -270,7 +270,7 @@ fn emit_invalid_kind_grammar_exits_6() {
     let root = TempDir::new().unwrap();
     finished_session(&root, "s1");
 
-    tender(&root)
+    tendr(&root)
         .args(["emit", "--kind", "nodot", "--session", "s1"])
         .assert()
         .code(6);
@@ -281,13 +281,13 @@ fn emit_reserved_source_exits_6() {
     let root = TempDir::new().unwrap();
     finished_session(&root, "s1");
 
-    tender(&root)
+    tendr(&root)
         .args([
             "emit",
             "--kind",
             "ci.done",
             "--source",
-            "tender.fake",
+            "tendr.fake",
             "--session",
             "s1",
         ])
@@ -298,8 +298,8 @@ fn emit_reserved_source_exits_6() {
 #[test]
 fn emit_without_context_exits_3() {
     let root = TempDir::new().unwrap();
-    tender(&root)
-        .env_remove("TENDER_SESSION")
+    tendr(&root)
+        .env_remove("TENDR_SESSION")
         .args(["emit", "--kind", "ci.done"])
         .assert()
         .code(3);
@@ -308,7 +308,7 @@ fn emit_without_context_exits_3() {
 #[test]
 fn emit_missing_session_exits_5() {
     let root = TempDir::new().unwrap();
-    tender(&root)
+    tendr(&root)
         .args(["emit", "--kind", "ci.done", "--session", "nope"])
         .assert()
         .code(5);
@@ -319,7 +319,7 @@ fn emit_non_object_data_exits_2() {
     let root = TempDir::new().unwrap();
     finished_session(&root, "s1");
 
-    tender(&root)
+    tendr(&root)
         .args([
             "emit",
             "--kind",
@@ -331,7 +331,7 @@ fn emit_non_object_data_exits_2() {
         ])
         .assert()
         .code(2);
-    tender(&root)
+    tendr(&root)
         .args([
             "emit",
             "--kind",
@@ -350,7 +350,7 @@ fn emit_invalid_parent_exits_2() {
     let root = TempDir::new().unwrap();
     finished_session(&root, "s1");
 
-    tender(&root)
+    tendr(&root)
         .args([
             "emit",
             "--kind",
@@ -370,7 +370,7 @@ fn emit_invalid_parent_exits_2() {
 fn emit_best_effort_swallows_all_failures() {
     let root = TempDir::new().unwrap();
 
-    tender(&root)
+    tendr(&root)
         .args([
             "emit",
             "--kind",
@@ -381,7 +381,7 @@ fn emit_best_effort_swallows_all_failures() {
         ])
         .assert()
         .success();
-    tender(&root)
+    tendr(&root)
         .args([
             "emit",
             "--kind",
@@ -392,8 +392,8 @@ fn emit_best_effort_swallows_all_failures() {
         ])
         .assert()
         .success();
-    tender(&root)
-        .env_remove("TENDER_SESSION")
+    tendr(&root)
+        .env_remove("TENDR_SESSION")
         .args(["emit", "--kind", "ci.done", "--best-effort"])
         .assert()
         .success();
@@ -407,16 +407,16 @@ fn emit_from_pruned_session_lands_in_lost_found() {
     let run_id = uuid::Uuid::now_v7().to_string();
 
     // Env context names a session whose dir no longer exists (pruned mid-run).
-    tender(&root)
-        .env("TENDER_SESSION", "gone")
-        .env("TENDER_NAMESPACE", "default")
-        .env("TENDER_RUN_ID", &run_id)
-        .env("TENDER_GENERATION", "2")
+    tendr(&root)
+        .env("TENDR_SESSION", "gone")
+        .env("TENDR_NAMESPACE", "default")
+        .env("TENDR_RUN_ID", &run_id)
+        .env("TENDR_GENERATION", "2")
         .args(["emit", "--kind", "hook.post_tool_use", "--best-effort"])
         .assert()
         .success();
 
-    let lf = root.path().join(".tender/lost+found/events.jsonl");
+    let lf = root.path().join(".tendr/lost+found/events.jsonl");
     let content = std::fs::read_to_string(&lf).expect("lost+found log exists");
     let event: serde_json::Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
     assert_eq!(event["kind"], "hook.post_tool_use");

@@ -3,12 +3,12 @@ use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tender::events::{POLL_INTERVAL, merge_key, read_segment_records};
-use tender::log::LogLine;
-use tender::model::event::Event;
-use tender::model::ids::Namespace;
-use tender::model::state::{ExitReason, RunStatus};
-use tender::session::{self, SessionRoot};
+use tendr::events::{POLL_INTERVAL, merge_key, read_segment_records};
+use tendr::log::LogLine;
+use tendr::model::event::Event;
+use tendr::model::ids::Namespace;
+use tendr::model::state::{ExitReason, RunStatus};
+use tendr::session::{self, SessionRoot};
 
 /// Per-session polling state.
 struct SessionWatcher {
@@ -79,7 +79,7 @@ fn run_event_data(status: &RunStatus) -> serde_json::Value {
             serde_json::json!({"status": "SidecarLost"})
         }
         RunStatus::DependencyFailed { reason, .. } => {
-            use tender::model::dep_fail::DepFailReason;
+            use tendr::model::dep_fail::DepFailReason;
             let reason_str = match reason {
                 DepFailReason::Failed => "Failed",
                 DepFailReason::TimedOut => "TimedOut",
@@ -286,7 +286,7 @@ pub fn cmd_watch(
                         &watcher.namespace,
                         &watcher.session,
                         &watcher.run_id,
-                        "tender.sidecar",
+                        "tendr.sidecar",
                         "run",
                         run_event_name(meta.status()),
                         run_event_data(meta.status()),
@@ -332,7 +332,7 @@ pub fn cmd_watch(
                                 &watcher.namespace,
                                 &watcher.session,
                                 &watcher.run_id,
-                                "tender.sidecar",
+                                "tendr.sidecar",
                                 "run",
                                 run_event_name(meta.status()),
                                 run_event_data(meta.status()),
@@ -358,7 +358,7 @@ pub fn cmd_watch(
                         &watcher.namespace,
                         &watcher.session,
                         &watcher.run_id,
-                        "tender.sidecar",
+                        "tendr.sidecar",
                         "run",
                         run_event_name(meta.status()),
                         run_event_data(meta.status()),
@@ -414,7 +414,7 @@ pub fn cmd_watch(
                                                         &watcher.namespace,
                                                         &watcher.session,
                                                         &watcher.run_id,
-                                                        "tender.sidecar",
+                                                        "tendr.sidecar",
                                                         "log",
                                                         log_name,
                                                         serde_json::json!({"content": parsed.format_raw()}),
@@ -479,7 +479,7 @@ pub fn cmd_watch(
                 if stdout.flush().is_err() {
                     return Ok(());
                 }
-                tender::ready_file::create_ready_file(ready_path).map_err(|e| {
+                tendr::ready_file::create_ready_file(ready_path).map_err(|e| {
                     anyhow::anyhow!("failed to create ready-file {}: {e}", ready_path.display())
                 })?;
             }

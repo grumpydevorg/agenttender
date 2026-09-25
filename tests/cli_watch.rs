@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::tender;
+use harness::tendr;
 use std::sync::Mutex;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -11,7 +11,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 fn wait_terminal_ns(root: &TempDir, namespace: &str, session: &str) -> serde_json::Value {
     let path = root
         .path()
-        .join(format!(".tender/sessions/{namespace}/{session}/meta.json"));
+        .join(format!(".tendr/sessions/{namespace}/{session}/meta.json"));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         if let Ok(content) = std::fs::read_to_string(&path) {
@@ -40,7 +40,7 @@ fn watch_emits_initial_state_snapshot() {
     let root = TempDir::new().unwrap();
 
     // Start a session and let it finish.
-    tender(&root)
+    tendr(&root)
         .args(["start", "snap-echo", "--", "echo", "hi"])
         .output()
         .unwrap();
@@ -56,7 +56,7 @@ fn watch_emits_initial_state_snapshot() {
 
     assert!(!records.is_empty(), "watch should emit at least one line");
     for event in &records {
-        assert_eq!(event["source"], "tender.sidecar");
+        assert_eq!(event["source"], "tendr.sidecar");
         assert_eq!(event["kind"], "run");
         assert!(
             event["ts"].is_f64() || event["ts"].is_u64(),
@@ -85,7 +85,7 @@ fn watch_emits_log_events() {
     let root = TempDir::new().unwrap();
 
     // Start a session that produces output.
-    tender(&root)
+    tendr(&root)
         .args(["start", "log-echo", "--", "echo", "hello-watch"])
         .output()
         .unwrap();
@@ -116,7 +116,7 @@ fn watch_filters_by_namespace() {
     let root = TempDir::new().unwrap();
 
     // Create sessions in two namespaces.
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "alpha",
@@ -128,7 +128,7 @@ fn watch_filters_by_namespace() {
         ])
         .output()
         .unwrap();
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "beta",
@@ -167,7 +167,7 @@ fn watch_from_now_skips_existing() {
     let root = TempDir::new().unwrap();
 
     // Start and complete a session before running watch.
-    tender(&root)
+    tendr(&root)
         .args(["start", "old-session", "--", "echo", "old"])
         .output()
         .unwrap();
@@ -178,7 +178,7 @@ fn watch_from_now_skips_existing() {
     // A sentinel started strictly after readiness: once its run event surfaces,
     // the stream has advanced past any (incorrect) emission for the pre-existing
     // session, so an absence assertion is now sound rather than a race.
-    tender(&root)
+    tendr(&root)
         .args(["start", "sentinel", "--", "echo", "sentinel-out"])
         .output()
         .unwrap();
@@ -213,7 +213,7 @@ fn watch_both_events_and_logs_by_default() {
     let root = TempDir::new().unwrap();
 
     // Start a session that produces output.
-    tender(&root)
+    tendr(&root)
         .args(["start", "both-echo", "--", "echo", "dual-output"])
         .output()
         .unwrap();
@@ -257,7 +257,7 @@ fn watch_from_now_surfaces_new_session() {
 
     let follower = harness::ReadyFollower::spawn(&root, "watch", &["--from-now"]);
     // Baseline established: a session started now is not skipped by --from-now.
-    tender(&root)
+    tendr(&root)
         .args(["start", "after-watch", "--", "echo", "post-watch-output"])
         .output()
         .unwrap();
@@ -276,7 +276,7 @@ fn watch_detects_replace_and_resets_log_offset() {
     let root = TempDir::new().unwrap();
 
     // Start a session that produces output.
-    tender(&root)
+    tendr(&root)
         .args(["start", "replace-watch", "--", "echo", "first-run-output"])
         .output()
         .unwrap();
@@ -286,7 +286,7 @@ fn watch_detects_replace_and_resets_log_offset() {
     let follower = harness::ReadyFollower::spawn(&root, "watch", &[]);
 
     // Replace with a new run (new run_id) that produces different output.
-    tender(&root)
+    tendr(&root)
         .args([
             "start",
             "replace-watch",

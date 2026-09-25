@@ -14,18 +14,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 #[allow(unused_imports)]
 use tempfile::TempDir;
-use tender::model::ids::{Namespace, SessionName};
-use tender::model::meta::Meta;
-use tender::model::state::RunStatus;
-use tender::session::{self, LockGuard, SessionRoot};
+use tendr::model::ids::{Namespace, SessionName};
+use tendr::model::meta::Meta;
+use tendr::model::state::RunStatus;
+use tendr::session::{self, LockGuard, SessionRoot};
 
-/// Hang-detector deadline for a single `tender` CLI invocation in tests.
+/// Hang-detector deadline for a single `tendr` CLI invocation in tests.
 ///
 /// This is NOT a performance assertion. A normal detached start completes in
 /// ~20 ms (warm) to ~570 ms (cold); this bound exists only to fail a genuine
 /// hang (deadlock) rather than let it stall CI forever. It is deliberately
 /// generous: the old hard-coded 5 s per-command deadline false-fired on a
-/// loaded Windows CI runner — `assert_cmd` killed the still-starting `tender`
+/// loaded Windows CI runner — `assert_cmd` killed the still-starting `tendr`
 /// process, which surfaced as exit 1 with empty output. 30 s keeps substantial
 /// headroom over observed individual starts while still surfacing a true hang
 /// promptly. Fixed and shared — raise this one value only if a real environment
@@ -75,10 +75,10 @@ pub fn assert_within(cmd: &mut Command, deadline: Duration) -> Assert {
         .assert()
 }
 
-/// Create a `tender` command rooted in a temp HOME.
+/// Create a `tendr` command rooted in a temp HOME.
 #[allow(dead_code)]
-pub fn tender(root: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("tender").expect("tender binary not found");
+pub fn tendr(root: &TempDir) -> Command {
+    let mut cmd = Command::cargo_bin("tendr").expect("tendr binary not found");
     cmd.env("HOME", root.path());
     // On Windows, ensure Git-for-Windows coreutils (echo, sleep, true, cat)
     // are on PATH so tests can spawn Unix-style commands.
@@ -117,8 +117,8 @@ pub fn touch_cmd(path: &Path) -> String {
     format!("{} touch {quoted}", test_callback_bin_quoted())
 }
 
-/// Return an on-exit command string that writes TENDER_SESSION, TENDER_NAMESPACE,
-/// and TENDER_EXIT_REASON to the given file.
+/// Return an on-exit command string that writes TENDR_SESSION, TENDR_NAMESPACE,
+/// and TENDR_EXIT_REASON to the given file.
 /// Parsed by `shell_words::split` in the sidecar, then executed directly — no shell involved.
 #[allow(dead_code)]
 pub fn echo_env_cmd(path: &Path) -> String {
@@ -132,7 +132,7 @@ pub fn echo_env_cmd(path: &Path) -> String {
 pub fn read_events(root: &TempDir, session: &str) -> Vec<serde_json::Value> {
     let events_dir = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/events"));
+        .join(format!(".tendr/sessions/default/{session}/events"));
     let mut segments: Vec<_> = std::fs::read_dir(&events_dir)
         .expect("events dir exists")
         .filter_map(Result::ok)
@@ -183,7 +183,7 @@ pub fn wait_event_kind(root: &TempDir, session: &str, kind: &str) -> serde_json:
 pub fn wait_running(root: &TempDir, session: &str) {
     let path = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/meta.json"));
+        .join(format!(".tendr/sessions/default/{session}/meta.json"));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if let Ok(content) = std::fs::read_to_string(&path) {
@@ -205,7 +205,7 @@ pub fn wait_running(root: &TempDir, session: &str) {
 pub fn wait_terminal(root: &TempDir, session: &str) -> serde_json::Value {
     let path = root
         .path()
-        .join(format!(".tender/sessions/default/{session}/meta.json"));
+        .join(format!(".tendr/sessions/default/{session}/meta.json"));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         if let Ok(content) = std::fs::read_to_string(&path) {
@@ -242,7 +242,7 @@ pub struct QuiescentTerminal {
 /// condition handshake acquires the lock instead of relying on a timing gap.
 #[allow(dead_code)]
 pub fn wait_terminal_quiescent(root: &TempDir, session_name: &str) -> QuiescentTerminal {
-    let session_root = SessionRoot::new(root.path().join(".tender/sessions"));
+    let session_root = SessionRoot::new(root.path().join(".tendr/sessions"));
     let namespace = Namespace::new("default").expect("default namespace is valid");
     let session_name = SessionName::new(session_name).expect("test session name is valid");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -293,7 +293,7 @@ pub struct OrphanedRunning {
 /// point, not a transient state worth polling further.
 #[allow(dead_code)]
 pub fn wait_orphaned_running(root: &TempDir, session_name: &str) -> OrphanedRunning {
-    let session_root = SessionRoot::new(root.path().join(".tender/sessions"));
+    let session_root = SessionRoot::new(root.path().join(".tendr/sessions"));
     let namespace = Namespace::new("default").expect("default namespace is valid");
     let session_name = SessionName::new(session_name).expect("test session name is valid");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -340,7 +340,7 @@ pub fn wait_orphaned_running(root: &TempDir, session_name: &str) -> OrphanedRunn
 
 /// Gate a test on the external `duckdb` CLI. Returns `true` if the test should
 /// proceed. When duckdb is absent:
-///   - panics if `TENDER_REQUIRE_DUCKDB_TESTS` is set (CI installs duckdb, so a
+///   - panics if `TENDR_REQUIRE_DUCKDB_TESTS` is set (CI installs duckdb, so a
 ///     broken install must fail loudly rather than silently pass as green);
 ///   - otherwise prints a skip notice and returns `false` so the caller returns
 ///     early (friendly local runs without duckdb installed).
@@ -352,13 +352,13 @@ pub fn duckdb_or_skip() -> bool {
         .map(|o| o.status.success())
         .unwrap_or(false);
     if !available {
-        if std::env::var_os("TENDER_REQUIRE_DUCKDB_TESTS").is_some() {
+        if std::env::var_os("TENDR_REQUIRE_DUCKDB_TESTS").is_some() {
             panic!(
-                "duckdb not found on PATH but TENDER_REQUIRE_DUCKDB_TESTS is set \
+                "duckdb not found on PATH but TENDR_REQUIRE_DUCKDB_TESTS is set \
                  -- CI must install the DuckDB CLI"
             );
         }
-        eprintln!("skipped: duckdb not on PATH (set TENDER_REQUIRE_DUCKDB_TESTS to enforce)");
+        eprintln!("skipped: duckdb not on PATH (set TENDR_REQUIRE_DUCKDB_TESTS to enforce)");
     }
     available
 }
@@ -384,8 +384,8 @@ pub fn wait_ready_file(path: &Path, deadline: Duration) {
     }
 }
 
-/// An opaque handle to a running follower (`tender events --follow` or
-/// `tender watch`) whose initial baseline is *proven* established: [`spawn`]
+/// An opaque handle to a running follower (`tendr events --follow` or
+/// `tendr watch`) whose initial baseline is *proven* established: [`spawn`]
 /// returns only after the follower publishes its `--ready-file`. Holding one
 /// means "safe to perform live mutations now."
 ///
@@ -406,15 +406,15 @@ pub struct ReadyFollower {
 
 #[allow(dead_code)]
 impl ReadyFollower {
-    /// Spawn `tender <subcommand> <args...> --ready-file <temp>` and block until
+    /// Spawn `tendr <subcommand> <args...> --ready-file <temp>` and block until
     /// the follower signals readiness. Panics — after killing/reaping the child
     /// — if the follower exits before readiness or the 10 s barrier elapses,
     /// surfacing the follower's captured stderr rather than a bare timeout.
     pub fn spawn(root: &TempDir, subcommand: &str, args: &[&str]) -> Self {
-        let bin = assert_cmd::cargo::cargo_bin("tender");
+        let bin = assert_cmd::cargo::cargo_bin("tendr");
         let seq = FOLLOWER_SEQ.fetch_add(1, Ordering::Relaxed);
         let ready_path = root.path().join(format!("follower-ready-{seq}"));
-        let label = format!("tender {subcommand} {}", args.join(" "));
+        let label = format!("tendr {subcommand} {}", args.join(" "));
 
         let mut child = std::process::Command::new(bin)
             .arg(subcommand)

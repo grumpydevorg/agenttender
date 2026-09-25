@@ -23,15 +23,15 @@ links:
 > **Scope note:** the optional `boundary_kind` / `boundary_label` query
 > convenience columns remain the documented *later nicety* (see "Querying by
 > boundary" below) — **not** part of this slice. Strong-v1 boundary analytics
-> is the snapshot / `run_id` join, which needs no `tender query` change.
+> is the snapshot / `run_id` join, which needs no `tendr query` change.
 
 Add an optional boundary descriptor to sessions so `status`, `watch`, and a future `graph` command can show where sessions run without managing those environments.
 
 ## Why
 
-Tender sessions can run on the local host, inside Docker containers, on remote hosts via `--host`, or inside VMs. Today nothing in `meta.json` records which. A user running `tender list` across namespaces has no way to distinguish a local session from one that lives inside a container on a remote box.
+Tendr sessions can run on the local host, inside Docker containers, on remote hosts via `--host`, or inside VMs. Today nothing in `meta.json` records which. A user running `tendr list` across namespaces has no way to distinguish a local session from one that lives inside a container on a remote box.
 
-This is a legibility problem, not a control problem. Tender should describe boundaries, not manage them.
+This is a legibility problem, not a control problem. Tendr should describe boundaries, not manage them.
 
 ## Authority vs. history
 
@@ -39,17 +39,17 @@ This is a legibility problem, not a control problem. Tender should describe boun
 > events carry a denormalized immutable snapshot for historical analytics. The
 > event snapshot is derived from launch metadata, not independently edited.
 
-This keeps Tender's existing split intact — `meta.json` is the current-state
+This keeps Tendr's existing split intact — `meta.json` is the current-state
 authority, `events/` is the history authority — and gives each question exactly
 one owner:
 
 | Question | Owner |
 |---|---|
-| What boundary was this session launched with? What should `status` show? How should old/new `meta.json` deserialize? What did the user declare (without Tender managing Docker/k8s)? | **`LaunchSpec.boundary` / `meta.json`** — current-state authority |
+| What boundary was this session launched with? What should `status` show? How should old/new `meta.json` deserialize? What did the user declare (without Tendr managing Docker/k8s)? | **`LaunchSpec.boundary` / `meta.json`** — current-state authority |
 | Where was this run when it happened? How do I query historical failures by host/container? What boundary was true for a past run, independent of later `meta.json` edits? | **The lifecycle-event snapshot** in `events/` — history authority, within retained event history |
 
 Analytics must read the boundary snapshot that was true when the run was
-recorded. In particular, **`tender query` must not join *current* `meta.json` to
+recorded. In particular, **`tendr query` must not join *current* `meta.json` to
 *old* events as the default** — that would lie historically, because a session
 can be replaced, moved, or re-declared with a different boundary after the fact.
 
@@ -95,7 +95,7 @@ pub struct LaunchSpec {
 }
 ```
 
-If Tender later infers or enriches boundary information (e.g., detecting it's running inside a container), that observed value can be mirrored into `Meta` with appropriate provenance. For now, the boundary is user-supplied and declared.
+If Tendr later infers or enriches boundary information (e.g., detecting it's running inside a container), that observed value can be mirrored into `Meta` with appropriate provenance. For now, the boundary is user-supplied and declared.
 
 ### The history snapshot
 
@@ -120,17 +120,17 @@ across current `--replace` / `prune` deletion.
 ### CLI surface
 
 ```bash
-tender start job --boundary host:data-box -- make test
-tender start dev --boundary container:my-image:latest --boundary-parent host:data-box -- bash
+tendr start job --boundary host:data-box -- make test
+tendr start dev --boundary container:my-image:latest --boundary-parent host:data-box -- bash
 ```
 
 The `--boundary` flag takes `kind:label`. Optional `--boundary-parent` adds ancestry entries. Both are omitted by default — existing sessions work unchanged.
 
 ### Surfaced in
 
-- `tender status` — shows boundary context if present
-- `tender list` — optionally group/filter by boundary
-- future `tender graph` — render sessions within their boundaries
+- `tendr status` — shows boundary context if present
+- `tendr list` — optionally group/filter by boundary
+- future `tendr graph` — render sessions within their boundaries
 
 ### Querying by boundary (analytics)
 
@@ -139,8 +139,8 @@ join other events to their run's lifecycle event on `run_id`:
 
 - **Strong v1** — query by boundary via the lifecycle-event snapshot, or join
   other events on `run_id` to pick up `data.boundary`. No change to
-  `tender query` is required; the snapshot is queryable the moment it is emitted.
-- **Later nicety** — `tender query` may project convenience columns
+  `tendr query` is required; the snapshot is queryable the moment it is emitted.
+- **Later nicety** — `tendr query` may project convenience columns
   (`boundary_kind`, `boundary_label`) into the `events` view via a query helper,
   *if* the join pattern proves common enough to earn it. Not v1.
 
@@ -166,7 +166,7 @@ join other events to their run's lifecycle event on `run_id`:
 
 - `LaunchSpec` carries an optional `BoundaryContext`
 - boundary metadata round-trips through `meta.json`
-- `tender status` includes boundary info when present
+- `tendr status` includes boundary info when present
 - old `meta.json` files without boundary deserialize cleanly (Option::None)
 - when a session declares a boundary, its `run.starting` / `run.started`
   lifecycle events carry an immutable `data.boundary` snapshot derived from

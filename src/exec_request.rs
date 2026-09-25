@@ -40,7 +40,7 @@ pub struct ExecRequestFrame {
 pub enum FrameError {
     #[error("invalid exec frame: {0}")]
     Parse(#[from] serde_json::Error),
-    #[error("unsupported exec frame version {0} (this tender supports {EXEC_FRAME_VERSION})")]
+    #[error("unsupported exec frame version {0} (this tendr supports {EXEC_FRAME_VERSION})")]
     Version(u32),
     /// A structurally-decoded frame that fails a semantic invariant
     /// (bad session name, empty cmd) — the frame path is a public
