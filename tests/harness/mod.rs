@@ -159,23 +159,91 @@ pub fn read_events(root: &TempDir, session: &str) -> Vec<serde_json::Value> {
     events
 }
 
+/// One probe result: ready with a value, or not-yet with a cheap description of
+/// the current state (retained only for the timeout message — keep it a summary,
+/// never a full buffer dump).
+#[allow(dead_code)]
+pub enum Observation<T> {
+    Ready(T),
+    Pending(String),
+}
+
+/// The failure of a [`poll_until`] wait: how long it waited and the last state
+/// it observed. One uniform diagnostic across every wait.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct WaitTimeout {
+    pub elapsed: Duration,
+    pub last: String,
+}
+
+impl std::fmt::Display for WaitTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "timed out after {:?}; last: {}", self.elapsed, self.last)
+    }
+}
+
+/// Probe a condition immediately, then every `interval`, until it is `Ready` or
+/// the deadline passes. The single shared polling primitive.
+///
+/// - Probes immediately — no initial sleep (an already-true condition returns at
+///   once).
+/// - `Instant`-based deadline computed once; the same `now` drives the deadline
+///   check and the remaining-time calculation.
+/// - The final wait is clamped to the remaining time, so a wait never overshoots
+///   its deadline.
+/// - Returns `Result` so callers can run cleanup before asserting; the
+///   `WaitTimeout` records the last observed state and the elapsed time.
+#[allow(dead_code)]
+pub fn poll_until<T>(
+    timeout: Duration,
+    interval: Duration,
+    mut probe: impl FnMut() -> Observation<T>,
+) -> Result<T, WaitTimeout> {
+    let start = Instant::now();
+    let deadline = start + timeout;
+    loop {
+        match probe() {
+            Observation::Ready(value) => return Ok(value),
+            Observation::Pending(last) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(WaitTimeout {
+                        elapsed: now - start,
+                        last,
+                    });
+                }
+                let remaining = deadline.saturating_duration_since(now);
+                std::thread::sleep(interval.min(remaining));
+            }
+        }
+    }
+}
+
 /// Wait for a session event of `kind`, returning the observed record.
 #[allow(dead_code)]
 pub fn wait_event_kind(root: &TempDir, session: &str, kind: &str) -> serde_json::Value {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Some(event) = read_events(root, session)
+    poll_until(
+        Duration::from_secs(10),
+        Duration::from_millis(10),
+        || match read_events(root, session)
             .into_iter()
             .find(|event| event["kind"] == kind)
         {
-            return event;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for event kind {kind} in {session}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+            Some(event) => Observation::Ready(event),
+            None => Observation::Pending(format!("no event kind {kind} in {session} yet")),
+        },
+    )
+    .unwrap_or_else(|e| panic!("waiting for event kind {kind} in {session}: {e}"))
+}
+
+/// Read the `status` field of a session's meta.json, if it is readable.
+#[allow(dead_code)]
+fn meta_status(session_meta: &Path) -> Option<String> {
+    std::fs::read_to_string(session_meta)
+        .ok()
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        .and_then(|m| m["status"].as_str().map(str::to_owned))
 }
 
 /// Wait for meta.json to show Running state on disk.
@@ -184,20 +252,15 @@ pub fn wait_running(root: &TempDir, session: &str) {
     let path = root
         .path()
         .join(format!(".tendr/sessions/default/{session}/meta.json"));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) {
-                if meta["status"].as_str() == Some("Running") {
-                    return;
-                }
-            }
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("timed out waiting for Running state in {session}");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    poll_until(
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        || match meta_status(&path).as_deref() {
+            Some("Running") => Observation::Ready(()),
+            other => Observation::Pending(format!("status={}", other.unwrap_or("<unreadable>"))),
+        },
+    )
+    .unwrap_or_else(|e| panic!("waiting for Running state in {session}: {e}"))
 }
 
 /// Wait for meta.json to reach any terminal state on disk.
@@ -206,21 +269,18 @@ pub fn wait_terminal(root: &TempDir, session: &str) -> serde_json::Value {
     let path = root
         .path()
         .join(format!(".tendr/sessions/default/{session}/meta.json"));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) {
-                let status = meta["status"].as_str().unwrap_or("");
-                if status != "Starting" && status != "Running" {
-                    return meta;
-                }
+    poll_until(Duration::from_secs(10), Duration::from_millis(50), || {
+        let meta = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
+        match meta.as_ref().and_then(|m| m["status"].as_str()) {
+            Some(status) if status != "Starting" && status != "Running" => {
+                Observation::Ready(meta.unwrap())
             }
+            other => Observation::Pending(format!("status={}", other.unwrap_or("<unreadable>"))),
         }
-        if std::time::Instant::now() > deadline {
-            panic!("timed out waiting for terminal state in {session}");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    })
+    .unwrap_or_else(|e| panic!("waiting for terminal state in {session}: {e}"))
 }
 
 /// Proof that a session is terminal and its sidecar has released ownership.
@@ -245,25 +305,22 @@ pub fn wait_terminal_quiescent(root: &TempDir, session_name: &str) -> QuiescentT
     let session_root = SessionRoot::new(root.path().join(".tendr/sessions"));
     let namespace = Namespace::new("default").expect("default namespace is valid");
     let session_name = SessionName::new(session_name).expect("test session name is valid");
-    let deadline = Instant::now() + Duration::from_secs(10);
 
-    loop {
+    poll_until(Duration::from_secs(10), Duration::from_millis(10), || {
         if let Ok(Some(session_dir)) = session::open(&session_root, &namespace, &session_name) {
             if session::read_meta(&session_dir).is_ok_and(|meta| meta.status().is_terminal()) {
                 match LockGuard::try_acquire(&session_dir) {
-                    Ok(lock) => return QuiescentTerminal { _lock: lock },
+                    Ok(lock) => return Observation::Ready(QuiescentTerminal { _lock: lock }),
                     Err(session::SessionError::Locked(_)) => {}
                     Err(error) => panic!("failed to acquire terminal session lock: {error}"),
                 }
             }
         }
-
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for terminal session {session_name} to become quiescent"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+        Observation::Pending(format!("{session_name} not yet terminal + quiescent"))
+    })
+    .unwrap_or_else(|e| {
+        panic!("waiting for terminal session {session_name} to become quiescent: {e}")
+    })
 }
 
 /// Proof that a session is the residue of an intentionally-crashed sidecar:
@@ -296,9 +353,8 @@ pub fn wait_orphaned_running(root: &TempDir, session_name: &str) -> OrphanedRunn
     let session_root = SessionRoot::new(root.path().join(".tendr/sessions"));
     let namespace = Namespace::new("default").expect("default namespace is valid");
     let session_name = SessionName::new(session_name).expect("test session name is valid");
-    let deadline = Instant::now() + Duration::from_secs(10);
 
-    loop {
+    poll_until(Duration::from_secs(10), Duration::from_millis(10), || {
         // `start` has returned, so the session directory and meta must exist:
         // anything else is a defect, not a state to wait out.
         let session_dir = match session::open(&session_root, &namespace, &session_name) {
@@ -320,22 +376,21 @@ pub fn wait_orphaned_running(root: &TempDir, session_name: &str) -> OrphanedRunn
                      Running — the injected crash did not leave a Running + Unlocked orphan",
                     meta.status()
                 );
-                return OrphanedRunning {
+                Observation::Ready(OrphanedRunning {
                     _meta: meta,
                     _lock: lock,
-                };
+                })
             }
             // The only retryable condition: the sidecar has not exited yet.
-            Err(session::SessionError::Locked(_)) => {}
+            Err(session::SessionError::Locked(_)) => {
+                Observation::Pending(format!("{session_name} still locked by the sidecar"))
+            }
             Err(error) => panic!("failed to acquire crashed session lock: {error}"),
         }
-
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for the crashed sidecar to release the lock on {session_name}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    })
+    .unwrap_or_else(|e| {
+        panic!("waiting for the crashed sidecar to release the lock on {session_name}: {e}")
+    })
 }
 
 /// Gate a test on the external `duckdb` CLI. Returns `true` if the test should
@@ -373,15 +428,14 @@ static FOLLOWER_SEQ: AtomicU64 = AtomicU64::new(0);
 /// post-spawn sleep.
 #[allow(dead_code)]
 pub fn wait_ready_file(path: &Path, deadline: Duration) {
-    let end = Instant::now() + deadline;
-    while !path.exists() {
-        assert!(
-            Instant::now() < end,
-            "timed out waiting for ready-file {}",
-            path.display()
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    poll_until(deadline, Duration::from_millis(10), || {
+        if path.exists() {
+            Observation::Ready(())
+        } else {
+            Observation::Pending(format!("ready-file {} absent", path.display()))
+        }
+    })
+    .unwrap_or_else(|e| panic!("waiting for ready-file {}: {e}", path.display()))
 }
 
 /// An opaque handle to a running follower (`tendr events --follow` or
