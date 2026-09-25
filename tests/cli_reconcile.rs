@@ -65,9 +65,16 @@ fn status_reconciles_crashed_sidecar() {
         serde_json::from_slice(&output.stdout).expect("output is not JSON");
     assert_eq!(result["status"], "SidecarLost");
 
-    if let Some(child_pid) = result["child"]["pid"].as_u64() {
-        unsafe { libc::kill(child_pid as i32, libc::SIGKILL) };
-    }
+    // Reconciliation killed the orphan it found, and recorded doing so.
+    assert!(
+        result["transition_provenance"]["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e == "orphan_killed"),
+        "{result}"
+    );
+    wait_pid_dead(result["child"]["pid"].as_u64().expect("child pid") as i32);
 }
 
 #[test]
@@ -109,20 +116,13 @@ fn wait_reconciles_crashed_sidecar() {
     unsafe { libc::kill(sc_pid, libc::SIGKILL) };
     wait_pid_dead(sc_pid);
 
-    tender(&root)
+    let output = tender(&root)
         .args(["wait", "--timeout", "5", "wait-crashed"])
         .assert()
         .code(3)
         .stdout(predicate::str::contains(r#""status": "SidecarLost"#));
 
-    // Clean up orphaned child
-    let output = tender(&root)
-        .args(["status", "wait-crashed"])
-        .output()
-        .unwrap();
-    if let Ok(result) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
-        if let Some(child_pid) = result["child"]["pid"].as_u64() {
-            unsafe { libc::kill(child_pid as i32, libc::SIGKILL) };
-        }
-    }
+    // `wait` reconciles too: the orphan it found is dead.
+    let results: serde_json::Value = serde_json::from_slice(&output.get_output().stdout).unwrap();
+    wait_pid_dead(results[0]["child"]["pid"].as_u64().expect("child pid") as i32);
 }

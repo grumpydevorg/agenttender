@@ -359,6 +359,62 @@ Tender owns the **process**; [Boo](https://github.com/coder/boo) owns the
 durable, accountable process while Boo drives and reads the live TUI. Tender does
 rendered-screen reads for nobody and deliberately never will.
 
+## Tender inside herdr
+
+[herdr](https://herdr.dev) owns the **agent pane**: it hosts interactive
+agents and shows whether each is working, blocked or idle, from the agent's own
+lifecycle hooks. Tender owns the **processes those agents start**. The agent
+runs in a herdr pane; its builds, REPLs and remote jobs run under
+`tender start`/`exec`, where it gets exit codes rather than a screen to scrape.
+
+Measured together on macOS on 2026-09-25 (herdr 0.9.1, tender 0.2.1, oh-my-pi
+18.3.0):
+
+- **Tender outlives the pane and the server.** A session started from a pane
+  kept running after `herdr pane close`, finished `ExitedOk` with its output
+  logged, and a `--stdin` shell kept its cwd and exported variables across the
+  pane closing *and* `herdr session stop`. The sidecar `setsid`s, so it is
+  reparented to launchd rather than dying with the pane.
+- **Agent state stays right.** An omp agent in a pane ran `tender start` and
+  an 8-second `tender exec` through its bash tool; herdr showed the pane
+  `working` for the turn and `idle` after, the agent reported the exec's exit
+  code, and the session was still `Running` for the next turn.
+- **Sessions inherit the pane's identity.** Anything Tender starts from a pane
+  carries `HERDR_ENV`, `HERDR_PANE_ID`, `HERDR_SOCKET_PATH`, `HERDR_SESSION`,
+  `HERDR_BIN_PATH`, `HERDR_TAB_ID` and `HERDR_WORKSPACE_ID`. That is what lets an
+  `--on-exit` hook reach the right herdr session, and it is harmless: herdr
+  applied lifecycle reports only from the pane's own agent session. An omp
+  started under `tender start --pty` from a pane's shell, and a hand-sent
+  `pane.report_agent`, were both acknowledged and ignored. omp also marks its
+  shells `OMPCODE=1`, which its herdr extension treats as nested and silences.
+
+Raise a herdr notification when a job ends. `--on-exit` runs its command as
+argv, not through a shell, so put the expansion in a small script, say
+`~/bin/notify-herdr`:
+
+```sh
+#!/bin/sh
+exec "$HERDR_BIN_PATH" notification show "tender: $TENDER_SESSION $TENDER_EXIT_REASON" --sound done
+```
+
+```bash
+tender start --on-exit ~/bin/notify-herdr build -- make   # from inside a herdr pane
+```
+
+The notification arrived whether or not the pane that started the job still
+existed. Outside herdr `HERDR_BIN_PATH` is unset and the hook fails, which the
+run's `callback.finished` event records.
+
+Watch every job from one pane with `tender watch --namespace <ns> --events`,
+and `tender attach <name>` to take one over by hand.
+
+Limits:
+
+- Read results from Tender, not from `herdr pane read`: a pane is a screen,
+  with no exit code.
+- Run agents in herdr panes, not under Tender: `tender start --pty -- omp`
+  works, but herdr cannot see that agent's state.
+
 ## See also
 
 - [Architecture](architecture/README.md) · [Design principles](design-principles.md) · [Roadmap](ROADMAP.md)
