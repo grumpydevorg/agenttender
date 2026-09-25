@@ -33,13 +33,14 @@ the live distinction is keep-ready vs deferred-until-a-consumer.
 | ID | File | Lane / status |
 |----|------|---------------|
 | agent-hook-routing | `agent-hook-routing.md` | Lane B/D — small docs/glue; ready (replaces the cut skill-agent + hermes cards) |
+| capture-stop-drain | `capture-stop-drain.md` | Lane A — small sidecar fix; ready |
 | boo-integration | `boo-integration.md` | Lane D — optional composition, live validation open; path-5 decision revised by cloud-pty-control |
 | content-addressable-storage | `content-addressable-storage.md` | Lane C — deferred; blob primitive already absorbed into event-protocol, rest is consumer-gated |
 | pty-automation | `pty-automation.md` | Historical lease design; cloud-pty-control now owns required input ownership and observation. Broader lease features remain deferred. |
 
 ## completed/
 
-44 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
+48 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
 
 ## specs/
 

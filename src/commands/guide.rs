@@ -23,6 +23,8 @@ const TOPICS: &[(&str, &str)] = &[
     ("duckdb", "DuckDB"),
     ("powershell", "PowerShell"),
     ("boundary", "--boundary"),
+    ("cgroup", "Cap a session's memory"),
+    ("herdr", "inside herdr"),
 ];
 
 pub fn cmd_guide(topic: Option<&str>) -> anyhow::Result<()> {
@@ -193,6 +195,36 @@ mod tests {
         assert!(duckdb.contains("duckdb :memory:"));
         assert!(!duckdb.contains("namespace persists"));
         assert!(python.contains("namespace persists"));
+    }
+
+    #[test]
+    fn cgroup_section_covers_linux_and_cross_platform() {
+        let cg = slice_section(GUIDE, "Cap a session's memory").unwrap();
+        // Linux cgroup recipe.
+        assert!(cg.contains("tender.slice"));
+        assert!(cg.contains("systemd-run --user"));
+        assert!(cg.contains("enable-linger"));
+        // The nested `### Windows and macOS` subsection rides along (slicing
+        // stops only at the next same-or-higher-level `##` heading).
+        assert!(cg.contains("Job Object"));
+        assert!(cg.contains("macOS"));
+        assert!(
+            !cg.contains("Record where a session runs"),
+            "cgroup section must not bleed into the boundary section"
+        );
+    }
+
+    #[test]
+    fn herdr_section_covers_survival_hook_and_limits() {
+        let herdr = slice_section(GUIDE, "inside herdr").unwrap();
+        assert!(herdr.contains("herdr session stop"));
+        assert!(herdr.contains("HERDR_BIN_PATH"));
+        assert!(herdr.contains("--on-exit"));
+        assert!(herdr.contains("herdr pane read"));
+        assert!(
+            !herdr.contains("## See also"),
+            "herdr section must not bleed into See also"
+        );
     }
 
     #[test]
