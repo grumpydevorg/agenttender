@@ -205,6 +205,7 @@ impl RunCore {
             self.meta
                 .add_warning(format!("orphan breadcrumb not written: {e}"));
         }
+        test_abort_point("after_spawn");
 
         // A dup'd fd for PTY resize, taken before child_stdin takes the write half.
         #[cfg(unix)]
@@ -293,6 +294,7 @@ impl RunCore {
         // Recover: readiness is a courtesy to the client (#71).
         self.step = SidecarStep::Readiness;
         signal_readiness(&self.session, &mut self.ready, &mut self.meta);
+        test_abort_point("after_running");
 
         if let Some(timeout_s) = self.meta.launch_spec().timeout_s {
             self.timed_out = setup_timeout(

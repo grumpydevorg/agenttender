@@ -2,7 +2,8 @@
 id: capture-stop-drain
 depends_on: [sidecar-lifecycle-guard]
 links:
-  - ../active/03_sidecar-lifecycle-guard.md
+  - ../completed/2026-09-25-sidecar-lifecycle-guard.md
+  - ../../architecture/03-run-lifecycle.md
 ---
 
 # Keep draining output when a mid-run log write fails

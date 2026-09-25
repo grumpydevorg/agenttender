@@ -647,8 +647,11 @@ impl LifecycleEvents {
     }
 }
 
-/// Test-only crash injection for WAL-ordering tests. Compiled into debug
-/// builds only; release sidecars ignore the variable entirely.
+/// Test-only crash injection: `TENDER_TEST_ABORT=<point>` aborts the sidecar
+/// there, a true crash that skips the lifecycle guard (WAL ordering, orphan
+/// recovery). Points: `after_spawn`, `after_running`, `before_terminal_event`,
+/// `before_terminal_meta`. Compiled into debug builds only; release sidecars
+/// ignore the variable entirely.
 fn test_abort_point(point: &str) {
     if cfg!(debug_assertions) && std::env::var("TENDER_TEST_ABORT").as_deref() == Ok(point) {
         std::process::abort();

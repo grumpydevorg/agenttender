@@ -68,3 +68,5 @@ killed clients, 4 died before creating a session (no sidecar, no child), and
 the other 26 all hit the window (each carries the warning). All 26 reached
 `Exited`/`ExitedOk` with `run.exited`: 0 `SidecarLost`, and no `sleep` child
 left running.
+
+Superseded in code by the [lifecycle guard](2026-09-25-sidecar-lifecycle-guard.md): `signal_meta_snapshot` became the infallible `signal_readiness` / `ReadyDelivery`, with the same contract.

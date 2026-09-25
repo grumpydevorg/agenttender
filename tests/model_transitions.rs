@@ -148,7 +148,10 @@ fn running_to_timed_out() {
 #[test]
 fn starting_to_sidecar_lost() {
     let mut meta = starting_meta();
-    assert!(meta.reconcile_sidecar_lost(EpochTimestamp::now()).is_ok());
+    assert!(
+        meta.reconcile_sidecar_lost(EpochTimestamp::now(), None)
+            .is_ok()
+    );
     assert!(matches!(
         meta.status(),
         RunStatus::SidecarLost { child: None, .. }
@@ -159,7 +162,10 @@ fn starting_to_sidecar_lost() {
 fn running_to_sidecar_lost() {
     let mut meta = starting_meta();
     meta.transition_running(test_child()).unwrap();
-    assert!(meta.reconcile_sidecar_lost(EpochTimestamp::now()).is_ok());
+    assert!(
+        meta.reconcile_sidecar_lost(EpochTimestamp::now(), None)
+            .is_ok()
+    );
     assert!(matches!(
         meta.status(),
         RunStatus::SidecarLost { child: Some(_), .. }
@@ -218,7 +224,10 @@ fn cannot_reconcile_terminal() {
     meta.transition_running(test_child()).unwrap();
     meta.transition_exited(ExitReason::ExitedOk, EpochTimestamp::now())
         .unwrap();
-    assert!(meta.reconcile_sidecar_lost(EpochTimestamp::now()).is_err());
+    assert!(
+        meta.reconcile_sidecar_lost(EpochTimestamp::now(), None)
+            .is_err()
+    );
 }
 
 // === Type-level invariants ===
@@ -328,7 +337,8 @@ fn meta_serde_roundtrip_spawn_failed() {
 fn meta_serde_roundtrip_sidecar_lost() {
     let mut meta = starting_meta();
     meta.transition_running(test_child()).unwrap();
-    meta.reconcile_sidecar_lost(EpochTimestamp::now()).unwrap();
+    meta.reconcile_sidecar_lost(EpochTimestamp::now(), None)
+        .unwrap();
     let json = serde_json::to_string_pretty(&meta).unwrap();
     let back: Meta = serde_json::from_str(&json).unwrap();
     assert!(matches!(
@@ -523,7 +533,8 @@ fn starting_to_sidecar_failed_carries_the_spawned_child() {
 #[test]
 fn cannot_sidecar_fail_a_terminal_run() {
     let mut meta = starting_meta();
-    meta.reconcile_sidecar_lost(EpochTimestamp::now()).unwrap();
+    meta.reconcile_sidecar_lost(EpochTimestamp::now(), None)
+        .unwrap();
     assert!(
         meta.transition_sidecar_failed(test_child(), SidecarStep::ChildWait, EpochTimestamp::now())
             .is_err()

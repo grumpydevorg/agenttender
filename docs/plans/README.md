@@ -20,7 +20,6 @@ pty-session-mode) have shipped, so nothing is dependency-blocked.
 | cloud-pty-control | [00_cloud-pty-control.md](active/00_cloud-pty-control.md) | — |
 | remote-frame-transport | [01_remote-frame-transport.md](active/01_remote-frame-transport.md) | — |
 | polling-consolidation | [02_polling-consolidation.md](active/02_polling-consolidation.md) | — |
-| sidecar-lifecycle-guard | [03_sidecar-lifecycle-guard.md](active/03_sidecar-lifecycle-guard.md) | sidecar-survives-client-loss (shipped) |
 
 The cloud plan owns the early Unix PTY bridge, extracted ahead of the general
 remote-frame migration. The plans share a codec contract, not a circular
@@ -34,14 +33,14 @@ the live distinction is keep-ready vs deferred-until-a-consumer.
 | ID | File | Lane / status |
 |----|------|---------------|
 | agent-hook-routing | `agent-hook-routing.md` | Lane B/D — small docs/glue; ready (replaces the cut skill-agent + hermes cards) |
-| capture-stop-drain | `capture-stop-drain.md` | Lane A — small sidecar fix; ready once sidecar-lifecycle-guard lands |
+| capture-stop-drain | `capture-stop-drain.md` | Lane A — small sidecar fix; ready |
 | boo-integration | `boo-integration.md` | Lane D — optional composition, live validation open; path-5 decision revised by cloud-pty-control |
 | content-addressable-storage | `content-addressable-storage.md` | Lane C — deferred; blob primitive already absorbed into event-protocol, rest is consumer-gated |
 | pty-automation | `pty-automation.md` | Historical lease design; cloud-pty-control now owns required input ownership and observation. Broader lease features remain deferred. |
 
 ## completed/
 
-46 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
+47 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
 
 ## specs/
 

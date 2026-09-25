@@ -204,6 +204,18 @@ fn assert_sidecar_failed(root: &TempDir, session: &str, step: &str, error: &str,
     assert_eq!(meta["step"], step, "{meta}");
     assert_warning(&meta, &format!("sidecar failed at {step}: "));
     assert_warning(&meta, error);
+    // The guard's own stop worked. On Windows the Job Object would kill the
+    // child at sidecar exit anyway, so the process check alone cannot tell.
+    for bad in [
+        "may still be running",
+        "stopping the child failed",
+        "force-killing",
+    ] {
+        assert!(
+            !warnings(&meta).iter().any(|w| w.contains(bad)),
+            "the guard did not stop the child cleanly: {meta}"
+        );
+    }
     assert_eq!(meta["transition_provenance"]["kind"], "direct");
     assert!(
         meta["transition_provenance"]["evidence"]
@@ -430,6 +442,7 @@ fn failure_record_failure_still_stops_the_child_and_says_so() {
     assert_eq!(code, Some(1), "{stderr}");
     assert!(
         stderr.contains("sidecar failed at stdin_transport")
+            && stderr.contains("the child was stopped")
             && stderr.contains("recording the failure also failed"),
         "{stderr}"
     );
@@ -460,6 +473,63 @@ fn failure_record_failure_still_stops_the_child_and_says_so() {
             .unwrap()
             .contains("injected fault at failure_record")
     );
+}
+
+/// On the `--after` path no client is waiting and meta on disk is still
+/// `Starting`. If the failure record cannot be written there, the durable
+/// `run.sidecar_failed` event is what remains, and reconciliation heals meta
+/// from it (with the breadcrumb's child) instead of inferring `SidecarLost`.
+#[test]
+fn failure_record_failure_on_the_after_path_heals_to_sidecar_failed() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    tender(&root)
+        .args(["start", "dep", "--", "true"])
+        .assert()
+        .success();
+    let (_dep, lock) = wait_sidecar_gone(&root, "dep");
+    drop(lock);
+
+    let gate = root.path().join("fault-gate");
+    std::fs::write(&gate, b"").unwrap();
+    let client = spawn_start(
+        &root,
+        Inject::Fail("stdin_transport,failure_record"),
+        &gate,
+        &["job", "--after", "dep", "--stdin", "--", "sleep", "60"],
+    );
+    let (code, _stdout, stderr) = finish_client(client);
+    assert_eq!(
+        code,
+        Some(0),
+        "readiness went out after the first scan: {stderr}"
+    );
+
+    let (left, lock) = wait_sidecar_gone(&root, "job");
+    assert_eq!(
+        left["status"], "Starting",
+        "the record was not written: {left}"
+    );
+    drop(lock);
+    let breadcrumb: ProcessIdentity = serde_json::from_str(
+        &std::fs::read_to_string(session_dir(&root, "job").join("child_pid")).unwrap(),
+    )
+    .unwrap();
+    assert_process_gone(&breadcrumb, "the child");
+
+    let status = status_of(&root, "job");
+    assert_eq!(status["status"], "Exited", "{status}");
+    assert_eq!(status["reason"], "SidecarFailed", "{status}");
+    assert_eq!(status["step"], "stdin_transport", "{status}");
+    assert_eq!(child_identity(&status), breadcrumb);
+    assert_eq!(
+        status["transition_provenance"]["evidence"],
+        serde_json::json!(["event_log_terminal"])
+    );
+    tender(&root)
+        .args(["wait", "--timeout", "5", "job"])
+        .assert()
+        .code(5);
 }
 
 // === Steps that recover with a visible warning ===
@@ -612,4 +682,128 @@ fn pty_group_kill_reaches_the_session_leader_and_its_children() {
     assert_eq!(meta["reason"], "TimedOut", "{meta}");
     assert_process_gone(&child_identity(&meta), "the PTY session leader");
     assert_pid_gone(&gpid, "the session leader's child");
+}
+
+// === Abrupt sidecar death: the guard cannot run, reconciliation closes it ===
+
+/// Start with `TENDER_TEST_ABORT=<point>` (a true crash), then return the meta
+/// the dead sidecar left, with the lock released again for reconciliation.
+fn crash_at(root: &TempDir, point: &str, args: &[&str]) -> serde_json::Value {
+    tender(root)
+        .env("TENDER_TEST_ABORT", point)
+        .args(["start"])
+        .args(args)
+        .assert()
+        .success();
+    let (meta, lock) = wait_sidecar_gone(root, args[0]);
+    drop(lock);
+    meta
+}
+
+fn status_of(root: &TempDir, session: &str) -> serde_json::Value {
+    let output = tender(root).args(["status", session]).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn evidence(meta: &serde_json::Value) -> Vec<String> {
+    meta["transition_provenance"]["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// After a crash with the child running, `status` kills the verified orphan
+/// and its group, and says so. On Windows the Job Object already killed the
+/// tree when the sidecar died, so reconciliation only records the loss.
+#[test]
+fn crash_while_running_leaves_an_orphan_that_status_kills() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    #[cfg(unix)]
+    let (argv, gpid) = family_child(root.path(), false);
+    #[cfg(windows)]
+    let argv: Vec<String> = vec!["sleep".into(), "60".into()];
+    let mut args = vec!["s1", "--"];
+    args.extend(argv.iter().map(String::as_str));
+
+    let left = crash_at(&root, "after_running", &args);
+    assert_eq!(left["status"], "Running", "{left}");
+    let child = child_identity(&left);
+
+    #[cfg(unix)]
+    {
+        wait_for_file(&gpid, "the grandchild to start");
+        assert_eq!(
+            Current::process_status(&child),
+            ProcessStatus::AliveVerified,
+            "a crashed sidecar leaves its child running on Unix"
+        );
+    }
+    #[cfg(windows)]
+    assert_process_gone(&child, "the child (Job Object kill-on-close)");
+
+    let status = status_of(&root, "s1");
+    assert_eq!(status["status"], "SidecarLost", "{status}");
+    assert_eq!(child_identity(&status), child);
+    assert_process_gone(&child, "the orphaned child");
+    #[cfg(unix)]
+    {
+        assert!(
+            evidence(&status).contains(&"orphan_killed".to_owned()),
+            "{status}"
+        );
+        assert_warning(
+            &status,
+            "was still running after its sidecar was lost; killed it",
+        );
+        assert_pid_gone(&gpid, "the orphan's group");
+    }
+    #[cfg(windows)]
+    assert!(
+        !evidence(&status).contains(&"orphan_killed".to_owned()),
+        "{status}"
+    );
+}
+
+/// On the `--after` path meta is still `Starting` when the child is spawned;
+/// a crash there leaves only the `child_pid` breadcrumb, and reconciliation
+/// finds the child through it.
+#[test]
+fn crash_before_running_is_found_through_the_breadcrumb() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    tender(&root)
+        .args(["start", "dep", "--", "true"])
+        .assert()
+        .success();
+    let (_dep, lock) = wait_sidecar_gone(&root, "dep");
+    drop(lock);
+
+    let left = crash_at(
+        &root,
+        "after_spawn",
+        &["job", "--after", "dep", "--", "sleep", "60"],
+    );
+    assert_eq!(left["status"], "Starting", "{left}");
+    let breadcrumb: ProcessIdentity = serde_json::from_str(
+        &std::fs::read_to_string(session_dir(&root, "job").join("child_pid")).unwrap(),
+    )
+    .unwrap();
+
+    let status = status_of(&root, "job");
+    assert_eq!(status["status"], "SidecarLost", "{status}");
+    assert_eq!(
+        child_identity(&status),
+        breadcrumb,
+        "the breadcrumb names the child"
+    );
+    assert_process_gone(&breadcrumb, "the orphaned child");
+    #[cfg(unix)]
+    assert!(
+        evidence(&status).contains(&"orphan_killed".to_owned()),
+        "{status}"
+    );
 }
