@@ -20,6 +20,7 @@ include = [
     "/src/embedded/**/*",
     "/src/model/**/*",
     "/src/platform/**/*",
+    "/src/sidecar/**/*",
     "/docs/guide.md",
     "/README.md",
     "/LICENSE-APACHE",
