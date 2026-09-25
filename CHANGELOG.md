@@ -12,6 +12,9 @@
 
 ### Fixed
 
+- **`tender attach` on Windows says it is unsupported.** It failed with
+  "attach socket not found", because only the Unix sidecar publishes the socket;
+  it now reports "attach is only supported on Unix", as intended.
 - **No spawned child is left running unsupervised.** Besides the lost `start`
   client fixed below, a failure after spawning could still end the sidecar with
   the child running: the `--stdin` transport, writing `Running`, the readiness

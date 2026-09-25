@@ -575,7 +575,7 @@ fn spawn_sidecar_raw(
         env_vars.push((ready_key.to_string(), handle_value.to_string()));
     }
     // Sort case-insensitively (Windows requirement for environment blocks).
-    env_vars.sort_by(|(a, _), (b, _)| a.to_lowercase().cmp(&b.to_lowercase()));
+    env_vars.sort_by_cached_key(|(k, _)| k.to_lowercase());
     let mut env_block: Vec<u16> = Vec::new();
     for (k, v) in &env_vars {
         let entry = format!("{k}={v}");
