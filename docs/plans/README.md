@@ -36,6 +36,7 @@ the live distinction is keep-ready vs deferred-until-a-consumer.
 | boo-integration | `boo-integration.md` | Lane D — optional composition, live validation open; path-5 decision revised by cloud-pty-control |
 | content-addressable-storage | `content-addressable-storage.md` | Lane C — deferred; blob primitive already absorbed into event-protocol, rest is consumer-gated |
 | pty-automation | `pty-automation.md` | Historical lease design; cloud-pty-control now owns required input ownership and observation. Broader lease features remain deferred. |
+| sidecar-survives-client-loss | `sidecar-survives-client-loss.md` | Lane A — defect: a client killed between spawn and readiness orphans the child; reproduced 20/30 |
 
 ## completed/
 

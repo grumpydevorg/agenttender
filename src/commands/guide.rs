@@ -24,6 +24,7 @@ const TOPICS: &[(&str, &str)] = &[
     ("powershell", "PowerShell"),
     ("boundary", "--boundary"),
     ("cgroup", "Cap a session's memory"),
+    ("herdr", "inside herdr"),
 ];
 
 pub fn cmd_guide(topic: Option<&str>) -> anyhow::Result<()> {
@@ -210,6 +211,19 @@ mod tests {
         assert!(
             !cg.contains("Record where a session runs"),
             "cgroup section must not bleed into the boundary section"
+        );
+    }
+
+    #[test]
+    fn herdr_section_covers_survival_hook_and_limits() {
+        let herdr = slice_section(GUIDE, "inside herdr").unwrap();
+        assert!(herdr.contains("herdr session stop"));
+        assert!(herdr.contains("HERDR_BIN_PATH"));
+        assert!(herdr.contains("--on-exit"));
+        assert!(herdr.contains("sidecar-survives-client-loss"));
+        assert!(
+            !herdr.contains("## See also"),
+            "herdr section must not bleed into See also"
         );
     }
 
