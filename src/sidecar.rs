@@ -8,24 +8,28 @@
 //! CLI normally only *asks*; after the sidecar is gone, the narrowly scoped
 //! [`reconcile`](crate::reconcile) path may heal or infer terminal state.
 
-use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::num::NonZeroI32;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 
+mod supervised_run;
+use supervised_run::SupervisedRun;
+
 use crate::events::{self, EventDraft, EventWriter};
 use crate::model::dep_fail::DepFailReason;
 use crate::model::event::{Kind, Uuid7};
 use crate::model::ids::{EpochTimestamp, Generation, Namespace, RunId, SessionName, Source};
 use crate::model::meta::Meta;
-use crate::model::pty::{PtyControl, PtyMeta};
-use crate::model::spec::{DependencyBinding, IoMode, LaunchSpec, StdinMode};
-use crate::model::state::ExitReason;
+#[cfg(unix)]
+use crate::model::pty::PtyControl;
+#[cfg(all(test, unix))]
+use crate::model::pty::PtyMeta;
+use crate::model::spec::{DependencyBinding, IoMode, LaunchSpec};
+use crate::model::state::{ExitReason, RunStatus, SidecarStep};
 use crate::platform::{Current, Platform};
 use crate::session::{self, LockGuard, SessionDir, SessionRoot};
 
@@ -47,8 +51,11 @@ type AttachSink = Arc<Mutex<Option<Box<dyn Write + Send>>>>;
 /// - Write terminal state when child exits
 /// - Release lock and exit
 pub fn run(session_dir: PathBuf, ready_writer: ReadyWriter) -> anyhow::Result<()> {
+    remember_panics();
+
     // Wrap so we can track whether it's been consumed.
     // write_ready_signal takes ownership -- Option prevents double-use.
+    // After spawn the lifecycle guard owns it, and answers the client itself.
     let mut ready = Some(ready_writer);
 
     let result = run_inner(&session_dir, &mut ready);
@@ -63,6 +70,30 @@ pub fn run(session_dir: PathBuf, ready_writer: ReadyWriter) -> anyhow::Result<()
     result
 }
 
+/// The most recent panic message in this process, for the lifecycle guard's
+/// record: a guard dropped by an unwinding panic cannot see the payload.
+static LAST_PANIC: Mutex<Option<String>> = Mutex::new(None);
+
+/// Keep each panic's message (then run the default hook; sidecar stderr is
+/// /dev/null, so without this the reason would be lost).
+fn remember_panics() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Ok(mut slot) = LAST_PANIC.lock() {
+            *slot = Some(info.to_string());
+        }
+        default_hook(info);
+    }));
+}
+
+fn last_panic_message() -> String {
+    LAST_PANIC
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_else(|| "unknown panic".to_owned())
+}
+
 /// Create the stdin transport and spawn a forwarding thread.
 /// The transport is moved into the forwarding thread (it needs the server-side
 /// handle on Windows). Cleanup is handled by `remove_stdin_transport`.
@@ -70,7 +101,7 @@ fn setup_stdin_forwarding(
     session_dir: &Path,
     child_stdin: Box<dyn Write + Send>,
     stdin_errors: &Arc<Mutex<Vec<String>>>,
-) -> anyhow::Result<()> {
+) -> io::Result<()> {
     // StdinTransport is () on Unix — clippy flags the let-binding but
     // forward_stdin needs the value on Windows where the type is non-unit.
     #[allow(clippy::let_unit_value)]
@@ -517,33 +548,25 @@ impl LifecycleEvents {
         }
     }
 
-    /// Like `new`, but with a freshly minted writer identity — for sidecar
+    /// Same session and run, freshly minted writer identity — for sidecar
     /// threads that append concurrently with the lifecycle writer (the
     /// attach listener). The protocol is multi-writer by design: each
     /// writer keeps its own contiguous `seq` chain (spec §1).
-    fn with_fresh_writer(
-        session_dir: &Path,
-        namespace: &Namespace,
-        session: &SessionName,
-        run_id: RunId,
-        generation: Generation,
-    ) -> Self {
+    #[cfg(unix)]
+    fn with_fresh_writer(&self) -> Self {
         Self {
-            session_dir: session_dir.to_path_buf(),
-            writer: EventWriter::new(session_dir),
-            namespace: namespace.clone(),
-            session: session.clone(),
-            run_id,
-            generation,
+            session_dir: self.session_dir.clone(),
+            writer: EventWriter::new(&self.session_dir),
+            namespace: self.namespace.clone(),
+            session: self.session.clone(),
+            run_id: self.run_id,
+            generation: self.generation,
         }
     }
 
-    /// Append the lifecycle event for meta's CURRENT status. Never fails the
-    /// run: an append failure becomes a meta warning and the record is
-    /// salvaged to lost+found — supervision must not die, and the history
-    /// record must not silently vanish, because the event log is unwritable.
-    fn emit(&mut self, meta: &mut Meta, durable: bool) {
-        let draft = EventDraft {
+    /// The lifecycle event for meta's CURRENT status.
+    fn lifecycle_draft(&self, meta: &Meta) -> EventDraft {
+        EventDraft {
             id: None,
             kind: events::lifecycle_kind(meta.status()),
             namespace: self.namespace.clone(),
@@ -559,11 +582,30 @@ impl LifecycleEvents {
                 meta.launch_spec().boundary.as_ref(),
             )),
             preview: None,
-        };
+        }
+    }
+
+    /// Append the lifecycle event for meta's CURRENT status. Never fails the
+    /// run: an append failure becomes a meta warning and the record is
+    /// salvaged to lost+found — supervision must not die, and the history
+    /// record must not silently vanish, because the event log is unwritable.
+    fn emit(&mut self, meta: &mut Meta, durable: bool) {
+        let draft = self.lifecycle_draft(meta);
         if let Err(e) = self.writer.append(draft.clone(), durable) {
             meta.add_warning(format!("event log append failed: {e}"));
             self.salvage_to_lost_found(draft);
         }
+    }
+
+    /// Meta could not be written after a terminal transition: keep a copy of
+    /// the terminal record, with the write error, outside the session dir.
+    fn salvage_unrecorded(&self, meta: &Meta, record_error: &str) {
+        let mut draft = self.lifecycle_draft(meta);
+        if let Some(data) = draft.data.as_mut() {
+            data["meta_write_error"] = serde_json::Value::String(record_error.to_owned());
+            data["warnings"] = serde_json::json!(meta.warnings());
+        }
+        self.salvage_to_lost_found(draft);
     }
 
     /// Append a non-lifecycle sidecar fact (`callback.finished`, spec §1)
@@ -607,11 +649,69 @@ impl LifecycleEvents {
     }
 }
 
-/// Test-only crash injection for WAL-ordering tests. Compiled into debug
-/// builds only; release sidecars ignore the variable entirely.
+/// Test-only crash injection: `TENDER_TEST_ABORT=<point>` aborts the sidecar
+/// there, a true crash that skips the lifecycle guard (WAL ordering, orphan
+/// recovery). Points: `after_spawn`, `after_running`, `before_terminal_event`,
+/// `before_terminal_meta`. Compiled into debug builds only; release sidecars
+/// ignore the variable entirely.
 fn test_abort_point(point: &str) {
     if cfg!(debug_assertions) && std::env::var("TENDER_TEST_ABORT").as_deref() == Ok(point) {
         std::process::abort();
+    }
+}
+
+/// Test-only fault injection at a named sidecar step. `TENDER_TEST_FAIL` is a
+/// comma-separated list of points that return an injected error;
+/// `TENDER_TEST_PANIC` names points that panic. The points are the
+/// [`SidecarStep`] wire names plus `ready_rewrite`, `terminal_meta` and
+/// `failure_record`. If `TENDER_TEST_FAULT_GATE` names a file, a named point
+/// first waits for it (bounded), so a test can let the child reach a known
+/// state before the fault fires. Compiled into debug builds only; release
+/// sidecars ignore all three variables entirely.
+fn test_fault(point: &str) -> io::Result<()> {
+    if !cfg!(debug_assertions) {
+        return Ok(());
+    }
+    let names = |var: &str| {
+        std::env::var(var)
+            .map(|v| v.split(',').any(|p| p.trim() == point))
+            .unwrap_or(false)
+    };
+    let panics = names("TENDER_TEST_PANIC");
+    let fails = names("TENDER_TEST_FAIL");
+    if panics || fails {
+        wait_for_gate_file("TENDER_TEST_FAULT_GATE");
+    }
+    if panics {
+        panic!("injected panic at {point}");
+    }
+    if fails {
+        return Err(io::Error::other(format!("injected fault at {point}")));
+    }
+    Ok(())
+}
+
+/// Wait until the file named by env var `var` exists, if it is set. Bounded,
+/// so a failed test cannot strand the sidecar.
+fn wait_for_gate_file(var: &str) {
+    let Some(gate) = std::env::var_os(var) else {
+        return;
+    };
+    let gate = PathBuf::from(gate);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !gate.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Test-only gate before the readiness write, so a test can kill the `start`
+/// client inside the spawn-to-readiness window without a timing race: the
+/// sidecar waits until the file named by `TENDER_TEST_READY_GATE` exists
+/// (bounded, so a failed test cannot strand it). Compiled into debug builds
+/// only; release sidecars ignore the variable entirely.
+fn test_ready_gate() {
+    if cfg!(debug_assertions) {
+        wait_for_gate_file("TENDER_TEST_READY_GATE");
     }
 }
 
@@ -753,7 +853,7 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
             &run_id,
         );
         let action = apply_first_scan_outcome(&session, &mut meta, &mut lifecycle, outcome)?;
-        signal_meta_snapshot(ready, &meta)?;
+        signal_readiness(&session, ready, &mut meta);
 
         match action {
             DepAction::Spawn => {} // every dependency already satisfied — proceed
@@ -813,327 +913,140 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     }
 
     // --- Spawn child (with SpawnFailed handling inline) ---
-    let is_pty = meta.launch_spec().io_mode == IoMode::Pty;
-    let stdin_piped = meta.launch_spec().stdin_mode == StdinMode::Pipe;
-
-    let mut child = if is_pty {
-        match Current::spawn_child_pty(
+    let spawned = if meta.launch_spec().io_mode == IoMode::Pty {
+        Current::spawn_child_pty(
             meta.launch_spec().argv(),
             meta.launch_spec().cwd.as_deref(),
             &effective_env,
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                meta.add_warning(format!("spawn failed: {e}"));
-                meta.transition_spawn_failed(EpochTimestamp::now())?;
-                lifecycle.emit(&mut meta, true);
-                session::write_meta_atomic(&session, &meta)?;
-                if !has_deps {
-                    signal_meta_snapshot(ready, &meta)?;
-                }
-                return Ok(());
-            }
-        }
+        )
     } else {
-        match Current::spawn_child(
+        Current::spawn_child(
             meta.launch_spec().argv(),
-            stdin_piped,
+            meta.launch_spec().stdin_mode == crate::model::spec::StdinMode::Pipe,
             meta.launch_spec().cwd.as_deref(),
             &effective_env,
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                meta.add_warning(format!("spawn failed: {e}"));
-                meta.transition_spawn_failed(EpochTimestamp::now())?;
-                lifecycle.emit(&mut meta, true);
-                session::write_meta_atomic(&session, &meta)?;
-                if !has_deps {
-                    signal_meta_snapshot(ready, &meta)?;
-                }
-                return Ok(());
-            }
-        }
+        )
     };
-
-    // Get child identity -- need this before writing the orphan breadcrumb
-    // so cleanup_orphan_dir can verify against PID reuse.
-    let child_identity = match Current::child_identity(&child) {
-        Ok(id) => id,
-        Err(_) => {
-            // Can't get identity -- kill and wait inline. No orphan is possible
-            // since we kill synchronously, so don't write a breadcrumb.
-            let handle = Current::child_kill_handle(&child);
-            let _ = Current::kill_child(&handle, true);
-            let _ = Current::child_wait(&mut child);
+    let child = match spawned {
+        Ok(child) => child,
+        Err(e) => {
+            meta.add_warning(format!("spawn failed: {e}"));
             meta.transition_spawn_failed(EpochTimestamp::now())?;
             lifecycle.emit(&mut meta, true);
             session::write_meta_atomic(&session, &meta)?;
-            if !has_deps {
-                signal_meta_snapshot(ready, &meta)?;
-            }
+            signal_readiness(&session, ready, &mut meta);
             return Ok(());
         }
     };
 
-    // SAFETY: child_identity has been verified -- write it as the orphan breadcrumb.
-    // If sidecar crashes after spawn but before meta write, the reconciler
-    // can find and safely kill the orphaned child using this identity.
-    let _ = std::fs::write(
-        session_dir.join("child_pid"),
-        serde_json::to_string(&child_identity).unwrap_or_default(),
-    );
+    // From here the guard owns the child: no exit below can leave it
+    // unsupervised (see supervised_run.rs).
+    let run = SupervisedRun::adopt(child, session, lock, meta, lifecycle, ready.take());
+    let mut run = run.publish_running()?;
+    let how = run.supervise()?;
+    run.finish(how)
+}
 
-    // --- Attach sink for PTY tee ---
-    let attach_sink: AttachSink = Arc::new(Mutex::new(None));
-
-    // --- Stdin forwarding (conditional) ---
-    let stdin_errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-
-    // Get a dup'd fd for PTY resize before child_stdin takes the write half.
-    let mut pty_resize_fd: Option<std::fs::File> = if is_pty {
-        Current::pty_resize_fd(&child)
-    } else {
-        None
-    };
-
-    // For PTY sessions: wrap the write side in Arc<Mutex> for shared access.
-    // Both the FIFO forwarding thread and the future attach listener need to
-    // write to the PTY master.
-    let pty_write_handle: Option<Arc<Mutex<Box<dyn Write + Send>>>> = if is_pty {
-        Current::child_stdin(&mut child).map(|w| Arc::new(Mutex::new(w)))
-    } else {
-        None
-    };
-
-    if meta.launch_spec().stdin_mode == StdinMode::Pipe {
-        let child_stdin: Box<dyn Write + Send> = if let Some(ref shared) = pty_write_handle {
-            // PTY: forwarding thread writes through a clone of the shared handle
-            let shared_clone = Arc::clone(shared);
-            Box::new(SharedWriter(shared_clone))
-        } else {
-            // Pipe: forwarding thread owns the write side directly
-            Current::child_stdin(&mut child)
-                .ok_or_else(|| anyhow::anyhow!("child stdin not piped"))?
-        };
-        setup_stdin_forwarding(session_dir, child_stdin, &stdin_errors)?;
-    }
-
-    // --- Attach listener for PTY sessions (Unix only) ---
-    #[cfg(unix)]
-    if is_pty {
-        let sock_path = crate::attach_proto::sock_path(session_dir);
-        crate::attach_proto::write_sock_breadcrumb(session_dir, &sock_path);
-        let pty_write_clone = pty_write_handle.as_ref().unwrap().clone();
-        let attach_sink_clone = Arc::clone(&attach_sink);
-        let session_path = session_dir.to_path_buf();
-        let resize_fd = pty_resize_fd.take();
-        let facts = LifecycleEvents::with_fresh_writer(
-            session_dir,
-            &namespace,
-            &session_name,
-            run_id,
-            generation,
-        );
-        std::thread::spawn(move || {
-            run_attach_listener(
-                &sock_path,
-                pty_write_clone,
-                attach_sink_clone,
-                &session_path,
-                resize_fd,
-                facts,
-            );
-        });
-    }
-
-    // --- Transition to Running + readiness signal ---
-    meta.transition_running(child_identity)?;
-    if is_pty {
-        meta.set_pty(PtyMeta::new());
-    }
-    lifecycle.emit(&mut meta, false);
-    session::write_meta_atomic(&session, &meta)?;
-    if !has_deps {
-        signal_meta_snapshot(ready, &meta)?;
-    }
-
-    // --- Timeout + kill watcher setup ---
-    let kill_handle = Current::child_kill_handle(&child);
-    let timeout_cancel = Arc::new(AtomicBool::new(false));
-    let timed_out = if let Some(timeout_s) = meta.launch_spec().timeout_s {
-        setup_timeout(kill_handle.clone(), timeout_s, Arc::clone(&timeout_cancel))
-    } else {
-        Arc::new(AtomicBool::new(false))
-    };
-
-    // Watch for CLI kill requests (kill_request file in session dir).
-    // Uses the live ChildKillHandle for tree-aware kill on Windows.
-    setup_kill_watcher(
-        session_dir,
-        kill_handle,
-        run_id,
-        Arc::clone(&timeout_cancel),
-    );
-
-    // --- Supervise ---
-    let exit_reason = if is_pty {
-        supervise(&session, &mut child, Some(&attach_sink))?
-    } else {
-        supervise(&session, &mut child, None)?
-    };
-
-    // --- Cancel timeout + collect warnings + determine exit reason ---
-    timeout_cancel.store(true, Ordering::Relaxed);
-
-    // Override reason if timeout fired (highest priority)
-    let exit_reason = if timed_out.load(Ordering::Relaxed) {
-        ExitReason::TimedOut
-    } else {
-        exit_reason
-    };
-
-    // Check for kill markers (lower priority than timeout).
-    // Priority: TimedOut > KilledForced > Killed (from kill_acted) > raw exit.
-    let kill_forced_path = session_dir.join("kill_forced");
-    let kill_acted_path = session_dir.join("kill_acted");
-    let exit_reason = if matches!(exit_reason, ExitReason::TimedOut) {
-        // Timeout is highest priority — clean up markers but keep reason.
-        let _ = std::fs::remove_file(&kill_forced_path);
-        let _ = std::fs::remove_file(&kill_acted_path);
-        exit_reason
-    } else if kill_forced_path.exists() {
-        let _ = std::fs::remove_file(&kill_forced_path);
-        let _ = std::fs::remove_file(&kill_acted_path);
-        ExitReason::KilledForced
-    } else if kill_acted_path.exists() {
-        // Sidecar-mediated graceful kill (force=false).
-        // The child may report ExitedError on Windows (TerminateJobObject
-        // after grace period), but the user requested a kill.
-        let _ = std::fs::remove_file(&kill_acted_path);
-        ExitReason::Killed
-    } else {
-        let _ = std::fs::remove_file(&kill_forced_path);
-        let _ = std::fs::remove_file(&kill_acted_path);
-        exit_reason
-    };
-
-    // Clean up kill_request if still present (kill watcher may not have run).
-    let _ = std::fs::remove_file(session_dir.join("kill_request"));
-
-    // Clean up stdin transport
-    Current::remove_stdin_transport(session_dir);
-
-    // Clean up breadcrumb -- no longer needed, meta has the child identity
-    let _ = std::fs::remove_file(session_dir.join("child_pid"));
-
-    // Clean up attach socket and breadcrumb
-    if is_pty {
-        let sock = crate::attach_proto::sock_path(session_dir);
-        let _ = std::fs::remove_file(&sock);
-        let _ = std::fs::remove_file(session_dir.join("a.sock.path"));
-    }
-
-    for warning in collect_warnings(session_dir, &stdin_errors) {
-        meta.add_warning(warning);
-    }
-
-    // --- Write terminal state (run state machine ends here) ---
-    // WAL order: the durable terminal event precedes the terminal meta write,
-    // so terminal meta always implies a logged terminal event (spec §3.6).
-    let exit_reason_debug = format!("{exit_reason:?}");
-    meta.transition_exited(exit_reason, EpochTimestamp::now())?;
-    test_abort_point("before_terminal_event");
-    lifecycle.emit(&mut meta, true);
-    test_abort_point("before_terminal_meta");
-    session::write_meta_atomic(&session, &meta)?;
-
-    // --- Release lock: session is now available for --replace ---
-    drop(lock);
-
-    // --- Execute on_exit callbacks (unlocked, separate from run lifecycle) ---
+/// Run the `--on-exit` hooks for a terminal run, unlocked and separate from
+/// the run lifecycle. Each outcome is a best-effort `callback.finished` fact,
+/// and the batch is written under `callbacks/<run_id>.json` outside the
+/// session dir, so it survives `--replace`.
+fn run_on_exit_hooks(meta: &Meta, session_dir: &Path, lifecycle: &mut LifecycleEvents) {
     let on_exit_callbacks = meta.launch_spec().on_exit.clone();
-    if !on_exit_callbacks.is_empty() {
-        let run_id = meta.run_id().to_string();
-        let session_name = meta.session().as_str().to_string();
-        let namespace = meta
-            .launch_spec()
-            .namespace
-            .as_deref()
-            .unwrap_or("default")
-            .to_string();
-        let generation = meta.generation().to_string();
-        let session_dir_str = session_dir.to_str().unwrap_or("").to_string();
+    if on_exit_callbacks.is_empty() {
+        return;
+    }
+    let RunStatus::Exited { how, .. } = meta.status() else {
+        return;
+    };
+    let exit_reason = exit_reason_env(how);
+    let run_id = meta.run_id().to_string();
+    let session_name = meta.session().as_str().to_string();
+    let namespace = meta
+        .launch_spec()
+        .namespace
+        .as_deref()
+        .unwrap_or("default")
+        .to_string();
+    let generation = meta.generation().to_string();
+    let session_dir_str = session_dir.to_str().unwrap_or("").to_string();
 
-        let mut callback_results: Vec<serde_json::Value> = Vec::new();
+    let mut callback_results: Vec<serde_json::Value> = Vec::new();
 
-        for (i, callback_cmd) in on_exit_callbacks.iter().enumerate() {
-            let argv =
-                shell_words::split(callback_cmd).unwrap_or_else(|_| vec![callback_cmd.clone()]);
-            if argv.is_empty() {
-                continue;
+    for (i, callback_cmd) in on_exit_callbacks.iter().enumerate() {
+        let argv = shell_words::split(callback_cmd).unwrap_or_else(|_| vec![callback_cmd.clone()]);
+        if argv.is_empty() {
+            continue;
+        }
+        let result = std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .env("TENDER_SESSION", &session_name)
+            .env("TENDER_NAMESPACE", &namespace)
+            .env("TENDER_RUN_ID", &run_id)
+            .env("TENDER_GENERATION", &generation)
+            .env("TENDER_EXIT_REASON", &exit_reason)
+            .env("TENDER_SESSION_DIR", &session_dir_str)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output();
+
+        let record = match result {
+            Ok(output) if output.status.success() => {
+                serde_json::json!({"index": i, "command": callback_cmd, "status": "ok"})
             }
-            let result = std::process::Command::new(&argv[0])
-                .args(&argv[1..])
-                .env("TENDER_SESSION", &session_name)
-                .env("TENDER_NAMESPACE", &namespace)
-                .env("TENDER_RUN_ID", &run_id)
-                .env("TENDER_GENERATION", &generation)
-                .env("TENDER_EXIT_REASON", &exit_reason_debug)
-                .env("TENDER_SESSION_DIR", &session_dir_str)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::piped())
-                .output();
-
-            let record = match result {
-                Ok(output) if output.status.success() => {
-                    serde_json::json!({"index": i, "command": callback_cmd, "status": "ok"})
-                }
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    serde_json::json!({
-                        "index": i,
-                        "command": callback_cmd,
-                        "status": "failed",
-                        "exit_code": output.status.code(),
-                        "stderr": stderr.trim()
-                    })
-                }
-                Err(e) => {
-                    serde_json::json!({
-                        "index": i,
-                        "command": callback_cmd,
-                        "status": "spawn_failed",
-                        "error": e.to_string()
-                    })
-                }
-            };
-            // The durable per-callback fact (plan scope 5): emitted as each
-            // callback finishes, same record shape as the batch file.
-            lifecycle.append_fact("callback.finished", record.clone());
-            callback_results.push(record);
-        }
-
-        // Write callback results keyed by run_id, outside the session dir
-        // This survives --replace (which removes the session dir)
-        let callbacks_dir = session_dir
-            .ancestors()
-            .find(|p| p.ends_with("sessions"))
-            .and_then(|p| p.parent())
-            .map(|tender_root| tender_root.join("callbacks"));
-
-        if let Some(dir) = callbacks_dir {
-            let _ = std::fs::create_dir_all(&dir);
-            let record = serde_json::json!({
-                "run_id": run_id,
-                "session": session_name,
-                "namespace": namespace,
-                "callbacks": callback_results
-            });
-            let _ = std::fs::write(dir.join(format!("{run_id}.json")), record.to_string());
-        }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                serde_json::json!({
+                    "index": i,
+                    "command": callback_cmd,
+                    "status": "failed",
+                    "exit_code": output.status.code(),
+                    "stderr": stderr.trim()
+                })
+            }
+            Err(e) => {
+                serde_json::json!({
+                    "index": i,
+                    "command": callback_cmd,
+                    "status": "spawn_failed",
+                    "error": e.to_string()
+                })
+            }
+        };
+        // The durable per-callback fact (plan scope 5): emitted as each
+        // callback finishes, same record shape as the batch file.
+        lifecycle.append_fact("callback.finished", record.clone());
+        callback_results.push(record);
     }
 
-    Ok(())
+    // Write callback results keyed by run_id, outside the session dir
+    // This survives --replace (which removes the session dir)
+    let callbacks_dir = session_dir
+        .ancestors()
+        .find(|p| p.ends_with("sessions"))
+        .and_then(|p| p.parent())
+        .map(|tender_root| tender_root.join("callbacks"));
+
+    if let Some(dir) = callbacks_dir {
+        let _ = std::fs::create_dir_all(&dir);
+        let record = serde_json::json!({
+            "run_id": run_id,
+            "session": session_name,
+            "namespace": namespace,
+            "callbacks": callback_results
+        });
+        let _ = std::fs::write(dir.join(format!("{run_id}.json")), record.to_string());
+    }
+}
+
+/// `TENDER_EXIT_REASON` for `--on-exit` hooks. `SidecarFailed` is the bare
+/// reason name, so a hook can match it exactly; the failing step is in meta.
+/// Every other reason keeps the Debug form hooks have always received.
+fn exit_reason_env(how: &ExitReason) -> String {
+    match how {
+        ExitReason::SidecarFailed { .. } => "SidecarFailed".to_owned(),
+        other => format!("{other:?}"),
+    }
 }
 
 /// Forward data from the stdin transport to the child's stdin pipe.
@@ -1174,83 +1087,65 @@ fn forward_stdin(
     }
 }
 
-/// Send meta JSON over the readiness channel. Consumes the writer.
-/// The CLI reads this snapshot directly -- no race with subsequent disk writes.
-fn signal_meta_snapshot(ready: &mut Option<ReadyWriter>, meta: &Meta) -> anyhow::Result<()> {
-    let writer = ready
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("readiness channel already consumed"))?;
-    let json = serde_json::to_string(meta)?;
-    Current::write_ready_signal(writer, &format!("OK:{json}\n"))?;
-    Ok(())
+/// Outcome of offering the meta snapshot to the `start` client. Deliberately
+/// not a `Result`: readiness is a courtesy to the client that asked, never a
+/// condition of the run (#71), so it must not be `?`-able.
+#[must_use = "an undelivered readiness must be recorded as a session warning"]
+enum ReadyDelivery {
+    Delivered,
+    /// The client has gone (killed mid-handshake, its pane closed).
+    ClientGone(io::Error),
+    /// Readiness went out earlier (the `--after` path signals after its
+    /// first dependency scan).
+    AlreadySent,
 }
 
-/// Supervise the child: capture stdout/stderr to output.log, wait for exit.
-/// Returns the ExitReason when the child terminates.
-fn supervise(
-    session: &SessionDir,
-    child: &mut <Current as Platform>::SupervisedChild,
-    attach_sink: Option<&AttachSink>,
-) -> anyhow::Result<ExitReason> {
-    let log_path = session.path().join("output.log");
-    let log_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
-    let log = Mutex::new(log_file);
-
-    let stdout = Current::child_stdout(child).expect("stdout/pty was available");
-    let stderr = Current::child_stderr(child); // None for PTY sessions
-
-    // Spawn reader threads. Capture errors rather than silently discarding.
-    let log_ref = &log;
-    let (stdout_result, stderr_result) = std::thread::scope(|scope| {
-        let stdout_handle = if let Some(sink) = attach_sink {
-            scope.spawn(move || capture_stream_with_tee(stdout, 'O', log_ref, sink))
-        } else {
-            scope.spawn(move || capture_stream(stdout, 'O', log_ref))
-        };
-        let stderr_handle = stderr.map(|s| scope.spawn(move || capture_stream(s, 'E', log_ref)));
-
-        let stdout_r = stdout_handle
-            .join()
-            .unwrap_or_else(|_| Err("stdout capture thread panicked".into()));
-        let stderr_r = stderr_handle
-            .map(|h| {
-                h.join()
-                    .unwrap_or_else(|_| Err("stderr capture thread panicked".into()))
-            })
-            .unwrap_or(Ok(()));
-        (stdout_r, stderr_r)
-    });
-
-    // Log capture failures to a file in the session dir.
-    // Sidecar stderr goes to /dev/null so eprintln is useless.
-    // Don't fail supervision -- the child's exit status is still meaningful.
-    let mut capture_errors = Vec::new();
-    if let Err(e) = stdout_result {
-        capture_errors.push(format!("stdout capture: {e}"));
-    }
-    if let Err(e) = stderr_result {
-        capture_errors.push(format!("stderr capture: {e}"));
-    }
-    if !capture_errors.is_empty() {
-        let err_path = session.path().join("capture_errors.log");
-        let _ = std::fs::write(&err_path, capture_errors.join("\n"));
-    }
-
-    let status = Current::child_wait(child)?;
-
-    let reason = match status.code() {
-        Some(0) => ExitReason::ExitedOk,
-        Some(code) => {
-            let code = NonZeroI32::new(code).expect("already excluded zero");
-            ExitReason::ExitedError { code }
+impl ReadyDelivery {
+    /// Record a lost delivery in meta. Returns whether meta changed.
+    fn record(self, meta: &mut Meta) -> bool {
+        match self {
+            Self::Delivered | Self::AlreadySent => false,
+            Self::ClientGone(e) => {
+                meta.add_warning(format!("readiness not delivered: start client gone ({e})"));
+                true
+            }
         }
-        None => ExitReason::Killed,
-    };
+    }
+}
 
-    Ok(reason)
+/// Send the meta snapshot over the readiness channel, consuming the writer.
+/// The CLI reads this snapshot directly -- no race with subsequent disk writes.
+fn deliver_ready(ready: &mut Option<ReadyWriter>, meta: &Meta) -> ReadyDelivery {
+    let Some(writer) = ready.take() else {
+        return ReadyDelivery::AlreadySent;
+    };
+    let message = match serde_json::to_string(meta) {
+        Ok(json) => format!("OK:{json}\n"),
+        Err(e) => format!("ERROR:meta snapshot not serializable: {e}\n"),
+    };
+    test_ready_gate();
+    if let Err(e) = test_fault(SidecarStep::Readiness.as_str()) {
+        drop(writer);
+        return ReadyDelivery::ClientGone(e);
+    }
+    match Current::write_ready_signal(writer, &message) {
+        Ok(()) => ReadyDelivery::Delivered,
+        Err(e) => ReadyDelivery::ClientGone(e),
+    }
+}
+
+/// Deliver readiness if it is still owed, and persist a lost delivery as a
+/// session warning. Infallible by design: the sidecar then carries on exactly
+/// as it would have (supervising, waiting on dependencies, or finishing a
+/// terminal path). Meta was already written before every call site, so the
+/// rewrite only adds the warning; if the rewrite fails too, the warning stays
+/// in memory and the next meta write carries it.
+fn signal_readiness(session: &SessionDir, ready: &mut Option<ReadyWriter>, meta: &mut Meta) {
+    if deliver_ready(ready, meta).record(meta) {
+        let _ = test_fault("ready_rewrite")
+            .map_err(|e| e.to_string())
+            .and_then(|()| session::write_meta_atomic(session, meta).map_err(|e| e.to_string()));
+    }
 }
 
 /// Read lines from a stream and write to the shared log file.
@@ -1258,7 +1153,7 @@ fn supervise(
 fn capture_stream(
     stream: Box<dyn std::io::Read + Send>,
     tag: char,
-    log: &Mutex<File>,
+    log: &Mutex<Box<dyn Write + Send>>,
 ) -> Result<(), String> {
     let reader = BufReader::new(stream);
     for line in reader.lines() {
@@ -1285,7 +1180,7 @@ fn capture_stream(
 fn capture_stream_with_tee(
     mut stream: Box<dyn std::io::Read + Send>,
     tag: char,
-    log: &Mutex<File>,
+    log: &Mutex<Box<dyn Write + Send>>,
     attach_sink: &AttachSink,
 ) -> Result<(), String> {
     use crate::attach_proto;
@@ -1326,9 +1221,11 @@ fn capture_stream_with_tee(
     Ok(())
 }
 
+/// Serve attach clients on an already-bound socket (bound before `Running` is
+/// published, so a bind failure is a visible warning, not silence).
 #[cfg(unix)]
 fn run_attach_listener(
-    sock_path: &Path,
+    listener: std::os::unix::net::UnixListener,
     pty_write: Arc<Mutex<Box<dyn Write + Send>>>,
     attach_sink: AttachSink,
     session_dir: &Path,
@@ -1336,15 +1233,6 @@ fn run_attach_listener(
     mut facts: LifecycleEvents,
 ) {
     use crate::attach_proto;
-    use std::os::unix::net::UnixListener;
-
-    // Remove stale socket if exists
-    let _ = std::fs::remove_file(sock_path);
-
-    let listener = match UnixListener::bind(sock_path) {
-        Ok(l) => l,
-        Err(_) => return,
-    };
 
     // Accept connections one at a time
     for stream_result in listener.incoming() {
@@ -1429,6 +1317,7 @@ fn apply_pty_resize(fd: &std::fs::File, rows: u16, cols: u16) {
 /// string. Persistence is the same best-effort tmp+rename the attach path has
 /// always used (no fsync): a control flip must not block the attach thread, and
 /// the durable lifecycle writes go through `write_meta_atomic` elsewhere.
+#[cfg(unix)]
 fn set_pty_control_on_disk(session_dir: &Path, control: PtyControl) {
     let meta_path = session_dir.join("meta.json");
     let Ok(content) = std::fs::read_to_string(&meta_path) else {
@@ -1447,7 +1336,8 @@ fn set_pty_control_on_disk(session_dir: &Path, control: PtyControl) {
     }
 }
 
-#[cfg(test)]
+// Every test here exercises the Unix-only PTY control path.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::model::ids::{EpochTimestamp, Generation, ProcessIdentity, RunId, SessionName};

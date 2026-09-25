@@ -7,6 +7,10 @@ Tender has two execution lanes:
 
 This file describes the current PTY implementation on `main`, not the planned lease extension.
 
+The remote-first successor is [cloud PTY control and replay](../plans/active/00_cloud-pty-control.md).
+It is a plan, not shipped behavior: single-writer controller enforcement,
+exact recordings, reconnect, and an optional external screen extension.
+
 ```mermaid
 stateDiagram-v2
     [*] --> AgentControl: tender start --pty

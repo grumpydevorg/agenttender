@@ -7,6 +7,15 @@ links: []
 
 # PTY Automation — Exclusive Agent Control for PTY Sessions
 
+> **Superseded for the cloud workflow (2026-09-14):**
+> [Cloud PTY control and replay](../active/00_cloud-pty-control.md) now supplies
+> the concrete demand for input ownership and read-only observation. Implement
+> its run-bound controller epoch and single writer first. Do not implement this
+> document's file-based lease IPC, suspended-lease restoration, or one-time
+> streaming push authorization unchanged. The design below is historical;
+> broader multi-agent leases remain deferred. The separate screen extension
+> decision is revised in [boo-integration](boo-integration.md).
+
 Add lease-backed agent control for PTY sessions so Tender can honestly enforce exclusive ownership of terminal input while still allowing human takeover when needed.
 
 > **Status: deferred — correctness hardening, not roadmap (decided 2026-07-09).**

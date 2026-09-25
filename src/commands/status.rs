@@ -1,5 +1,4 @@
 use tender::model::ids::{Namespace, ProcessIdentity, SessionName};
-use tender::platform::{Current, Platform, ProcessStatus};
 use tender::session::{self, SessionError, SessionRoot};
 
 pub fn cmd_status(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
@@ -38,24 +37,15 @@ pub fn cmd_status(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
 }
 
 /// Clean up an orphaned session dir that has child_pid but no meta.json.
-/// The child_pid breadcrumb contains a JSON-serialized ProcessIdentity,
-/// which lets us verify the process against PID reuse before killing.
-/// Falls back to skip-kill for old bare-PID format breadcrumbs.
+/// The child_pid breadcrumb contains a JSON-serialized ProcessIdentity; the
+/// child is killed only by the shared identity-verified rule
+/// ([`tender::reconcile::kill_verified_orphan`]), never on a bare PID.
 pub(crate) fn cleanup_orphan_dir(dir: &std::path::Path) {
     let child_pid_path = dir.join("child_pid");
     if let Ok(content) = std::fs::read_to_string(&child_pid_path) {
-        // Try JSON ProcessIdentity (new format)
         if let Ok(identity) = serde_json::from_str::<ProcessIdentity>(&content) {
-            match Current::process_status(&identity) {
-                ProcessStatus::AliveVerified | ProcessStatus::Inaccessible => {
-                    // Identity verified (or can't verify but process exists) -- kill it
-                    let _ = Current::kill_orphan(&identity, true);
-                }
-                // Missing, IdentityMismatch, OsError -- don't kill
-                _ => {}
-            }
+            let _ = tender::reconcile::kill_verified_orphan(&identity);
         }
-        // Old bare-PID format: can't verify identity, skip kill (backwards compat)
     }
     let _ = std::fs::remove_dir_all(dir);
 }

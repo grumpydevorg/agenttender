@@ -215,7 +215,7 @@ nested-quoting layer to escape.
 > So today: **local Windows and remote `exec` are supported; general `--host`
 > command forwarding remains POSIX-shell-only** — do not point general `--host`
 > commands at a Windows host (cmd.exe / PowerShell) until the
-> [remote frame transport](plans/active/00_remote-frame-transport.md) lands.
+> [remote frame transport](plans/active/01_remote-frame-transport.md) lands.
 >
 > *(A 2026-07-10 ARM-Windows smoke ran `start`/`kill`/`exec` with simple
 > arguments — happy-path evidence that the mechanism runs, **not** proof of
@@ -259,6 +259,78 @@ jq -cn --rawfile sql query.sql '{v:1, session:"ddb", cmd:[$sql], timeout:300}' \
   | tender exec --frame-from-stdin
 ```
 
+## Cap a session's memory
+
+A supervised session that runs away — a listing that accumulates in RAM, a load
+that balloons — can take the whole host down, not just itself. It is worst on a
+box with **no swap**: once memory is exhausted the kernel can't even `fork()`, so
+new `ssh` logins start failing and you lose the very access you'd use to kill the
+job, until the OOM killer reaps something. When you leave long-running work on a
+remote box, bound it so a runaway dies *inside its own limit* and the host stays
+reachable.
+
+**Linux — cgroup v2 (the real thing).** With systemd this needs **no root** when
+the `memory` controller is delegated to your user slice — check with:
+
+```bash
+cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/cgroup.controllers   # must list "memory"
+```
+
+One-time setup: enable lingering (so the user manager and its jobs survive
+logout) and define a capped slice:
+
+```bash
+loginctl enable-linger
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/tender.slice <<'EOF'
+[Slice]
+MemoryHigh=2G      # soft — reclaim/throttle before the wall
+MemoryMax=3G       # hard — OOM-kill inside the slice past this
+MemorySwapMax=0
+EOF
+systemctl --user daemon-reload
+```
+
+Launch Tender inside the slice; the detached sidecar and its child inherit the
+cgroup:
+
+```bash
+systemd-run --user --slice=tender.slice --scope --quiet \
+  tender run --detach --replace ./job.sh
+```
+
+The child's *own* scope reports `memory.max = max` — that's expected. cgroup v2
+enforces the tightest limit among **all** ancestors, so `tender.slice` bounds the
+aggregate of every session in it; a single runaway is OOM-killed within the slice
+and the host is untouched. Three things to know: the cap is on the *slice*, so
+concurrent sessions share its budget (size for the sum); system-level
+`systemd-run` (without `--user`) needs root/polkit — the `--user` path above does
+not; and persistence across a full reboot is host-dependent (some locked-down
+NAS/appliance OSes reset the linger marker or user units — reapply on boot if so).
+
+### Windows and macOS
+
+**Windows** has a true equivalent: a **Job Object** with
+`JOB_OBJECT_LIMIT_JOB_MEMORY` caps the committed memory of every process in the
+job, and an over-limit allocation simply fails. There is no clean built-in CLI —
+today it takes native code / P-Invoke (or a helper) to call
+`SetInformationJobObject` then `AssignProcessToJobObject` on the child. Under
+**WSL2** you get the Linux path above instead, under a VM-wide ceiling set in
+`%UserProfile%\.wslconfig` (`[wsl2]` → `memory=`).
+
+**macOS** has no host-level cgroup, but it isn't empty-handed. A native
+per-process kill limit *does* exist — **jetsam** (the `memorystatus` framework
+shared with iOS): the undocumented `JetsamMemoryLimit` launchd key makes the
+kernel kill a process that overruns N MB. It's private, launchd-plist-only, and
+barely exercised on the desktop, so it's not something to hang a job on. The
+portable knobs are weak too — `ulimit -v` (address space) is coarse and
+unreliable, `ulimit -m` (RSS) a no-op on modern kernels. The saving grace is
+dynamic swap: a Mac *degrades* (thrash, slow) rather than hard-deadlocking like a
+swapless Linux box. For a dependable hard bound, run the job in a memory-capped
+Linux VM and use the cgroup path inside it — via Apple's own **`container`** tool
+(macOS 26+, a lightweight VM per container) or OrbStack / Colima / Lima / Docker
+Desktop.
+
 ## Record where a session runs — `--boundary`
 
 Optionally tag a session with the environment it runs in (host, container, VM,
@@ -286,6 +358,62 @@ Tender owns the **process**; [Boo](https://github.com/coder/boo) owns the
 **screen**. They compose as a stack — supervise a Boo session with Tender for a
 durable, accountable process while Boo drives and reads the live TUI. Tender does
 rendered-screen reads for nobody and deliberately never will.
+
+## Tender inside herdr
+
+[herdr](https://herdr.dev) owns the **agent pane**: it hosts interactive
+agents and shows whether each is working, blocked or idle, from the agent's own
+lifecycle hooks. Tender owns the **processes those agents start**. The agent
+runs in a herdr pane; its builds, REPLs and remote jobs run under
+`tender start`/`exec`, where it gets exit codes rather than a screen to scrape.
+
+Measured together on macOS on 2026-09-25 (herdr 0.9.1, tender 0.2.1, oh-my-pi
+18.3.0):
+
+- **Tender outlives the pane and the server.** A session started from a pane
+  kept running after `herdr pane close`, finished `ExitedOk` with its output
+  logged, and a `--stdin` shell kept its cwd and exported variables across the
+  pane closing *and* `herdr session stop`. The sidecar `setsid`s, so it is
+  reparented to launchd rather than dying with the pane.
+- **Agent state stays right.** An omp agent in a pane ran `tender start` and
+  an 8-second `tender exec` through its bash tool; herdr showed the pane
+  `working` for the turn and `idle` after, the agent reported the exec's exit
+  code, and the session was still `Running` for the next turn.
+- **Sessions inherit the pane's identity.** Anything Tender starts from a pane
+  carries `HERDR_ENV`, `HERDR_PANE_ID`, `HERDR_SOCKET_PATH`, `HERDR_SESSION`,
+  `HERDR_BIN_PATH`, `HERDR_TAB_ID` and `HERDR_WORKSPACE_ID`. That is what lets an
+  `--on-exit` hook reach the right herdr session, and it is harmless: herdr
+  applied lifecycle reports only from the pane's own agent session. An omp
+  started under `tender start --pty` from a pane's shell, and a hand-sent
+  `pane.report_agent`, were both acknowledged and ignored. omp also marks its
+  shells `OMPCODE=1`, which its herdr extension treats as nested and silences.
+
+Raise a herdr notification when a job ends. `--on-exit` runs its command as
+argv, not through a shell, so put the expansion in a small script, say
+`~/bin/notify-herdr`:
+
+```sh
+#!/bin/sh
+exec "$HERDR_BIN_PATH" notification show "tender: $TENDER_SESSION $TENDER_EXIT_REASON" --sound done
+```
+
+```bash
+tender start --on-exit ~/bin/notify-herdr build -- make   # from inside a herdr pane
+```
+
+The notification arrived whether or not the pane that started the job still
+existed. Outside herdr `HERDR_BIN_PATH` is unset and the hook fails, which the
+run's `callback.finished` event records.
+
+Watch every job from one pane with `tender watch --namespace <ns> --events`,
+and `tender attach <name>` to take one over by hand.
+
+Limits:
+
+- Read results from Tender, not from `herdr pane read`: a pane is a screen,
+  with no exit code.
+- Run agents in herdr panes, not under Tender: `tender start --pty -- omp`
+  works, but herdr cannot see that agent's state.
 
 ## See also
 

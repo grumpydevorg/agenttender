@@ -50,7 +50,7 @@ Every durable fact should have one owner and one write path.
 Current examples:
 
 - The sidecar is the normal writer of lifecycle state in [`03-run-lifecycle.md`](architecture/03-run-lifecycle.md).
-- CLI reconciliation is the sole lifecycle-writing exception: it either heals from the sidecar's terminal event or infers `SidecarLost`, recording provenance.
+- CLI reconciliation is the sole lifecycle-writing exception: it either heals from the sidecar's terminal event or infers `SidecarLost`, recording provenance (including `orphan_killed` when it had to stop a child the sidecar left running).
 - PTY control writes go through a single typed path: the sidecar reads `Meta`, applies `set_pty_control`, then writes atomically — deleting ad-hoc `meta.json` mutation from multiple call sites.
 
 Use in review:
@@ -110,7 +110,7 @@ Tender sometimes knows facts directly and sometimes infers them. Those should no
 
 Current examples:
 
-- Direct: the sidecar writes a terminal state after observing child exit.
+- Direct: the sidecar writes a terminal state after observing child exit, or `SidecarFailed` when it stopped the child because its own supervision failed.
 - Inferred: `SidecarLost` is concluded by reconciliation from released lock plus missing terminal state.
 
 Shipped:

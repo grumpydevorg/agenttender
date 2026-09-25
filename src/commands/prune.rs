@@ -204,6 +204,7 @@ fn exit_reason_label(status: &RunStatus) -> String {
             ExitReason::Killed => "Killed".to_owned(),
             ExitReason::KilledForced => "KilledForced".to_owned(),
             ExitReason::TimedOut => "TimedOut".to_owned(),
+            ExitReason::SidecarFailed { step } => format!("SidecarFailed({step})"),
         },
         RunStatus::SpawnFailed { .. } => "SpawnFailed".to_owned(),
         RunStatus::SidecarLost { .. } => "SidecarLost".to_owned(),
