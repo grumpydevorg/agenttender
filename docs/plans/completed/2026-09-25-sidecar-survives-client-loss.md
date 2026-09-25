@@ -44,3 +44,27 @@ session, not fatal: the client that asked has gone, but the run it started has
 not. Acceptance: kill the client inside the window and the session still reaches
 `Exited`, with `run.exited` and its hooks. Decide whether the pre-spawn paths
 should likewise proceed or abort cleanly, rather than leave it to `?`.
+
+## Resolution (2026-09-25)
+
+The mechanism was confirmed before the fix: with the client killed inside the
+window, `run_inner` returned `Broken pipe (os error 32)` from the readiness
+write. `signal_meta_snapshot` now treats a failed readiness write as non-fatal
+at every call site (after spawn, after the `--after` first scan, and on the
+spawn- and identity-failure paths): it adds the session warning
+`readiness not delivered: start client gone (<error>)`, persists meta, and the
+sidecar carries on as it would have. Pre-spawn paths therefore proceed rather
+than abort. The client and the readiness protocol are unchanged.
+
+`tests/sidecar_client_loss.rs` proves it without a timing race. The debug-only
+`TENDER_TEST_READY_GATE` hook holds the sidecar just before its readiness
+write; each test waits for the session's meta, kills and reaps the still
+blocked client, then opens the gate. It covers a supervised run reaching
+`Exited`/`ExitedOk` with `run.exited` and the warning, an `--on-exit` hook
+still running, the `--after` path, and spawn failure. All four failed before
+the fix (the sidecar let go at `Running`/`Starting`, or no warning) and pass
+after. Re-running the reproduction above against a release build: of 30
+killed clients, 4 died before creating a session (no sidecar, no child), and
+the other 26 all hit the window (each carries the warning). All 26 reached
+`Exited`/`ExitedOk` with `run.exited`: 0 `SidecarLost`, and no `sleep` child
+left running.

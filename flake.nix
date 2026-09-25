@@ -103,7 +103,8 @@
           # crash_after_terminal_event_leaves_event_without_meta fail -- reporting
           # a real run where they expect the orphan the crash should have left.
           # They are not flaky and not sandbox-hostile; they simply require the
-          # profile they were written for.
+          # profile they were written for. tests/sidecar_client_loss.rs likewise
+          # needs the debug-only TENDER_TEST_READY_GATE readiness hold.
           checkType = "debug";
 
           # src/bin/ holds three helper executables that exist only for the

@@ -30,6 +30,7 @@ Notes:
 
 - if dependencies are present, the sidecar writes `Starting` and signals readiness before waiting on `--after`
 - if spawn fails, the sidecar returns a `SpawnFailed` snapshot over the ready pipe and the CLI exits non-zero
+- readiness is a courtesy to the CLI, not a condition of the run: if the CLI has gone before the sidecar signals (killed, its terminal closed), the write fails and the sidecar records a `readiness not delivered` warning in meta and carries on
 
 ## `exec`
 
