@@ -12,7 +12,7 @@ fn windows_spawn_child_identity() {
     let mut child = WindowsPlatform::spawn_child(&argv, false, None, &BTreeMap::new())
         .expect("spawn_child should succeed");
 
-    let id = WindowsPlatform::child_identity(&child).expect("identity should be available");
+    let id = WindowsPlatform::child_identity(&child);
     assert!(id.pid.get() > 0);
     assert!(id.start_time_ns > 0);
 

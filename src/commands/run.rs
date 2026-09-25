@@ -164,6 +164,7 @@ fn foreground_wait(session: &session::SessionDir) -> anyhow::Result<()> {
             ExitReason::ExitedError { code } => std::process::exit(code.get()),
             ExitReason::Killed | ExitReason::KilledForced => std::process::exit(137),
             ExitReason::TimedOut => std::process::exit(124),
+            ExitReason::SidecarFailed { .. } => std::process::exit(5),
         },
         RunStatus::SpawnFailed { .. } => std::process::exit(2),
         RunStatus::SidecarLost { .. } => std::process::exit(3),

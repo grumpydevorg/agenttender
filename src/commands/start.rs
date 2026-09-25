@@ -44,12 +44,15 @@ pub fn cmd_start(
     let json = serde_json::to_string_pretty(&meta)?;
     println!("{json}");
 
-    // Exit non-zero if the child failed to spawn — agents branch on exit code
-    if matches!(
-        meta.status(),
-        tendr::model::state::RunStatus::SpawnFailed { .. }
-    ) {
-        std::process::exit(2);
+    // Exit non-zero if the run already ended in failure — agents branch on
+    // exit code (the same codes as `wait`).
+    match meta.status() {
+        tendr::model::state::RunStatus::SpawnFailed { .. } => std::process::exit(2),
+        tendr::model::state::RunStatus::Exited {
+            how: tendr::model::state::ExitReason::SidecarFailed { .. },
+            ..
+        } => std::process::exit(5),
+        _ => {}
     }
 
     Ok(())

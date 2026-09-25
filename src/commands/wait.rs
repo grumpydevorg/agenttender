@@ -17,7 +17,8 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500)
 /// Exit codes follow the single-session convention extended to sets:
 /// - 0: all reported sessions exited successfully
 /// - 2: at least one spawn failure
-/// - 3: at least one sidecar lost
+/// - 3: at least one sidecar lost (the child may still be running)
+/// - 5: at least one sidecar failure (the sidecar killed the child)
 /// - 4: at least one dependency failure
 /// - 42: at least one non-zero child exit
 /// - 1: session error (not found, etc.) — handled by anyhow bail
@@ -126,7 +127,8 @@ pub fn cmd_wait(
 /// failure wins. Severity order (highest to lowest):
 ///
 /// - 2: spawn failure (process never started)
-/// - 3: sidecar lost (supervision crashed)
+/// - 3: sidecar lost (supervision crashed; the child may still be running)
+/// - 5: sidecar failed (supervision failed, killed the child, said so)
 /// - 4/124/137: dependency failed (4=upstream non-zero, 124=upstream timeout, 137=killed during wait)
 /// - 42: child exited non-zero (process ran but failed)
 /// - 0: success
@@ -146,8 +148,9 @@ fn derive_exit_code(metas: &[&Meta]) -> i32 {
 /// Severity rank for exit code comparison. Higher = more severe.
 fn severity(code: i32) -> u8 {
     match code {
-        2 => 5,             // spawn failed
-        3 => 4,             // sidecar lost
+        2 => 6,             // spawn failed
+        3 => 5,             // sidecar lost
+        5 => 4,             // sidecar failed
         4 | 124 | 137 => 3, // dependency failed (any sub-reason)
         42 => 1,            // non-zero exit
         _ => 0,
@@ -162,6 +165,7 @@ fn severity(code: i32) -> u8 {
 /// - 2: spawn failure
 /// - 3: sidecar lost
 /// - 4: dependency failed (upstream exited non-zero)
+/// - 5: sidecar failed
 /// - 42: child exited non-zero
 /// - 124: dependency timed out
 /// - 137: killed during dependency wait
@@ -171,6 +175,7 @@ fn single_exit_code(status: &RunStatus) -> i32 {
             ExitReason::ExitedOk => 0,
             ExitReason::ExitedError { .. } => 42,
             ExitReason::Killed | ExitReason::KilledForced | ExitReason::TimedOut => 0,
+            ExitReason::SidecarFailed { .. } => 5,
         },
         RunStatus::SpawnFailed { .. } => 2,
         RunStatus::SidecarLost { .. } => 3,
@@ -184,5 +189,40 @@ fn single_exit_code(status: &RunStatus) -> i32 {
         }
         // Non-terminal states shouldn't reach here, but return 0 if they do.
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tendr::model::ids::{EpochTimestamp, ProcessIdentity};
+    use tendr::model::state::SidecarStep;
+
+    fn sidecar_failed() -> RunStatus {
+        RunStatus::Exited {
+            child: ProcessIdentity {
+                pid: std::num::NonZeroU32::new(7).unwrap(),
+                start_time_ns: 1,
+            },
+            how: ExitReason::SidecarFailed {
+                step: SidecarStep::OutputLog,
+            },
+            ended_at: EpochTimestamp::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn sidecar_failed_exits_5() {
+        assert_eq!(single_exit_code(&sidecar_failed()), 5);
+    }
+
+    /// 3 (the child may still be running) outranks 5 (the sidecar killed it),
+    /// which outranks a dependency failure.
+    #[test]
+    fn sidecar_failed_ranks_between_lost_and_dependency_failure() {
+        assert!(severity(2) > severity(3));
+        assert!(severity(3) > severity(5));
+        assert!(severity(5) > severity(4));
+        assert!(severity(5) > severity(42));
     }
 }

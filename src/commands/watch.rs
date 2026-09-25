@@ -46,6 +46,7 @@ fn run_event_name(status: &RunStatus) -> &'static str {
             ExitReason::Killed => "run.killed",
             ExitReason::KilledForced => "run.killed",
             ExitReason::TimedOut => "run.timed_out",
+            ExitReason::SidecarFailed { .. } => "run.sidecar_failed",
         },
         RunStatus::SidecarLost { .. } => "run.sidecar_lost",
         RunStatus::DependencyFailed { .. } => "run.dependency_failed",
@@ -73,6 +74,9 @@ fn run_event_data(status: &RunStatus) -> serde_json::Value {
             }
             ExitReason::TimedOut => {
                 serde_json::json!({"status": "Exited", "reason": "TimedOut"})
+            }
+            ExitReason::SidecarFailed { step } => {
+                serde_json::json!({"status": "Exited", "reason": "SidecarFailed", "step": step.as_str()})
             }
         },
         RunStatus::SidecarLost { .. } => {

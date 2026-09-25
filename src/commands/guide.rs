@@ -220,7 +220,7 @@ mod tests {
         assert!(herdr.contains("herdr session stop"));
         assert!(herdr.contains("HERDR_BIN_PATH"));
         assert!(herdr.contains("--on-exit"));
-        assert!(herdr.contains("sidecar-survives-client-loss"));
+        assert!(herdr.contains("herdr pane read"));
         assert!(
             !herdr.contains("## See also"),
             "herdr section must not bleed into See also"

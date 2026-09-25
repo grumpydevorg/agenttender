@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
+#[cfg(unix)]
 use tendr::attach_proto;
 use tendr::model::ids::{Namespace, SessionName};
 use tendr::model::pty::PtyControl;
@@ -30,11 +31,13 @@ pub fn cmd_attach(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
         anyhow::bail!("session is already under human control");
     }
 
-    let sock_path = attach_proto::read_sock_path(session.path())
-        .ok_or_else(|| anyhow::anyhow!("attach socket not found"))?;
+    #[cfg(not(unix))]
+    anyhow::bail!("attach is only supported on Unix");
 
     #[cfg(unix)]
     {
+        let sock_path = attach_proto::read_sock_path(session.path())
+            .ok_or_else(|| anyhow::anyhow!("attach socket not found"))?;
         let stream = UnixStream::connect(&sock_path)?;
         let mut read_stream = stream.try_clone()?;
         let mut write_stream = stream;
@@ -84,14 +87,8 @@ pub fn cmd_attach(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
         let _ = attach_proto::write_msg(&mut write_stream, attach_proto::MSG_DETACH, &[]);
         restore_terminal(&orig);
         let _ = reader_handle.join();
+        Ok(())
     }
-
-    #[cfg(not(unix))]
-    {
-        anyhow::bail!("attach is only supported on Unix");
-    }
-
-    Ok(())
 }
 
 #[cfg(unix)]

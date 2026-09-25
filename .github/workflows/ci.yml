@@ -80,6 +80,26 @@ jobs:
       - name: Package (locked)
         run: cargo package --locked --allow-dirty
 
+  # Code under `#[cfg(windows)]` and `#[cfg(unix)]` is only linted on a host of
+  # that family, and the native Windows lanes run tests, not clippy -- so
+  # Windows-only lint findings (and Unix-only helpers left dead on Windows)
+  # reached main unnoticed. `clippy` type-checks without linking, so a Linux
+  # runner with the Windows std installed covers both Windows targets cheaply.
+  clippy-windows:
+    name: clippy windows targets (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust + Windows targets
+        run: |
+          rustup update stable --no-self-update
+          rustup component add clippy
+          rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+      - name: Clippy (x86_64-pc-windows-msvc)
+        run: cargo clippy --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnings
+      - name: Clippy (aarch64-pc-windows-msvc)
+        run: cargo clippy --all-targets --locked --target aarch64-pc-windows-msvc -- -D warnings
+
   # The crate advertises `rust-version = "1.85"` in Cargo.toml and
   # `cargo install tendr` is a documented path, so that is a published
   # contract. Nothing verified it until this job: the code used let-chains,

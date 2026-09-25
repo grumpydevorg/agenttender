@@ -146,10 +146,15 @@ fn killed_sidecar_appends_inferred_sidecar_lost_event() {
     assert_ne!(lost["writer"], meta["run_id"]);
     assert_eq!(lost["seq"], 1);
 
-    // Clean up the orphaned child.
-    if let Some(child_pid) = status["child"]["pid"].as_u64() {
-        unsafe { libc::kill(child_pid as i32, libc::SIGKILL) };
-    }
+    // Reconciliation killed the orphan: its evidence says so.
+    assert!(
+        status["transition_provenance"]["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e == "orphan_killed"),
+        "{status}"
+    );
 }
 
 /// Acceptance criterion 2 (plan): a terminal event durably logged before the

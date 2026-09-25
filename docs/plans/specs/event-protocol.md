@@ -67,7 +67,10 @@ from user input. Hard line cap **32 KiB**; `data` cap **16 KiB** inline.
 
 Lifecycle kind names reuse the shipped watch vocabulary verbatim
 (`run.starting` … `run.dependency_failed`) plus new `pty.control_changed`,
-`callback.finished`, `segment.opened`.
+`callback.finished`, `segment.opened`. `run.sidecar_failed` (data
+`{"status":"Exited","reason":"SidecarFailed","step":"<step>"}`) is the
+sidecar's direct, durable record that it failed while supervising and killed
+the child; contrast the inferred `run.sidecar_lost`.
 
 ### 1.1 Worked examples
 

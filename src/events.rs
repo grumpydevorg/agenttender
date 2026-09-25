@@ -378,6 +378,7 @@ pub fn lifecycle_kind(status: &RunStatus) -> Kind {
             ExitReason::ExitedOk | ExitReason::ExitedError { .. } => "run.exited",
             ExitReason::Killed | ExitReason::KilledForced => "run.killed",
             ExitReason::TimedOut => "run.timed_out",
+            ExitReason::SidecarFailed { .. } => "run.sidecar_failed",
         },
         RunStatus::SidecarLost { .. } => "run.sidecar_lost",
         RunStatus::DependencyFailed { .. } => "run.dependency_failed",
@@ -417,6 +418,9 @@ pub fn lifecycle_data(
             }
             ExitReason::TimedOut => {
                 serde_json::json!({"status": "Exited", "reason": "TimedOut"})
+            }
+            ExitReason::SidecarFailed { step } => {
+                serde_json::json!({"status": "Exited", "reason": "SidecarFailed", "step": step.as_str()})
             }
         },
         RunStatus::SidecarLost { .. } => serde_json::json!({"status": "SidecarLost"}),
