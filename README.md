@@ -39,6 +39,29 @@ cd agenttender && cargo build --release   # → target/release/tender
 
 Prebuilt binaries and `cargo install agenttender` arrive with the first release — see the [roadmap](docs/ROADMAP.md).
 
+### Nix
+
+```bash
+nix build github:grumpydevorg/agenttender#tender   # or  nix build .#tender  in a clone
+nix run  github:grumpydevorg/agenttender -- --version
+```
+
+The flake exposes `packages.<system>.tender` for `aarch64-darwin`, `x86_64-linux` and
+`aarch64-linux`, and `checks.<system>.tender` is that same package — so building it runs the test
+suite. It builds with nixpkgs' own rustc; `rust-toolchain.toml` remains the source of truth for
+devenv and rustup, which are the paths that reach Windows.
+
+The package also **ships the `using-tender` agent skill**, installed alongside the binary at
+
+```
+$out/share/agent-skills/using-tender/SKILL.md
+```
+
+from the same `src/embedded/SKILL.md` the binary embeds, so the packaged copy and the binary can
+never describe different versions of tender. A Nix-managed workstation links its agents' skill
+directories straight at that path and never writes the file. Without Nix, `tender skill install`
+remains the way to put it in `~/.claude/skills/using-tender/SKILL.md`.
+
 ## Docs
 
 **[Documentation](docs/README.md)** · [Guide](docs/guide.md) · [Roadmap](docs/ROADMAP.md) · [Analytics recipes](docs/analytics-recipes.md) · [Architecture](docs/architecture/README.md)

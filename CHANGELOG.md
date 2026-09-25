@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`SidecarFailed`: the sidecar says when its own supervision failed.** A new
+  exit reason (`"reason":"SidecarFailed","step":"<step>"`), a durable
+  `run.sidecar_failed` event, exit code **5** from `wait`, `run` and `start`,
+  and `TENDER_EXIT_REASON=SidecarFailed` for `--on-exit` hooks, which run for it.
+  Exit code 3 (`SidecarLost`) still means the child may be running.
+
+### Fixed
+
+- **`tender attach` on Windows says it is unsupported.** It failed with
+  "attach socket not found", because only the Unix sidecar publishes the socket;
+  it now reports "attach is only supported on Unix", as intended.
+- **No spawned child is left running unsupervised.** Besides the lost `start`
+  client fixed below, a failure after spawning could still end the sidecar with
+  the child running: the `--stdin` transport, writing `Running`, the readiness
+  meta rewrite, opening `output.log`, waiting for the exit, or a panic. Now a
+  guard owns the child from spawn: steps that do not threaten the run recover
+  with a warning (a failed `output.log` open drains the output so the child
+  cannot block), and the rest stop the child and record `SidecarFailed`. A PTY
+  session's attach socket is bound before the child is spawned, so a bind
+  failure is `SpawnFailed` and a PTY session never runs without its listener.
+- **Reconciliation kills a lost sidecar's orphan.** After a true crash
+  (SIGKILL, OOM), `status`, `wait` and `run` found `SidecarLost` but left the
+  child running forever. They now kill it, only after verifying its identity,
+  and record `orphan_killed`. On the `--after` path the child is found through
+  its `child_pid` breadcrumb. The cleanup of a session directory left without
+  meta follows the same rule, so it no longer kills a process whose identity it
+  cannot verify. Reconciliation now holds the session lock and re-reads meta, so
+  it can no longer overwrite a record the sidecar wrote a moment earlier.
+
+- **The sidecar survives losing its `start` client** ([#71](https://github.com/grumpydevorg/agenttender/issues/71)).
+  If the `tender start` client died between the sidecar spawning the child and
+  reading the readiness message (a closed pane, a killed tool call, Ctrl-C),
+  the failed readiness write ended the sidecar and left the child running
+  unsupervised: `status` later showed `SidecarLost`, with no `run.exited`, no
+  further output and no `--on-exit` hooks. A failed readiness write is now a
+  session warning (`readiness not delivered: start client gone`), and the run
+  carries on to its normal terminal state.
+
 ## v0.2.1 — Security: reject option-shaped `--host` destinations
 
 ### Security

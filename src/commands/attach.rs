@@ -1,4 +1,5 @@
 use tender::attach_escape::EscapeMode;
+#[cfg(unix)]
 use tender::attach_proto;
 use tender::model::ids::{Namespace, SessionName};
 use tender::model::pty::PtyControl;
@@ -32,11 +33,17 @@ pub fn cmd_attach(
         anyhow::bail!("session is already under human control (use --takeover to take it over)");
     }
 
-    let sock_path = attach_proto::read_sock_path(session.path())
-        .ok_or_else(|| anyhow::anyhow!("attach socket not found"))?;
+    #[cfg(not(unix))]
+    {
+        let _ = (takeover, escape);
+        anyhow::bail!("attach is only supported on Unix");
+    }
 
     #[cfg(unix)]
     {
+        let sock_path = attach_proto::read_sock_path(session.path())
+            .ok_or_else(|| anyhow::anyhow!("attach socket not found"))?;
+
         // Fail before any side effect — a takeover included — if there is no
         // terminal to drive.
         if !rustix::termios::isatty(std::io::stdin()) {
@@ -50,12 +57,6 @@ pub fn cmd_attach(
             .map_err(|e| anyhow::anyhow!("refusing attach socket {}: {e}", sock_path.display()))?;
         handshake(&mut stream, takeover)?;
         unix_relay::relay(stream, escape)
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _ = (sock_path, takeover, escape);
-        anyhow::bail!("attach is only supported on Unix");
     }
 }
 

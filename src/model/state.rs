@@ -53,6 +53,71 @@ pub enum ExitReason {
     KilledForced,
     /// Child exceeded --timeout.
     TimedOut,
+    /// The sidecar itself failed while supervising, killed the child, and
+    /// recorded this directly. Contrast `RunStatus::SidecarLost`, which is
+    /// inferred after the sidecar vanished without a word.
+    SidecarFailed { step: SidecarStep },
+}
+
+/// The post-spawn step the sidecar was on when supervision failed. A stable
+/// wire identifier (`"step": "output_log"`): add variants, never rename.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidecarStep {
+    /// Writing the `child_pid` orphan breadcrumb.
+    Breadcrumb,
+    /// Creating the `--stdin` transport (FIFO / named pipe).
+    StdinTransport,
+    /// Setting up a PTY session's I/O after spawn: its recorder, its input
+    /// writer and the attach listener. The attach socket itself is bound
+    /// before spawn, where a failure is `SpawnFailed` (no child exists yet).
+    AttachBind,
+    /// Persisting `Running` to `meta.json`.
+    RunningMeta,
+    /// Delivering readiness to the `start` client.
+    Readiness,
+    /// Opening `output.log` and capturing output.
+    OutputLog,
+    /// Waiting for the child's exit status.
+    ChildWait,
+}
+
+impl SidecarStep {
+    /// The wire name, as serialized.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Breadcrumb => "breadcrumb",
+            Self::StdinTransport => "stdin_transport",
+            Self::AttachBind => "attach_bind",
+            Self::RunningMeta => "running_meta",
+            Self::Readiness => "readiness",
+            Self::OutputLog => "output_log",
+            Self::ChildWait => "child_wait",
+        }
+    }
+
+    /// Parse a wire name back into a step.
+    #[must_use]
+    pub fn from_wire(name: &str) -> Option<Self> {
+        [
+            Self::Breadcrumb,
+            Self::StdinTransport,
+            Self::AttachBind,
+            Self::RunningMeta,
+            Self::Readiness,
+            Self::OutputLog,
+            Self::ChildWait,
+        ]
+        .into_iter()
+        .find(|step| step.as_str() == name)
+    }
+}
+
+impl std::fmt::Display for SidecarStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 impl RunStatus {

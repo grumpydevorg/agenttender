@@ -33,13 +33,16 @@ the live distinction is keep-ready vs deferred-until-a-consumer.
 | ID | File | Lane / status |
 |----|------|---------------|
 | agent-hook-routing | `agent-hook-routing.md` | Lane B/D — small docs/glue; ready (replaces the cut skill-agent + hermes cards) |
+| capture-stop-drain | `capture-stop-drain.md` | Lane A — small sidecar fix; ready |
 | boo-integration | `boo-integration.md` | Lane D — optional composition, live validation open; path-5 decision revised by cloud-pty-control |
 | content-addressable-storage | `content-addressable-storage.md` | Lane C — deferred; blob primitive already absorbed into event-protocol, rest is consumer-gated |
+| log-delimiter-cr-framing | `log-delimiter-cr-framing.md` | Lane A — ready; `\r` progress meters are invisible in pipe mode until exit (measured). Typed `LogDelimiter` on LaunchSpec, `terminator` provenance on `LogLine`, bounded records in every mode, and collapse as a derived view — historical surfaces collapse, live followers cannot. |
+| partial-line-telemetry | `partial-line-telemetry.md` | Lane A — ready; makes a silent session explain itself (`pending_partial_bytes`, `last_record_age_s`). Split from log-delimiter-cr-framing; the open question is sidecar→CLI IPC, not the counter. |
 | pty-automation | `pty-automation.md` | Historical lease design; cloud-pty-control now owns required input ownership and observation. Broader lease features remain deferred. |
 
 ## completed/
 
-44 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
+48 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
 
 ## specs/
 

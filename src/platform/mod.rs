@@ -122,9 +122,10 @@ pub trait Platform {
         env: &BTreeMap<String, String>,
     ) -> io::Result<Self::SupervisedChild>;
 
-    /// Get the ProcessIdentity of the supervised child.
+    /// Get the ProcessIdentity of the supervised child, captured at spawn
+    /// (a spawn that cannot identify its child fails instead).
     /// Cheap, callable any time -- borrows only.
-    fn child_identity(child: &Self::SupervisedChild) -> io::Result<ProcessIdentity>;
+    fn child_identity(child: &Self::SupervisedChild) -> ProcessIdentity;
 
     /// Wait for the child to exit. Blocks until the process terminates.
     /// Does NOT consume the child -- handles stay open for cleanup.

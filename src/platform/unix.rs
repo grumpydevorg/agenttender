@@ -246,8 +246,8 @@ impl Platform for UnixPlatform {
         })
     }
 
-    fn child_identity(child: &SupervisedChild) -> io::Result<ProcessIdentity> {
-        Ok(child.identity)
+    fn child_identity(child: &SupervisedChild) -> ProcessIdentity {
+        child.identity
     }
 
     fn child_wait(child: &mut SupervisedChild) -> io::Result<ExitStatus> {

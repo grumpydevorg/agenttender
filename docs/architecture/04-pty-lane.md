@@ -46,7 +46,11 @@ Current PTY rules:
 - the attach socket is bound in `~/.tender/sockets` (owner-only directory,
   `0600` socket, short run-derived name) and its breadcrumb published before the
   child is spawned; an unsafe directory, overlong path, or pre-existing path fails
-  the start as `SpawnFailed` rather than running without a listener
+  the start as `SpawnFailed` rather than running without a listener. After
+  spawn the lifecycle guard owns the socket; if the recorder, input writer or
+  listener cannot start, it stops the child and records
+  `SidecarFailed { step: attach_bind }`
+  ([03-run-lifecycle.md](03-run-lifecycle.md#the-lifecycle-guard))
 - both ends verify the peer's user id; the hello must complete within one overall
   deadline, and any frame declaring more than 64 KiB closes the connection
 - the `attach` CLI keeps keyboard, session writes, and terminal output on

@@ -468,8 +468,9 @@ Human-readable is a flag (`--human`, `-H`), not the default. Agents are the prim
 | 0 | Success |
 | 1 | Session error (not found, already exists) |
 | 2 | Process error (command failed to start) |
-| 3 | Timeout |
+| 3 | Sidecar lost (supervisor crashed; the child may still be running) |
 | 4 | Dependency failed (`--after` target exited non-zero) |
+| 5 | Sidecar failed (supervisor failed, killed the child, and recorded it) |
 | 10 | Remote transport error (SSH failed) |
 | 42 | Process exited non-zero (actual code in JSON output) |
 
@@ -496,6 +497,7 @@ starting → running → exited_ok          (code 0)
                    → killed              (SIGTERM / cooperative)
                    → killed_forced       (SIGKILL / TerminateJobObject)
                    → timed_out           (--timeout exceeded)
+                   → sidecar_failed      (sidecar failed, killed the child, said so)
                    → sidecar_lost        (sidecar crashed, detected lazily)
 ```
 
