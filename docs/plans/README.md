@@ -39,7 +39,7 @@ the live distinction is keep-ready vs deferred-until-a-consumer.
 
 ## completed/
 
-44 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
+46 completed plans. See `completed/` directory (`ls` is the source of truth for the count).
 
 ## specs/
 
