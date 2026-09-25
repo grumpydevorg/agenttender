@@ -10,6 +10,8 @@ The project, crate and binary are renamed from Tender / `agenttender` /
 - **Crate and binary:** `cargo install tendr` installs the `tendr` binary. The
   library is `tendr` (`use tendr::…`). Release archives are
   `tendr-<target>.tar.gz`. The `agenttender` crate stops at 0.2.1.
+- **Repository:** `grumpydevorg/agenttender` is now `grumpydevorg/tendr`.
+  GitHub redirects the old URL.
 - **State root:** `~/.tender` → `~/.tendr` (sessions, callbacks, `lost+found`).
   There is no automatic migration and no fallback read of the old path.
 - **Environment variables:** every `TENDER_*` variable is now `TENDR_*`
