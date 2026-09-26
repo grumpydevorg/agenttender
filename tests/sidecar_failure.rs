@@ -418,6 +418,22 @@ fn pty_stdin_transport_failure_stops_the_session_leader_and_its_group() {
     assert_eq!(code, Some(5));
 }
 
+/// A PTY session never runs without its listener: if its I/O (recorder, input
+/// writer, attach listener) cannot be set up after spawn, the run ends. Its
+/// socket is bound before spawn, where a failure is `SpawnFailed` instead.
+#[cfg(unix)]
+#[test]
+fn pty_io_failure_stops_the_session_leader_and_records_sidecar_failed() {
+    let code = ends_the_run(
+        Inject::Fail("attach_bind"),
+        "attach_bind",
+        "injected fault at attach_bind",
+        &["--pty"],
+        false,
+    );
+    assert_eq!(code, Some(5));
+}
+
 // === Recording the failure itself fails ===
 
 /// The child is still stopped, and the failure is reported on the channels
@@ -598,16 +614,6 @@ fn output_log_failure_drains_output_and_recovers() {
         std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0) == 0,
         "nothing was written to output.log"
     );
-}
-
-#[cfg(unix)]
-#[test]
-fn attach_bind_failure_recovers_with_a_warning() {
-    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let (root, meta) = recovers(Inject::Fail("attach_bind"), &["--pty"], &["true"]);
-    assert_exited_ok(&meta);
-    assert_warning(&meta, "attach unavailable: injected fault at attach_bind");
-    assert!(!session_dir(&root, "s1").join("a.sock.path").exists());
 }
 
 /// The child exited, so there is nothing to stop: the durable event lets

@@ -7,8 +7,10 @@
 //! makes the second case the only way out of the first:
 //!
 //! - [`SupervisedRun<Spawned>::publish_running`] is the only way to `Running`,
-//!   so the resources `Running` promises (stdin transport, attach socket) are
-//!   in place before it is published.
+//!   so the resources `Running` promises (stdin transport; for a PTY session,
+//!   its recorder, input writer and attach listener) are in place before it is
+//!   published. A PTY session's attach socket is bound even earlier, before the
+//!   child is spawned, and the guard owns it from adoption.
 //! - [`SupervisedRun<Running>::finish`] is the only normal exit.
 //! - Any other exit (an error, an early return, a panic unwind) kills the child
 //!   through the platform kill path and records
@@ -29,15 +31,21 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::{
-    AttachSink, LifecycleEvents, ReadyWriter, SharedWriter, capture_stream,
-    capture_stream_with_tee, collect_warnings, run_on_exit_hooks, setup_kill_watcher,
-    setup_stdin_forwarding, setup_timeout, signal_readiness, test_abort_point, test_fault,
-    test_unlock_gate,
+    AttachEndpoint, AttachSink, AttachSocketCleanup, LifecycleEvents, META_WRITE, PtyInput,
+    PtyRecordingRun, PtyTeardown, ReadyWriter, capture_stream, capture_stream_with_tee,
+    collect_warnings, deliver_ready, finished_recording, lock, run_on_exit_hooks,
+    setup_kill_watcher, setup_pty_stdin_forwarding, setup_stdin_forwarding, setup_timeout,
+    stopped_state, test_abort_point, test_fault, test_unlock_gate,
+};
+#[cfg(unix)]
+use super::{
+    ConnectionRegistry, RunEffects, SidecarControlHooks, UnixPtyInput, recorder_limits,
+    run_attach_listener, start_pty_recording,
 };
 use crate::model::ids::{EpochTimestamp, ProcessIdentity};
 use crate::model::meta::Meta;
-use crate::model::pty::PtyMeta;
-use crate::model::spec::{IoMode, StdinMode};
+use crate::model::pty::{PtyControl, PtyMeta, PtyRecording, RecordingState};
+use crate::model::spec::StdinMode;
 use crate::model::state::{ExitReason, SidecarStep};
 use crate::platform::{Current, Platform, ProcessStatus};
 use crate::session::{self, LockGuard, SessionDir};
@@ -88,8 +96,10 @@ struct RunCore {
     /// The `start` client's readiness channel while it is still unsent.
     ready: Option<ReadyWriter>,
     stdin_errors: Arc<Mutex<Vec<String>>>,
-    /// Tee for PTY output to an attached client; `None` for pipe sessions.
-    attach_sink: Option<AttachSink>,
+    /// A PTY session's attach side; `None` for a pipe session, decided at
+    /// adoption. Dropped, removing the socket and its breadcrumb, before the
+    /// lock is released.
+    pty: Option<PtySide>,
     /// Stops the timeout and kill-request watchers once the run is ending.
     watch_cancel: Arc<AtomicBool>,
     timed_out: Arc<AtomicBool>,
@@ -101,9 +111,53 @@ struct RunCore {
     lock: Option<LockGuard>,
 }
 
+/// A PTY run's attach side, in two phases, so what exists together is
+/// constructed together.
+// Uninhabited off Unix, where AttachEndpoint and PtyTeardown are, so Started
+// is never built there.
+#[cfg_attr(not(unix), allow(dead_code))]
+enum PtySide {
+    /// The attach socket is bound and published; nothing is running yet.
+    Bound(AttachEndpoint),
+    /// The effects thread, recorder, input writer and listener are running.
+    Started(StartedPty),
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+struct StartedPty {
+    /// Held for its `Drop`, which removes the socket and its breadcrumb.
+    _socket: AttachSocketCleanup,
+    /// Tee for PTY output to an attached client.
+    sink: AttachSink,
+    /// The exact recording of output and applied geometry, until it is
+    /// finished into meta (before the teardown).
+    recording: Option<PtyRecordingRun>,
+    /// The input owner, set by the effects thread once the change is logged.
+    /// `meta` never tracks it, so every write folds it in.
+    control: Arc<Mutex<PtyControl>>,
+    /// Ends the attach side with the run.
+    teardown: PtyTeardown,
+}
+
+/// End a started attach side before the terminal record: shut its
+/// connections, record its pending effects, and fold the final owner into
+/// `meta`. Dropping it then removes the socket.
+#[cfg(unix)]
+fn end_attach_side(pty: StartedPty, meta: &mut Meta) {
+    pty.teardown.run();
+    // The effects thread has stopped: nothing changes the owner any more.
+    meta.set_pty_control(lock(&pty.control).clone());
+}
+
+#[cfg(not(unix))]
+fn end_attach_side(pty: StartedPty, _meta: &mut Meta) {
+    match pty.teardown {}
+}
+
 impl SupervisedRun<Spawned> {
     /// Take ownership of a freshly spawned child. `ready` is the readiness
-    /// channel if it has not been used yet (no `--after` dependencies).
+    /// channel if it has not been used yet (no `--after` dependencies);
+    /// `attach` is a PTY session's attach socket, bound before spawn.
     pub(super) fn adopt(
         child: SupervisedChild,
         session: SessionDir,
@@ -111,6 +165,7 @@ impl SupervisedRun<Spawned> {
         meta: Meta,
         lifecycle: LifecycleEvents,
         ready: Option<ReadyWriter>,
+        attach: Option<AttachEndpoint>,
     ) -> Self {
         let identity = Current::child_identity(&child);
         let kill_handle = Current::child_kill_handle(&child);
@@ -124,7 +179,7 @@ impl SupervisedRun<Spawned> {
                 session,
                 ready,
                 stdin_errors: Arc::new(Mutex::new(Vec::new())),
-                attach_sink: None,
+                pty: attach.map(PtySide::Bound),
                 watch_cancel: Arc::new(AtomicBool::new(false)),
                 timed_out: Arc::new(AtomicBool::new(false)),
                 step: SidecarStep::Breadcrumb,
@@ -179,10 +234,6 @@ impl RunCore {
         self.session.path()
     }
 
-    fn is_pty(&self) -> bool {
-        self.meta.launch_spec().io_mode == IoMode::Pty
-    }
-
     /// End the run at `step`: stop the child, record `SidecarFailed`, and
     /// return the marker for the caller to propagate.
     fn fail(&mut self, step: SidecarStep, error: impl std::fmt::Display) -> SidecarFailure {
@@ -192,7 +243,6 @@ impl RunCore {
 
     fn publish_running(&mut self) -> Result<(), SidecarFailure> {
         let dir = self.session_dir().to_path_buf();
-        let is_pty = self.is_pty();
 
         // Recover: the breadcrumb only matters to crash recovery.
         self.step = SidecarStep::Breadcrumb;
@@ -208,69 +258,43 @@ impl RunCore {
         }
         test_abort_point("after_spawn");
 
-        // A dup'd fd for PTY resize, taken before child_stdin takes the write half.
-        #[cfg(unix)]
-        let resize_fd = if is_pty {
-            Current::pty_resize_fd(&self.child)
-        } else {
-            None
-        };
-        // PTY input is shared by the stdin forwarder and the attach listener.
-        let pty_write: Option<Arc<Mutex<Box<dyn Write + Send>>>> = if is_pty {
-            Current::child_stdin(&mut self.child).map(|w| Arc::new(Mutex::new(w)))
-        } else {
-            None
+        // End: a PTY session never runs without its listener, and the listener
+        // reaches the PTY only through the input writer.
+        // A failed start drops the endpoint, removing the socket.
+        let pty_input = match self.pty.take() {
+            Some(PtySide::Bound(endpoint)) => {
+                self.step = SidecarStep::AttachBind;
+                match self.start_pty(endpoint) {
+                    Ok((started, input)) => {
+                        self.pty = Some(PtySide::Started(started));
+                        Some(input)
+                    }
+                    Err(e) => return Err(self.fail(SidecarStep::AttachBind, e)),
+                }
+            }
+            // A pipe session.
+            None => None,
+            // Only SupervisedRun<Spawned>::publish_running reaches here, and it
+            // consumes the run, so the side is started at most once. A panic
+            // is recorded by the guard as SidecarFailed.
+            Some(PtySide::Started(_)) => {
+                unreachable!("a PTY attach side is started only once, when Running is published")
+            }
         };
 
         // End: a --stdin run whose input can never arrive is a failed run.
         if self.meta.launch_spec().stdin_mode == StdinMode::Pipe {
             self.step = SidecarStep::StdinTransport;
-            let child_stdin: Option<Box<dyn Write + Send>> = match &pty_write {
-                Some(shared) => Some(Box::new(SharedWriter(Arc::clone(shared)))),
-                None => Current::child_stdin(&mut self.child),
-            };
-            let transport = match child_stdin {
-                Some(writer) => test_fault(SidecarStep::StdinTransport.as_str())
-                    .and_then(|()| setup_stdin_forwarding(&dir, writer, &self.stdin_errors)),
-                None => Err(io::Error::other("child stdin not piped")),
-            };
+            let transport =
+                test_fault(SidecarStep::StdinTransport.as_str()).and_then(|()| match &pty_input {
+                    Some(input) => setup_pty_stdin_forwarding(&dir, input, &self.stdin_errors),
+                    None => match Current::child_stdin(&mut self.child) {
+                        Some(writer) => setup_stdin_forwarding(&dir, writer, &self.stdin_errors),
+                        None => Err(io::Error::other("child stdin not piped")),
+                    },
+                });
             if let Err(e) = transport {
                 return Err(self.fail(SidecarStep::StdinTransport, e));
-            }
-        }
-
-        if is_pty {
-            self.attach_sink = Some(Arc::new(Mutex::new(None)));
-        }
-
-        // Recover: attach is optional; bind before Running so the outcome is
-        // in the published meta rather than silent.
-        #[cfg(unix)]
-        if is_pty {
-            self.step = SidecarStep::AttachBind;
-            match (&pty_write, &self.attach_sink) {
-                (Some(pty_write), Some(sink)) => match bind_attach_socket(&dir) {
-                    Ok(listener) => {
-                        let pty_write = Arc::clone(pty_write);
-                        let sink = Arc::clone(sink);
-                        let facts = self.lifecycle.with_fresh_writer();
-                        let session_path = dir.clone();
-                        std::thread::spawn(move || {
-                            super::run_attach_listener(
-                                listener,
-                                pty_write,
-                                sink,
-                                &session_path,
-                                resize_fd,
-                                facts,
-                            );
-                        });
-                    }
-                    Err(e) => self.meta.add_warning(format!("attach unavailable: {e}")),
-                },
-                _ => self
-                    .meta
-                    .add_warning("attach unavailable: no PTY input handle".to_owned()),
             }
         }
 
@@ -279,22 +303,20 @@ impl RunCore {
         if let Err(e) = self.meta.transition_running(self.identity) {
             return Err(self.fail(SidecarStep::RunningMeta, e));
         }
-        if is_pty {
+        if self.pty.is_some() {
             self.meta.set_pty(PtyMeta::new());
         }
         self.lifecycle.emit(&mut self.meta, false);
         let published = test_fault(SidecarStep::RunningMeta.as_str())
             .map_err(|e| e.to_string())
-            .and_then(|()| {
-                session::write_meta_atomic(&self.session, &self.meta).map_err(|e| e.to_string())
-            });
+            .and_then(|()| self.write_meta().map_err(|e| e.to_string()));
         if let Err(e) = published {
             return Err(self.fail(SidecarStep::RunningMeta, e));
         }
 
         // Recover: readiness is a courtesy to the client (#71).
         self.step = SidecarStep::Readiness;
-        signal_readiness(&self.session, &mut self.ready, &mut self.meta);
+        self.signal_readiness();
         test_abort_point("after_running");
 
         if let Some(timeout_s) = self.meta.launch_spec().timeout_s {
@@ -313,6 +335,132 @@ impl RunCore {
         Ok(())
     }
 
+    /// Start a PTY session's effects thread, its recorder (whose stop report
+    /// goes through that thread), its single input writer (which owns the
+    /// PTY's write half and records applied sizes) and the attach listener on
+    /// the socket bound before spawn. Every fallible step comes first, so a
+    /// failure leaves nothing running.
+    #[cfg(unix)]
+    fn start_pty(&mut self, endpoint: AttachEndpoint) -> io::Result<(StartedPty, PtyInput)> {
+        test_fault(SidecarStep::AttachBind.as_str())?;
+        // Dup the resize fd before the write half is taken.
+        let resize = Current::pty_resize_fd(&self.child);
+        let writer = self
+            .child
+            .take_pty_writer()
+            .ok_or_else(|| io::Error::other("PTY write half unavailable"))?;
+
+        let AttachEndpoint { socket, cleanup } = endpoint;
+        let sink: AttachSink = Arc::new(Mutex::new(None));
+        let registry = ConnectionRegistry::default();
+        let control = Arc::new(Mutex::new(PtyControl::AgentControl));
+        let effects = RunEffects::spawn(
+            self.session_dir().to_path_buf(),
+            self.lifecycle.with_fresh_writer(),
+            Arc::clone(&control),
+        );
+        let recording = start_pty_recording(
+            self.session.path(),
+            self.meta.run_id(),
+            &self.meta.launch_spec().env,
+            recorder_limits(),
+            effects.sender(),
+        );
+        let hooks = SidecarControlHooks {
+            effects: effects.sender(),
+            registry: registry.clone(),
+            attach_sink: Arc::clone(&sink),
+        };
+        let input = PtyInput {
+            writer: crate::pty_input::InputWriter::spawn(
+                self.meta.run_id(),
+                UnixPtyInput {
+                    writer,
+                    resize,
+                    recorder: Some(recording.thread.recorder()),
+                },
+                hooks,
+            ),
+        };
+        {
+            let (writer, registry, sink) =
+                (input.writer.clone(), registry.clone(), Arc::clone(&sink));
+            std::thread::spawn(move || {
+                run_attach_listener(&socket.listener, &writer, &registry, &sink);
+            });
+        }
+        let started = StartedPty {
+            _socket: cleanup,
+            sink,
+            recording: Some(recording),
+            control,
+            teardown: PtyTeardown { registry, effects },
+        };
+        Ok((started, input))
+    }
+
+    /// PTY sessions are Unix-only; the PTY spawn itself fails elsewhere, so no
+    /// endpoint exists to start.
+    #[cfg(not(unix))]
+    fn start_pty(&mut self, endpoint: AttachEndpoint) -> io::Result<(StartedPty, PtyInput)> {
+        match endpoint {}
+    }
+
+    /// Persist meta, serialized with the sidecar's other `meta.json` writers
+    /// ([`META_WRITE`]: control flips and recording stops patch it from other
+    /// threads) and with the live control owner and the recording's current
+    /// state folded in, so this whole-meta write never reverts either. A
+    /// recording that already stopped has reported, or will report under this
+    /// lock after this write: either way `meta.json` ends up `Stopped`.
+    fn write_meta(&mut self) -> Result<(), session::SessionError> {
+        let _serialized = lock(&META_WRITE);
+        if let Some(PtySide::Started(pty)) = &self.pty {
+            self.meta.set_pty_control(lock(&pty.control).clone());
+            if let Some(run) = &pty.recording {
+                let state = run
+                    .thread
+                    .recorder()
+                    .stopped()
+                    .map_or(RecordingState::Recording, |stopped| {
+                        stopped_state(stopped, None)
+                    });
+                self.meta.set_pty_recording(run.meta(state));
+            }
+        }
+        session::write_meta_atomic(&self.session, &self.meta)
+    }
+
+    /// Deliver readiness if it is still owed, and persist a lost delivery as a
+    /// session warning (see [`super::signal_readiness`]), through
+    /// [`Self::write_meta`].
+    fn signal_readiness(&mut self) {
+        if deliver_ready(&mut self.ready, &self.meta).record(&mut self.meta) {
+            let _ = test_fault("ready_rewrite")
+                .map_err(|e| e.to_string())
+                .and_then(|()| self.write_meta().map_err(|e| e.to_string()));
+        }
+    }
+
+    /// Close a PTY session's recording at what it holds: after capture has
+    /// drained the PTY, or once the child is stopped. Bounded by the
+    /// recorder's close timeout.
+    fn finish_recording(&mut self) {
+        let Some(PtySide::Started(pty)) = &mut self.pty else {
+            return;
+        };
+        if let Some(PtyRecordingRun { thread, dir }) = pty.recording.take() {
+            let (state, warning) = finished_recording(thread.finish());
+            self.meta.set_pty_recording(PtyRecording {
+                dir,
+                input_recorded: false,
+                state,
+            });
+            if let Some(warning) = warning {
+                self.meta.add_warning(warning);
+            }
+        }
+    }
+
     fn supervise(&mut self) -> Result<ExitReason, SidecarFailure> {
         // Recover: without output.log the run still has an exit worth
         // recording, but the child's output must still be read, or it blocks
@@ -329,7 +477,7 @@ impl RunCore {
                 ));
                 // Best effort, so the warning is visible while the run lasts;
                 // the terminal write carries it regardless.
-                let _ = session::write_meta_atomic(&self.session, &self.meta);
+                let _ = self.write_meta();
                 Box::new(io::sink())
             }
         };
@@ -364,12 +512,21 @@ impl RunCore {
         let log = Mutex::new(log);
         let stdout = Current::child_stdout(&mut self.child);
         let stderr = Current::child_stderr(&mut self.child); // None for PTY sessions
-        let attach_sink = self.attach_sink.as_ref();
+        let (attach_sink, recorder) = match &self.pty {
+            Some(PtySide::Started(pty)) => (
+                Some(&pty.sink),
+                pty.recording.as_ref().map(|r| r.thread.recorder()),
+            ),
+            _ => (None, None),
+        };
+        let recorder = recorder.as_ref();
 
         let log_ref = &log;
         let (stdout_result, stderr_result) = std::thread::scope(|scope| {
             let stdout_handle = stdout.map(|s| match attach_sink {
-                Some(sink) => scope.spawn(move || capture_stream_with_tee(s, 'O', log_ref, sink)),
+                Some(sink) => {
+                    scope.spawn(move || capture_stream_with_tee(s, 'O', log_ref, sink, recorder))
+                }
                 None => scope.spawn(move || capture_stream(s, 'O', log_ref)),
             });
             let stderr_handle =
@@ -404,6 +561,8 @@ impl RunCore {
         self.watch_cancel.store(true, Ordering::Relaxed);
         let dir = self.session_dir().to_path_buf();
 
+        // Capture has drained the PTY: close the recording at what it holds.
+        self.finish_recording();
         let how = self.classify(how);
         self.clean_up_control_files();
         // Breadcrumb no longer needed: meta carries the child identity.
@@ -424,9 +583,7 @@ impl RunCore {
         test_abort_point("before_terminal_meta");
         let recorded = test_fault("terminal_meta")
             .map_err(|e| e.to_string())
-            .and_then(|()| {
-                session::write_meta_atomic(&self.session, &self.meta).map_err(|e| e.to_string())
-            });
+            .and_then(|()| self.write_meta().map_err(|e| e.to_string()));
         if let Err(e) = &recorded {
             // The child has already exited: nothing to stop. The durable event
             // lets reconciliation heal meta; keep an independent copy too.
@@ -458,16 +615,18 @@ impl RunCore {
         }
     }
 
-    /// Remove the run's control files and transports.
-    fn clean_up_control_files(&self) {
+    /// Remove the run's control files and transports, including a PTY
+    /// session's attach socket and its breadcrumb.
+    fn clean_up_control_files(&mut self) {
         let dir = self.session_dir();
         for name in ["kill_forced", "kill_acted", "kill_request"] {
             let _ = std::fs::remove_file(dir.join(name));
         }
         Current::remove_stdin_transport(dir);
-        if self.is_pty() {
-            let _ = std::fs::remove_file(crate::attach_proto::sock_path(dir));
-            let _ = std::fs::remove_file(dir.join("a.sock.path"));
+        // Taking the side drops it here, started or only bound, which removes
+        // the socket.
+        if let Some(PtySide::Started(pty)) = self.pty.take() {
+            end_attach_side(pty, &mut self.meta);
         }
     }
 
@@ -483,6 +642,7 @@ impl RunCore {
         self.watch_cancel.store(true, Ordering::Relaxed);
 
         let stopped = terminate_and_reap(&mut self.child, &self.kill_handle, &self.identity);
+        self.finish_recording();
 
         let dir = self.session_dir().to_path_buf();
         self.meta
@@ -505,9 +665,7 @@ impl RunCore {
         self.lifecycle.emit(&mut self.meta, true);
         let recorded = test_fault("failure_record")
             .map_err(|e| e.to_string())
-            .and_then(|()| {
-                session::write_meta_atomic(&self.session, &self.meta).map_err(|e| e.to_string())
-            });
+            .and_then(|()| self.write_meta().map_err(|e| e.to_string()));
 
         match &recorded {
             Ok(()) => {
@@ -515,7 +673,7 @@ impl RunCore {
                     let _ = std::fs::remove_file(dir.join("child_pid"));
                 }
                 // A client still waiting gets the terminal snapshot.
-                signal_readiness(&self.session, &mut self.ready, &mut self.meta);
+                self.signal_readiness();
             }
             Err(record_error) => {
                 // Loud on every channel still open. The child_pid breadcrumb
@@ -559,22 +717,6 @@ impl Drop for RunCore {
             let _ = std::panic::catch_unwind(AssertUnwindSafe(|| self.end_failed(step, &error)));
         }
     }
-}
-
-/// Bind the PTY attach socket (replacing a stale one) and publish its path.
-#[cfg(unix)]
-fn bind_attach_socket(session_dir: &Path) -> io::Result<std::os::unix::net::UnixListener> {
-    let sock_path = crate::attach_proto::sock_path(session_dir);
-    test_fault(SidecarStep::AttachBind.as_str())?;
-    let _ = std::fs::remove_file(&sock_path);
-    let listener = std::os::unix::net::UnixListener::bind(&sock_path).map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("cannot bind {}: {e}", sock_path.display()),
-        )
-    })?;
-    crate::attach_proto::write_sock_breadcrumb(session_dir, &sock_path);
-    Ok(listener)
 }
 
 /// What stopping the child achieved.

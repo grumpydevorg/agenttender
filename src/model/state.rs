@@ -68,7 +68,9 @@ pub enum SidecarStep {
     Breadcrumb,
     /// Creating the `--stdin` transport (FIFO / named pipe).
     StdinTransport,
-    /// Binding the PTY attach socket.
+    /// Setting up a PTY session's I/O after spawn: its recorder, its input
+    /// writer and the attach listener. The attach socket itself is bound
+    /// before spawn, where a failure is `SpawnFailed` (no child exists yet).
     AttachBind,
     /// Persisting `Running` to `meta.json`.
     RunningMeta,

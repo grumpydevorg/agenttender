@@ -25,6 +25,17 @@ enum CliExecTarget {
     None,
 }
 
+/// The attach client's detach escape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum AttachEscape {
+    /// Ctrl-\ then d detaches; Ctrl-\ twice sends one Ctrl-\
+    #[value(name = "ctrl-backslash")]
+    CtrlBackslash,
+    /// No escape: every key goes to the session
+    #[value(name = "none")]
+    None,
+}
+
 impl From<CliExecTarget> for tendr::model::spec::ExecTarget {
     fn from(c: CliExecTarget) -> Self {
         match c {
@@ -387,6 +398,10 @@ enum Commands {
         best_effort: bool,
     },
     /// Delete terminal sessions: by name, older than a threshold, or all
+    ///
+    /// Also removes attach sockets that sidecars killed outright left in
+    /// ~/.tendr/sockets (counted as `sockets_removed`): only sockets no session
+    /// names, nothing listens on, and older than a minute.
     Prune {
         /// Sessions to delete, by name. They resolve in --namespace, or in
         /// `default`; a name that doesn't exist is reported and fails the command
@@ -413,6 +428,14 @@ enum Commands {
         /// Namespace
         #[arg(long)]
         namespace: Option<String>,
+        /// Take control even if another client holds it, retiring that client
+        /// and dropping its queued input
+        #[arg(long)]
+        takeover: bool,
+        /// Detach escape: `ctrl-backslash` (Ctrl-\ then d detaches; Ctrl-\ twice
+        /// sends one Ctrl-\) or `none` (every key goes to the session)
+        #[arg(long, value_enum, default_value_t = AttachEscape::CtrlBackslash)]
+        escape: AttachEscape,
     },
     /// Print the usage guide (embedded), optionally a single topic
     ///
@@ -644,10 +667,21 @@ impl Commands {
                 }
                 args
             }
-            Commands::Attach { name, namespace } => {
+            Commands::Attach {
+                name,
+                namespace,
+                takeover,
+                escape,
+            } => {
                 let mut args = vec!["attach".to_string(), name.clone()];
                 if let Some(ns) = namespace {
                     args.extend(["--namespace".to_string(), ns.clone()]);
+                }
+                if *takeover {
+                    args.push("--takeover".to_string());
+                }
+                if *escape == AttachEscape::None {
+                    args.extend(["--escape".to_string(), "none".to_string()]);
                 }
                 args
             }
@@ -1187,9 +1221,18 @@ fn main() {
                 (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
             }
         }
-        Commands::Attach { name, namespace } => {
-            resolve_namespace(namespace).and_then(|ns| commands::cmd_attach(&name, &ns))
-        }
+        Commands::Attach {
+            name,
+            namespace,
+            takeover,
+            escape,
+        } => resolve_namespace(namespace).and_then(|ns| {
+            let mode = match escape {
+                AttachEscape::CtrlBackslash => tendr::attach_escape::EscapeMode::CtrlBackslash,
+                AttachEscape::None => tendr::attach_escape::EscapeMode::Disabled,
+            };
+            commands::cmd_attach(&name, &ns, takeover, mode)
+        }),
         Commands::Guide { topic } => commands::cmd_guide(topic.as_deref()),
         Commands::Skill { action } => match action {
             SkillAction::Print => commands::cmd_skill_print(),

@@ -4,11 +4,36 @@
 
 ### Added
 
+- **PTY sessions have one input owner, attach takeover and an exact recording**
+  ([#68](https://github.com/grumpydevorg/tendr/pull/68)). The sidecar decides who
+  may write to a PTY: one human (`tendr attach`) or one agent (`tendr push`,
+  `exec`) at a time. `tendr attach --takeover` supersedes the current holder,
+  whose queued input is revoked. A slow viewer is disconnected instead of
+  stalling capture. Every PTY session records its output and applied resizes
+  exactly under `<session>/recording/<run_id>/` (up to 1 GiB per run; there is
+  no opt-out yet). Attach sockets move to `~/.tendr/sockets` and both ends check
+  the peer's user id.
+
 - **`tendr prune NAME…` deletes finished sessions by name** ([#70](https://github.com/grumpydevorg/tendr/issues/70)).
   Names resolve in `--namespace`, or in `default`. Each goes through the same
   checks as `--all`, so a running or locked session is skipped, never deleted.
   A name that doesn't exist is reported as `not_found` and makes the command
   exit 1. Names can't be combined with `--all` or `--older-than`.
+
+### Changed
+
+- **Attaching to a PTY session needs the new attach protocol** ([#68](https://github.com/grumpydevorg/tendr/pull/68)).
+  An older `tendr` cannot attach to a session started by this version, and this
+  version reports a session started by an older sidecar instead of attaching.
+- **`tendr push` to a PTY session is acknowledged.** It exits non-zero, with
+  byte counts, when it is refused or its bytes are not all written; a second
+  concurrent push is refused instead of interleaving. Pipe sessions are unchanged.
+- **In `tendr attach`, `Ctrl-\` is an escape prefix:** `Ctrl-\ d` detaches and
+  `Ctrl-\ Ctrl-\` sends one. `--escape none` turns it off.
+- **PTY children start at 24×80** instead of 0×0, and a resize with a zero
+  dimension is ignored.
+- **`prune` removes orphaned attach sockets** left by a sidecar that was killed
+  outright, and its summary gains `sockets_removed`.
 
 ### Fixed
 
@@ -91,8 +116,9 @@ the state root only once none are running:
   meta rewrite, opening `output.log`, waiting for the exit, or a panic. Now a
   guard owns the child from spawn: steps that do not threaten the run recover
   with a warning (a failed `output.log` open drains the output so the child
-  cannot block; the PTY attach socket is bound before `Running`, so a bind
-  failure is visible), and the rest stop the child and record `SidecarFailed`.
+  cannot block), and the rest stop the child and record `SidecarFailed`. A PTY
+  session's attach socket is bound before the child is spawned, so a bind
+  failure is `SpawnFailed` and a PTY session never runs without its listener.
 - **Reconciliation kills a lost sidecar's orphan.** After a true crash
   (SIGKILL, OOM), `status`, `wait` and `run` found `SidecarLost` but left the
   child running forever. They now kill it, only after verifying its identity,
@@ -110,6 +136,13 @@ the state root only once none are running:
   further output and no `--on-exit` hooks. A failed readiness write is now a
   session warning (`readiness not delivered: start client gone`), and the run
   carries on to its normal terminal state.
+- **A PTY session's `pty.control` no longer reverts to `AgentControl` while a
+  human holds it.** Attaching flipped `meta.json` to `HumanControl`, but the
+  sidecar's own later meta writes (a failed `output.log` open, the readiness
+  rewrite, the terminal record) wrote back the `AgentControl` it started with,
+  so `status` misreported the owner and `push` and `attach` skipped their early
+  refusal (the sidecar still arbitrated the input itself). Those writes now
+  carry the live owner.
 
 ## v0.2.1 — Security: reject option-shaped `--host` destinations
 

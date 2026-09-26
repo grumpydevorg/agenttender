@@ -25,6 +25,11 @@ pub type Current = unix::UnixPlatform;
 #[cfg(windows)]
 pub type Current = windows::WindowsPlatform;
 
+/// Rows a PTY child starts with, until a client sets its size.
+pub const INITIAL_PTY_ROWS: u16 = 24;
+/// Columns a PTY child starts with, until a client sets its size.
+pub const INITIAL_PTY_COLS: u16 = 80;
+
 /// Result of probing a process by identity.
 /// Lifecycle state comes from the sidecar; process observation comes from
 /// this typed OS result -- never a boolean.

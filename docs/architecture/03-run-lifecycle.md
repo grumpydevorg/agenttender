@@ -55,9 +55,11 @@ Important implementation detail:
 
 ## The lifecycle guard
 
-In the sidecar (`src/sidecar/supervised_run.rs`), the child is owned by a `SupervisedRun` from the moment it is spawned, together with its kill handle, meta, the event writer, the session lock and any readiness still owed to the `start` client.
+In the sidecar (`src/sidecar/supervised_run.rs`), the child is owned by a `SupervisedRun` from the moment it is spawned, together with its kill handle, meta, the event writer, the session lock, any readiness still owed to the `start` client and, for a PTY session, its attach socket.
 
-- `SupervisedRun<Spawned>::publish_running` is the only way to `SupervisedRun<Running>`, so what `Running` promises (the `--stdin` transport, the PTY attach socket) exists before `Running` is published.
+A PTY session's private attach socket is bound, and its breadcrumb published, *before* the child is spawned, so a PTY session never runs without its listener. A bind failure there is `SpawnFailed`: no child exists yet, so there is nothing for the guard to own. After spawn the guard removes the socket and its breadcrumb on every exit, before it releases the session lock.
+
+- `SupervisedRun<Spawned>::publish_running` is the only way to `SupervisedRun<Running>`, so what `Running` promises (the `--stdin` transport; for a PTY session its recorder, input writer and attach listener) exists before `Running` is published.
 - `finish(reason)` is the only normal exit.
 - Any other exit (an error, an early return, a panic unwinding) stops the child through the platform kill path (its process group on Unix, including a PTY child, which leads its own session; its Job Object on Windows), then records `Exited { reason: SidecarFailed { step } }`.
 - The typestate covers only the in-process guard. Persisted meta stays runtime-validated in `transition.rs`, because a type parameter does not survive serialization.
@@ -68,7 +70,7 @@ What a failed post-spawn step does:
 |---|---|---|
 | readiness to the client (`readiness`), and the meta rewrite recording a lost delivery | recover, warning | readiness is a courtesy to the client that asked, never a condition of the run (#71); it is a `#[must_use]` value, not a `Result` |
 | `child_pid` breadcrumb (`breadcrumb`) | recover, warning | only crash recovery reads it |
-| PTY attach bind (`attach_bind`) | recover, warning `attach unavailable` | attach is optional; binding before `Running` makes the failure visible rather than silent |
+| PTY I/O setup (`attach_bind`): the recorder, the input writer and the listener on the socket bound before spawn | end the run | a PTY session never runs without its listener, and the listener reaches the PTY only through the input writer |
 | `output.log` open (`output_log`) | recover: drain the output, warning `output not captured` | the run still has an exit worth recording, but a child nobody reads blocks on a full pipe |
 | stdin transport (`stdin_transport`) | end the run | a `--stdin` run whose input can never arrive is a failed run |
 | publishing `Running` (`running_meta`) | end the run | an unobservable `Running` would be a lie |

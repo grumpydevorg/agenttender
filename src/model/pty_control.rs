@@ -119,8 +119,9 @@ impl RequestId {
     }
 }
 
-/// Who holds input ownership.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Who holds input ownership. Serialized by variant name (`"Human"`,
+/// `"Agent"`), as `pty.input_revoked` events carry it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum ControllerKind {
     Human,
     Agent,
@@ -148,29 +149,76 @@ impl ControllerState {
     }
 }
 
-/// Proof of ownership at one epoch, bound to one run. Only an [`InputArbiter`]
-/// creates handles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Proof of ownership at one epoch, bound to one run, held by one controller
+/// of one kind. Only an [`InputArbiter`] creates handles.
+///
+/// Not `Clone` or `Copy`: its holder borrows it to write and gives it up to end
+/// its input, so nothing can use a handle after its own holder ended it. A
+/// takeover still invalidates it from outside, which no owned token can
+/// express; that is the epoch check every use makes.
+#[derive(Debug, PartialEq, Eq)]
 pub struct ControllerHandle {
-    run_id: RunId,
-    epoch: ControllerEpoch,
-    holder: HolderId,
+    key: HandleKey,
+    kind: ControllerKind,
 }
 
 impl ControllerHandle {
     #[must_use]
     pub fn run_id(&self) -> RunId {
-        self.run_id
+        self.key.run_id
     }
 
     #[must_use]
     pub fn epoch(&self) -> ControllerEpoch {
-        self.epoch
+        self.key.epoch
     }
 
     #[must_use]
     pub fn holder(&self) -> HolderId {
+        self.key.holder
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> ControllerKind {
+        self.kind
+    }
+
+    /// The identity this handle authorizes by.
+    #[must_use]
+    pub fn key(&self) -> HandleKey {
+        self.key
+    }
+}
+
+/// What a [`ControllerHandle`] authorizes by: its run, epoch, and holder.
+/// `Copy`, so queued work can carry it, but only obtainable from a handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandleKey {
+    run_id: RunId,
+    epoch: ControllerEpoch,
+    holder: HolderId,
+}
+
+impl HandleKey {
+    #[must_use]
+    pub fn run_id(self) -> RunId {
+        self.run_id
+    }
+
+    #[must_use]
+    pub fn epoch(self) -> ControllerEpoch {
+        self.epoch
+    }
+
+    #[must_use]
+    pub fn holder(self) -> HolderId {
         self.holder
+    }
+}
+
+impl From<&ControllerHandle> for HandleKey {
+    fn from(handle: &ControllerHandle) -> Self {
+        handle.key
     }
 }
 
@@ -202,7 +250,7 @@ pub enum ControlError {
 }
 
 /// Result of a human takeover.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Takeover {
     /// The new controller's handle.
     pub handle: ControllerHandle,
@@ -264,7 +312,8 @@ pub enum InputError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingInput {
     request_id: RequestId,
-    handle: ControllerHandle,
+    key: HandleKey,
+    kind: ControllerKind,
     bytes: Vec<u8>,
     accepted: usize,
     outcome: Option<InputOutcome>,
@@ -276,7 +325,7 @@ impl PendingInput {
     /// [`InputError::Empty`] for an empty request.
     pub fn new(
         request_id: RequestId,
-        handle: ControllerHandle,
+        handle: &ControllerHandle,
         bytes: Vec<u8>,
     ) -> Result<Self, InputError> {
         if bytes.is_empty() {
@@ -284,7 +333,8 @@ impl PendingInput {
         }
         Ok(Self {
             request_id,
-            handle,
+            key: handle.key,
+            kind: handle.kind,
             bytes,
             accepted: 0,
             outcome: None,
@@ -296,9 +346,16 @@ impl PendingInput {
         self.request_id
     }
 
+    /// The identity of the handle that queued this request.
     #[must_use]
-    pub fn handle(&self) -> ControllerHandle {
-        self.handle
+    pub fn key(&self) -> HandleKey {
+        self.key
+    }
+
+    /// The kind of controller that queued this request.
+    #[must_use]
+    pub fn kind(&self) -> ControllerKind {
+        self.kind
     }
 
     /// Bytes written so far.
@@ -328,7 +385,7 @@ impl PendingInput {
     fn finish_incomplete(&mut self, reason: IncompleteReason) -> InputOutcome {
         *self.outcome.get_or_insert(InputOutcome::Incomplete {
             request_id: self.request_id,
-            epoch: self.handle.epoch,
+            epoch: self.key.epoch,
             accepted: self.accepted,
             total: self.bytes.len(),
             reason,
@@ -346,7 +403,7 @@ impl PendingInput {
         if self.accepted == self.bytes.len() {
             self.outcome = Some(InputOutcome::Accepted {
                 request_id: self.request_id,
-                epoch: self.handle.epoch,
+                epoch: self.key.epoch,
                 bytes: self.accepted,
             });
         }
@@ -448,26 +505,27 @@ impl InputArbiter {
     pub fn release(&mut self, handle: &ControllerHandle) -> Result<(), ControlError> {
         self.authorize(handle)?;
         self.state = ControllerState::Unowned {
-            epoch: handle.epoch,
+            epoch: handle.key.epoch,
         };
         Ok(())
     }
 
-    /// Whether `handle` authorizes right now. Informational only — see the
-    /// module docs on serialization.
+    /// Whether `handle` (a [`ControllerHandle`] or its [`HandleKey`])
+    /// authorizes right now. Informational only — see the module docs on
+    /// serialization.
     ///
     /// # Errors
     ///
     /// [`ControlError::Stale`] with the reason.
-    pub fn authorize(&self, handle: &ControllerHandle) -> Result<(), ControlError> {
-        match self.stale_reason(handle) {
+    pub fn authorize(&self, handle: impl Into<HandleKey>) -> Result<(), ControlError> {
+        match self.stale_reason(handle.into()) {
             None => Ok(()),
             Some(reason) => Err(ControlError::Stale { reason }),
         }
     }
 
     /// `None` exactly when `handle` authorizes now.
-    fn stale_reason(&self, handle: &ControllerHandle) -> Option<StaleReason> {
+    fn stale_reason(&self, handle: HandleKey) -> Option<StaleReason> {
         if handle.run_id != self.run_id {
             return Some(StaleReason::RunMismatch);
         }
@@ -493,7 +551,7 @@ impl InputArbiter {
         if let Some(outcome) = pending.outcome {
             return WriteStep::Done(outcome);
         }
-        if let Some(reason) = self.stale_reason(&pending.handle) {
+        if let Some(reason) = self.stale_reason(pending.key) {
             return WriteStep::Done(
                 pending.finish_incomplete(IncompleteReason::NotAuthorized(reason)),
             );
@@ -537,9 +595,12 @@ impl InputArbiter {
             kind,
         };
         ControllerHandle {
-            run_id: self.run_id,
-            epoch,
-            holder,
+            key: HandleKey {
+                run_id: self.run_id,
+                epoch,
+                holder,
+            },
+            kind,
         }
     }
 }

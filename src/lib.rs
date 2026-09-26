@@ -38,6 +38,13 @@
 //!   from it.
 //! - [`exec_frame`] / [`exec_request`] — the framed `exec` request/response
 //!   that rides SSH stdin instead of the remote argv.
+//! - [`attach_escape`] — the attach client's `Ctrl-\ d` detach escape.
+//! - `attach_socket` (Unix) — private, peer-verified attach sockets under the
+//!   state root.
+//! - [`pty_input`] — the sidecar's single PTY input writer and its control
+//!   queue (claim, takeover, release).
+//! - [`recorder`] — the sidecar's exact PTY recorder (sequencing, rotation,
+//!   explicit stop).
 //! - [`recording`] — the exact PTY recording codec (versioned binary segments).
 //! - [`ssh`] — the remote transport wrapper and its command allowlist.
 //! - [`reconcile`] — reconciling recorded state against observed OS reality.
@@ -59,7 +66,10 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod annotation;
+pub mod attach_escape;
 pub mod attach_proto;
+#[cfg(unix)]
+pub mod attach_socket;
 pub mod directive;
 pub mod events;
 pub mod exec_frame;
@@ -67,8 +77,10 @@ pub mod exec_request;
 pub mod log;
 pub mod model;
 pub mod platform;
+pub mod pty_input;
 pub mod ready_file;
 pub mod reconcile;
+pub mod recorder;
 pub mod recording;
 pub mod session;
 pub mod sidecar;

@@ -28,6 +28,18 @@ pub struct SupervisedChild {
     pty_master_write: Option<File>,
 }
 
+impl SupervisedChild {
+    /// Take the PTY master's write half for the sidecar's single input writer.
+    /// `None` for pipe sessions or once taken.
+    pub fn take_pty_writer(&mut self) -> Option<PtyWriter> {
+        if self.is_pty {
+            self.pty_master_write.take().map(PtyWriter::new)
+        } else {
+            None
+        }
+    }
+}
+
 /// Lightweight kill handle for Unix. Carries the ProcessIdentity
 /// needed for identity-verified group kill. Send + Clone so it can
 /// be moved to a timeout thread.
@@ -122,18 +134,27 @@ impl Platform for UnixPlatform {
         cwd: Option<&Path>,
         env: &BTreeMap<String, String>,
     ) -> io::Result<SupervisedChild> {
-        // 1. Create PTY pair
+        // 1. Create PTY pair at the initial size (a zero size breaks TUIs and
+        // cannot be recorded).
         let mut master_fd: libc::c_int = 0;
         let mut slave_fd: libc::c_int = 0;
+        let mut size = libc::winsize {
+            ws_row: super::INITIAL_PTY_ROWS,
+            ws_col: super::INITIAL_PTY_COLS,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
         // SAFETY: openpty writes valid fds into master_fd/slave_fd on success.
-        // Null pointers for name/termios/winsize are explicitly allowed.
+        // Null pointers for name/termios are explicitly allowed; `size` is a
+        // valid winsize that outlives the call. A raw pointer fits both the
+        // const (glibc) and mut (BSD) declarations.
         let ret = unsafe {
             libc::openpty(
                 &mut master_fd,
                 &mut slave_fd,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                std::ptr::null_mut(),
+                &raw mut size,
             )
         };
         if ret != 0 {
@@ -207,6 +228,8 @@ impl Platform for UnixPlatform {
         let child = cmd.spawn()?;
         drop(slave); // Close slave in parent
 
+        // Nonblocking before duplicating: both halves share the description.
+        set_nonblocking(&master)?;
         // Dup master into read and write halves
         let master_read = File::from(master.try_clone()?);
         let master_write = File::from(master);
@@ -240,7 +263,7 @@ impl Platform for UnixPlatform {
             child
                 .pty_master_read
                 .take()
-                .map(|f| Box::new(f) as Box<dyn io::Read + Send>)
+                .map(|f| Box::new(PtyReader::new(f)) as Box<dyn io::Read + Send>)
         } else {
             child
                 .child
@@ -267,7 +290,7 @@ impl Platform for UnixPlatform {
             child
                 .pty_master_write
                 .take()
-                .map(|f| Box::new(f) as Box<dyn io::Write + Send>)
+                .map(|f| Box::new(PtyWriter::new(f)) as Box<dyn io::Write + Send>)
         } else {
             child
                 .child
@@ -722,10 +745,232 @@ fn send_signal_direct(pid: i32, signal: rustix::process::Signal) -> io::Result<(
     }
 }
 
+/// Put `fd`'s open file description into nonblocking mode.
+///
+/// `O_NONBLOCK` is a file *status* flag: it belongs to the open file
+/// description, so every descriptor duplicated from `fd` (including a
+/// `try_clone`) observes the change. Set it once, at setup, before handing
+/// duplicates to different threads.
+pub fn set_nonblocking(fd: &impl rustix::fd::AsFd) -> io::Result<()> {
+    let flags = rfs::fcntl_getfl(fd)?;
+    rfs::fcntl_setfl(fd, flags | OFlags::NONBLOCK)?;
+    Ok(())
+}
+
+/// Reads from a nonblocking PTY master as if it were blocking.
+///
+/// The PTY master's read and write halves share one open file description, so
+/// the nonblocking mode the input writer needs also applies to the reader. This
+/// reader waits for readability with `poll(2)` when a read would block, and
+/// retries on `Interrupted`; neither is end of stream.
+pub struct PtyReader {
+    file: File,
+}
+
+impl PtyReader {
+    #[must_use]
+    pub fn new(file: File) -> Self {
+        Self { file }
+    }
+}
+
+impl Read for PtyReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        loop {
+            match self.file.read(buf) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    wait_for(&self.file, rustix::event::PollFlags::IN, None)?;
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                other => return other,
+            }
+        }
+    }
+}
+
+/// Wait until `file` is ready for `flags`, or `timeout` elapses.
+///
+/// Returns `Ok(true)` when poll reports any event on the descriptor, including
+/// hangup or error, which the following read or write then reports.
+fn wait_for(
+    file: &File,
+    flags: rustix::event::PollFlags,
+    timeout: Option<std::time::Duration>,
+) -> io::Result<bool> {
+    use rustix::event::{PollFd, Timespec, poll};
+
+    let timespec = timeout.map(|d| Timespec {
+        tv_sec: i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+        tv_nsec: i64::from(d.subsec_nanos()),
+    });
+    let mut fds = [PollFd::new(file, flags)];
+    loop {
+        match poll(&mut fds, timespec.as_ref()) {
+            Ok(0) => return Ok(false),
+            Ok(_) => return Ok(true),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+/// Writes to a nonblocking PTY master.
+///
+/// [`PtyWriter::try_write`] makes exactly one nonblocking attempt, so a child
+/// that is not reading its input cannot stall the caller. The [`Write`]
+/// implementation waits for writability between attempts, for callers that
+/// need blocking semantics.
+pub struct PtyWriter {
+    file: File,
+}
+
+impl PtyWriter {
+    #[must_use]
+    pub fn new(file: File) -> Self {
+        Self { file }
+    }
+
+    /// One nonblocking write attempt. `WouldBlock` means the PTY input buffer is
+    /// full; `Interrupted` means try again.
+    pub fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.file.write(bytes)
+    }
+
+    /// Wait up to `timeout` for the PTY to accept input. `Ok(false)` means the
+    /// timeout elapsed; `Ok(true)` means a write may now progress or will report
+    /// the descriptor's error or hangup.
+    pub fn wait_writable(&self, timeout: std::time::Duration) -> io::Result<bool> {
+        wait_for(&self.file, rustix::event::PollFlags::OUT, Some(timeout))
+    }
+}
+
+impl Write for PtyWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        loop {
+            match self.file.write(buf) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    wait_for(&self.file, rustix::event::PollFlags::OUT, None)?;
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                other => return other,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::num::NonZeroU32;
+    use std::time::{Duration, Instant};
+
+    // --- Shared-description nonblocking PTY I/O ---
+
+    fn nonblocking_pipe() -> (File, File) {
+        let (r, w) = rustix::pipe::pipe().unwrap();
+        set_nonblocking(&r).unwrap();
+        (File::from(r), File::from(w))
+    }
+
+    #[test]
+    fn nonblocking_flag_is_shared_by_duplicated_descriptors() {
+        let (r, _w) = rustix::pipe::pipe().unwrap();
+        let dup = r.try_clone().unwrap();
+        set_nonblocking(&r).unwrap();
+        assert!(
+            rfs::fcntl_getfl(&dup).unwrap().contains(OFlags::NONBLOCK),
+            "a duplicate observes O_NONBLOCK set through the original"
+        );
+    }
+
+    #[test]
+    fn pty_reader_waits_for_late_output_instead_of_ending() {
+        let (r, mut w) = nonblocking_pipe();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            w.write_all(b"late").unwrap();
+            // Dropping `w` closes the pipe: end of stream after the data.
+        });
+        let mut out = Vec::new();
+        PtyReader::new(r).read_to_end(&mut out).unwrap();
+        writer.join().unwrap();
+        assert_eq!(out, b"late");
+    }
+
+    #[test]
+    fn pty_writer_blocking_write_completes_while_a_slow_reader_drains() {
+        let (mut r, w) = rustix::pipe::pipe()
+            .map(|(r, w)| (File::from(r), File::from(w)))
+            .unwrap();
+        set_nonblocking(&w).unwrap();
+        let payload = vec![0x5A_u8; 1 << 20];
+        let reader = std::thread::spawn(move || {
+            let mut got = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                match r.read(&mut chunk) {
+                    Ok(0) => break got,
+                    Ok(n) => got.extend_from_slice(&chunk[..n]),
+                    Err(e) => panic!("reader failed: {e}"),
+                }
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        });
+        let mut writer = PtyWriter::new(w);
+        writer.write_all(&payload).unwrap();
+        drop(writer);
+        assert_eq!(reader.join().unwrap(), payload);
+    }
+
+    #[test]
+    fn pty_writer_try_write_reports_would_block_when_full_and_wait_times_out() {
+        let (_r, w) = rustix::pipe::pipe().unwrap();
+        set_nonblocking(&w).unwrap();
+        let mut writer = PtyWriter::new(File::from(w));
+        let chunk = [0u8; 4096];
+        let full = (0..10_000).find_map(|_| writer.try_write(&chunk).err());
+        let err = full.expect("a pipe buffer fills within 40 MiB");
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+
+        let started = Instant::now();
+        assert!(!writer.wait_writable(Duration::from_millis(50)).unwrap());
+        assert!(started.elapsed() >= Duration::from_millis(40));
+    }
+
+    #[test]
+    fn pty_output_after_an_idle_period_reaches_the_reader() {
+        let argv = vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "sleep 0.2; printf late-output".to_owned(),
+        ];
+        let mut child = UnixPlatform::spawn_child_pty(&argv, None, &BTreeMap::new()).unwrap();
+        let mut reader = UnixPlatform::child_stdout(&mut child).unwrap();
+        let mut out = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        // A PTY master reports hangup as EIO on Linux and as EOF on macOS.
+        while Instant::now() < deadline {
+            match reader.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => out.extend_from_slice(&chunk[..n]),
+            }
+        }
+        // Reap deterministically even if reading stopped early: a session leader
+        // whose PTY output is never drained may otherwise block on exit.
+        let kill = UnixPlatform::child_kill_handle(&child);
+        let _ = UnixPlatform::kill_child(&kill, true);
+        let _ = UnixPlatform::child_wait(&mut child);
+        assert!(
+            String::from_utf8_lossy(&out).contains("late-output"),
+            "idle-then-output was lost: {:?}",
+            String::from_utf8_lossy(&out)
+        );
+    }
 
     fn fake_identity(pid: u32, start_time_ns: u64) -> ProcessIdentity {
         ProcessIdentity {
