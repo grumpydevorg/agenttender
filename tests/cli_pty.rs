@@ -2083,3 +2083,108 @@ fn a_recording_size_limit_stops_recording_but_not_the_session() {
         .sum();
     assert!(total <= 2048, "{total} bytes recorded");
 }
+
+/// A run's end invalidates its attach handles (PR #68 review, finding 1). The
+/// attached client gets end of stream while the run's on-exit hook is still
+/// running, and it can't touch the replacement run: before the fix, its late
+/// detach rewrote the new run's `meta.json` back to `AgentControl` while a human
+/// held the new run.
+#[test]
+fn a_finished_runs_attach_client_cannot_touch_its_replacement() {
+    use std::io::Read;
+
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let started = root.path().join("hook-started");
+    let gate = root.path().join("hook-gate");
+    // Holds run A's sidecar in its on-exit hook until the gate appears, or 20 s.
+    let hook = format!(
+        "sh -c {} {} {}",
+        shell_words::quote(
+            r#"touch "$0"; i=0; while [ ! -e "$1" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done"#
+        ),
+        shell_words::quote(started.to_str().unwrap()),
+        shell_words::quote(gate.to_str().unwrap()),
+    );
+
+    tendr(&root)
+        .args([
+            "start",
+            "pty-end",
+            "--pty",
+            "--stdin",
+            "--on-exit",
+            &hook,
+            "--",
+            "cat",
+        ])
+        .assert()
+        .success();
+    let _session = harness::SessionGuard::new(&root, "pty-end");
+    let sock_a = wait_for_attach_socket(&root, "pty-end");
+    let mut stale = attach_as_human(&sock_a);
+    wait_for_pty_control(&root, "pty-end", "HumanControl");
+
+    tendr(&root)
+        .args(["kill", "--force", "pty-end"])
+        .assert()
+        .success();
+    harness::poll_until(Duration::from_secs(10), Duration::from_millis(20), || {
+        if started.exists() {
+            harness::Observation::Ready(())
+        } else {
+            harness::Observation::Pending("run A's on-exit hook has not started".into())
+        }
+    })
+    .unwrap();
+
+    // 1. The run is over: its client sees end of stream now, not when the
+    //    sidecar process finally exits after the hook.
+    // EINVAL on macOS means the socket is already shut down; the read below
+    // then returns end of stream at once (as in `read_until_closed`).
+    let _ = stale.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut buf = [0u8; 4096];
+    loop {
+        match stale.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => continue,
+            Err(e) => panic!("run A's client should see end of stream, got {e:?}"),
+        }
+    }
+
+    // 2. Replace the run and give the new one a human controller.
+    tendr(&root)
+        .args([
+            "start",
+            "pty-end",
+            "--pty",
+            "--stdin",
+            "--replace",
+            "--",
+            "cat",
+        ])
+        .assert()
+        .success();
+    let sock_b = wait_for_attach_socket(&root, "pty-end");
+    assert_ne!(sock_a, sock_b, "the replacement binds its own socket");
+    let _human_b = attach_as_human(&sock_b);
+    wait_for_pty_control(&root, "pty-end", "HumanControl");
+
+    // 3. Run A's stale client goes away while A's sidecar is still alive.
+    drop(stale);
+    std::thread::sleep(Duration::from_millis(1500));
+    let meta: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            root.path()
+                .join(".tendr/sessions/default/pty-end/meta.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        meta["pty"]["control"], "HumanControl",
+        "run A must not rewrite run B's control owner: {meta}"
+    );
+
+    std::fs::write(&gate, b"").unwrap();
+}

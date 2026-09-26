@@ -32,10 +32,10 @@ use std::time::{Duration, Instant};
 
 use super::{
     AttachEndpoint, AttachSink, LifecycleEvents, META_WRITE, PtyInput, PtyRecordingRun,
-    ReadyWriter, capture_stream, capture_stream_with_tee, collect_warnings, deliver_ready,
-    finished_recording, lock, run_on_exit_hooks, setup_kill_watcher, setup_pty_stdin_forwarding,
-    setup_stdin_forwarding, setup_timeout, start_pty_recording, stopped_state, test_abort_point,
-    test_fault,
+    PtyTeardown, ReadyWriter, capture_stream, capture_stream_with_tee, collect_warnings,
+    deliver_ready, finished_recording, lock, run_on_exit_hooks, setup_kill_watcher,
+    setup_pty_stdin_forwarding, setup_stdin_forwarding, setup_timeout, start_pty_recording,
+    stopped_state, test_abort_point, test_fault,
 };
 #[cfg(unix)]
 use super::{ConnectionRegistry, SidecarControlHooks, UnixPtyInput, run_attach_listener};
@@ -104,6 +104,8 @@ struct RunCore {
     /// A PTY session's live input owner, set by the control hooks on the input
     /// writer thread. `meta` never tracks it, so every write folds it in.
     pty_control: Option<Arc<Mutex<PtyControl>>>,
+    /// Ends a PTY session's attach side with the run.
+    pty_teardown: Option<PtyTeardown>,
     /// Stops the timeout and kill-request watchers once the run is ending.
     watch_cancel: Arc<AtomicBool>,
     timed_out: Arc<AtomicBool>,
@@ -144,6 +146,7 @@ impl SupervisedRun<Spawned> {
                 attach,
                 recording: None,
                 pty_control: None,
+                pty_teardown: None,
                 watch_cancel: Arc::new(AtomicBool::new(false)),
                 timed_out: Arc::new(AtomicBool::new(false)),
                 step: SidecarStep::Breadcrumb,
@@ -323,12 +326,18 @@ impl RunCore {
         let registry = ConnectionRegistry::default();
         let control = Arc::new(Mutex::new(PtyControl::AgentControl));
         self.pty_control = Some(Arc::clone(&control));
+        let ended = Arc::new(AtomicBool::new(false));
+        self.pty_teardown = Some(PtyTeardown {
+            ended: Arc::clone(&ended),
+            registry: registry.clone(),
+        });
         let hooks = SidecarControlHooks {
             session_dir: self.session_dir().to_path_buf(),
             facts: self.lifecycle.with_fresh_writer(),
             registry: registry.clone(),
             attach_sink: Arc::clone(&sink),
             control,
+            ended,
         };
         let input = PtyInput {
             writer: crate::pty_input::InputWriter::spawn(
@@ -567,6 +576,9 @@ impl RunCore {
             let _ = std::fs::remove_file(dir.join(name));
         }
         Current::remove_stdin_transport(dir);
+        if let Some(teardown) = self.pty_teardown.take() {
+            teardown.run();
+        }
         self.attach.take();
     }
 

@@ -1531,24 +1531,75 @@ enum Retirement {
 /// exactly the superseded connection.
 #[cfg(unix)]
 #[derive(Clone, Default)]
-struct ConnectionRegistry(
-    Arc<Mutex<std::collections::HashMap<crate::model::pty_control::HolderId, Registered>>>,
-);
+struct ConnectionRegistry(Arc<Mutex<RegistryState>>);
+
+#[cfg(unix)]
+#[derive(Default)]
+struct RegistryState {
+    live: std::collections::HashMap<crate::model::pty_control::HolderId, Registered>,
+    /// Set when the run ends; nothing registers after that.
+    closed: bool,
+}
 
 #[cfg(unix)]
 impl ConnectionRegistry {
-    fn insert(&self, holder: crate::model::pty_control::HolderId, entry: Registered) {
-        lock(&self.0).insert(holder, entry);
+    /// Register a connection. Returns false, dropping `entry`, once the run has
+    /// ended: the caller must reject the connection.
+    #[must_use]
+    fn insert(&self, holder: crate::model::pty_control::HolderId, entry: Registered) -> bool {
+        let mut state = lock(&self.0);
+        if state.closed {
+            return false;
+        }
+        state.live.insert(holder, entry);
+        true
     }
 
     fn remove(&self, holder: crate::model::pty_control::HolderId) -> Option<Registered> {
-        lock(&self.0).remove(&holder)
+        lock(&self.0).live.remove(&holder)
     }
 
     fn contains(&self, holder: crate::model::pty_control::HolderId) -> bool {
-        lock(&self.0).contains_key(&holder)
+        lock(&self.0).live.contains_key(&holder)
+    }
+
+    /// Refuse further registrations and shut every live connection down, so
+    /// each client sees end of stream and each handler thread exits. The same
+    /// lock as `insert`, so no connection can slip in after the sweep.
+    fn close(&self) {
+        let entries: Vec<Registered> = {
+            let mut state = lock(&self.0);
+            state.closed = true;
+            state.live.drain().map(|(_, entry)| entry).collect()
+        };
+        for entry in entries {
+            if let Retirement::Push { revoked } = &entry.retirement {
+                revoked.store(true, Ordering::SeqCst);
+            }
+            let _ = entry.control.shutdown(std::net::Shutdown::Both);
+        }
     }
 }
+
+/// Ends a PTY session's attach side when its run ends, before the terminal
+/// record is written: the control hooks stop touching disk (after
+/// `start --replace` the session paths belong to the next run), and every
+/// connection is shut down (PR #68 review, finding 1).
+#[cfg(unix)]
+struct PtyTeardown {
+    ended: Arc<AtomicBool>,
+    registry: ConnectionRegistry,
+}
+
+#[cfg(unix)]
+impl PtyTeardown {
+    fn run(&self) {
+        self.ended.store(true, Ordering::SeqCst);
+        self.registry.close();
+    }
+}
+#[cfg(not(unix))]
+type PtyTeardown = std::convert::Infallible;
 
 /// Maximum simultaneous attach connections, including ones awaiting a hello.
 #[cfg(unix)]
@@ -1563,6 +1614,8 @@ struct SidecarControlHooks {
     attach_sink: AttachSink,
     /// The live owner, read by the guard's whole-meta writes.
     control: Arc<Mutex<PtyControl>>,
+    /// Set when the run ends: from then on the hooks record nothing.
+    ended: Arc<AtomicBool>,
 }
 
 #[cfg(unix)]
@@ -1579,6 +1632,9 @@ impl SidecarControlHooks {
 #[cfg(unix)]
 impl crate::pty_input::ControlHooks for SidecarControlHooks {
     fn human_control(&mut self, trigger: &'static str) {
+        if self.ended.load(Ordering::SeqCst) {
+            return;
+        }
         // WAL-ordered control fact before the meta flip (spec §3.6); the
         // append itself is best-effort, not fsynced. Minimal by design: who
         // owns the PTY's input, nothing else.
@@ -1590,6 +1646,9 @@ impl crate::pty_input::ControlHooks for SidecarControlHooks {
     }
 
     fn human_released(&mut self) {
+        if self.ended.load(Ordering::SeqCst) {
+            return;
+        }
         self.facts.append_fact(
             "pty.control_changed",
             serde_json::json!({"control": "AgentControl", "trigger": "detach"}),
@@ -1636,6 +1695,9 @@ impl crate::pty_input::ControlHooks for SidecarControlHooks {
         accepted: usize,
         total: usize,
     ) {
+        if self.ended.load(Ordering::SeqCst) {
+            return;
+        }
         self.facts.append_fact(
             "pty.input_revoked",
             serde_json::json!({"kind": format!("{kind:?}"), "accepted": accepted, "total": total}),
@@ -1708,7 +1770,7 @@ fn handle_push_connection(
         return;
     };
     // Register before claiming, so a takeover right after the grant retires it.
-    registry.insert(
+    let registered = registry.insert(
         holder,
         Registered {
             control,
@@ -1717,6 +1779,9 @@ fn handle_push_connection(
             },
         },
     );
+    if !registered {
+        return reject_connection(&mut stream, "session ended");
+    }
     let handle = match writer.claim(holder, ControllerKind::Agent) {
         Ok(handle) => handle,
         Err(e) => {
@@ -1942,7 +2007,7 @@ fn handle_attach_connection(
     let holder = writer.next_holder();
     // Register before asking for control, so a takeover that lands immediately
     // after the grant can still find and retire this connection.
-    registry.insert(
+    let registered = registry.insert(
         holder,
         Registered {
             control,
@@ -1951,6 +2016,9 @@ fn handle_attach_connection(
             },
         },
     );
+    if !registered {
+        return reject_connection(&mut stream, "session ended");
+    }
     let granted = if mode == MODE_TAKEOVER {
         writer.takeover(holder).map(|t| t.handle)
     } else {
@@ -2239,7 +2307,7 @@ mod tests {
         let sink: AttachSink = Arc::new(Mutex::new(None));
         let (old_conn, _peer) = UnixStream::pair().unwrap();
         let old = HolderId::new(1);
-        registry.insert(
+        assert!(registry.insert(
             old,
             Registered {
                 retirement: Retirement::Viewer {
@@ -2247,7 +2315,7 @@ mod tests {
                 },
                 control: old_conn,
             },
-        );
+        ));
         let mut hooks = SidecarControlHooks {
             session_dir: dir.path().to_path_buf(),
             facts: LifecycleEvents::new(
@@ -2260,6 +2328,7 @@ mod tests {
             registry: registry.clone(),
             attach_sink: Arc::clone(&sink),
             control: Arc::new(Mutex::new(PtyControl::AgentControl)),
+            ended: Arc::new(AtomicBool::new(false)),
         };
 
         hooks.retire(old, ControllerKind::Human, ControllerEpoch::new(2));
