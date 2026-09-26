@@ -42,16 +42,24 @@ fn locked(root: &TempDir, name: &str) -> bool {
     session::is_locked(&dir).unwrap()
 }
 
-/// A `tendr` invocation running in the background.
+/// A `tendr` invocation running in the background, with the same environment
+/// as `harness::tendr` (temp HOME; on Windows, Git's coreutils on PATH).
 fn spawn_tendr(root: &TempDir, args: &[&str]) -> Child {
-    Command::new(assert_cmd::cargo::cargo_bin("tendr"))
-        .args(args)
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("tendr"));
+    cmd.args(args)
         .env("HOME", root.path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap()
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        let git_usr_bin = Path::new(r"C:\Program Files\Git\usr\bin");
+        if git_usr_bin.exists() {
+            let path = std::env::var("PATH").unwrap_or_default();
+            cmd.env("PATH", format!("{};{path}", git_usr_bin.display()));
+        }
+    }
+    cmd.spawn().unwrap()
 }
 
 /// Wait for a background `tendr` to exit, bounded.

@@ -5,7 +5,6 @@ use tendr::model::ids::{
 };
 use tendr::model::meta::Meta;
 use tendr::model::spec::LaunchSpec;
-#[cfg(unix)]
 use tendr::session::LockGuard;
 use tendr::session::{self, SessionError, SessionRoot};
 
