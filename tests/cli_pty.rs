@@ -352,6 +352,33 @@ fn attach_as_human(sock_path: &std::path::Path) -> UnixStream {
     stream
 }
 
+/// Poll the PTY output until it contains `needle`, wherever capture split it,
+/// and return the output. `tendr log --raw` prints each captured chunk as its
+/// own line, so a needle that straddles two reads of the PTY never appears
+/// whole there. For a child whose output has no newlines of its own, joining
+/// the lines recovers the stream.
+fn wait_output_contains(root: &TempDir, session: &str, needle: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let output = tendr(root)
+            .args(["log", session, "--raw"])
+            .output()
+            .unwrap();
+        let joined: String = String::from_utf8_lossy(&output.stdout)
+            .chars()
+            .filter(|&c| c != '\n')
+            .collect();
+        if joined.contains(needle) {
+            return joined;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "output of {session} never contained {needle:?}; got: {joined}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Poll `tendr log --raw` until it contains `needle`.
 fn wait_log_contains(root: &TempDir, session: &str, needle: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -1324,7 +1351,9 @@ fn takeover_revokes_queued_agent_input() {
     write_msg(&mut human, MSG_DATA, b"HUMAN-LINE\n");
     std::fs::write(&go, b"").unwrap();
 
-    let log = wait_log_contains(&root, "pty-revoke", "HUMAN-LINE");
+    // The human's line can reach the PTY in pieces as the child drains the
+    // agent's buffered prefix, so it may straddle two captured chunks.
+    let log = wait_output_contains(&root, "pty-revoke", "HUMAN-LINE");
     assert!(
         !log.contains("AGENT-TAIL"),
         "queued agent input was written after takeover"
