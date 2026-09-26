@@ -156,13 +156,13 @@ pub enum Frame {
     Retired(ControllerEpoch),
     /// Sidecar → push client: the push's outcome.
     InputDone(PushOutcome),
-    /// A message type this version does not know. Both ends ignore it.
-    Unknown(u8),
 }
 
 /// A frame whose payload does not fit its type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ProtocolError {
+    #[error("unknown attach message type {0}")]
+    UnknownType(u8),
     #[error("unsupported attach protocol version or mode")]
     UnsupportedHello,
     #[error("malformed {0} frame")]
@@ -178,8 +178,8 @@ impl Frame {
     ///
     /// # Errors
     ///
-    /// A payload that does not fit its message type. An unknown type is not an
-    /// error: it decodes as [`Frame::Unknown`].
+    /// A payload that does not fit its message type, or a message type this
+    /// version does not know ([`ProtocolError::UnknownType`]).
     pub fn decode(msg_type: u8, payload: Vec<u8>) -> Result<Self, ProtocolError> {
         let epoch = |what| {
             <[u8; 8]>::try_from(payload.as_slice())
@@ -200,13 +200,12 @@ impl Frame {
             MSG_REJECTED => Self::Rejected(String::from_utf8_lossy(&payload).into_owned()),
             MSG_RETIRED => Self::Retired(epoch("retired")?),
             MSG_INPUT_DONE => Self::InputDone(PushOutcome::decode(&payload)?),
-            other => Self::Unknown(other),
+            other => return Err(ProtocolError::UnknownType(other)),
         })
     }
 }
 
-/// Write one frame. [`Frame::Unknown`] carries no payload to send, so it is
-/// written empty.
+/// Write one frame.
 ///
 /// # Errors
 ///
@@ -221,7 +220,6 @@ pub fn write_frame(w: &mut impl Write, frame: &Frame) -> io::Result<()> {
         Frame::Rejected(reason) => write_msg(w, MSG_REJECTED, reason.as_bytes()),
         Frame::Retired(epoch) => write_msg(w, MSG_RETIRED, &epoch.get().to_be_bytes()),
         Frame::InputDone(outcome) => write_msg(w, MSG_INPUT_DONE, &outcome.encode()),
-        Frame::Unknown(msg_type) => write_msg(w, *msg_type, &[]),
     }
 }
 
@@ -235,7 +233,11 @@ pub enum FrameError {
     /// A whole frame was read, but its payload does not fit its type. The
     /// stream is still in sync.
     #[error(transparent)]
-    Malformed(#[from] ProtocolError),
+    Malformed(ProtocolError),
+    /// A whole frame of a type this version does not know. The stream is
+    /// still in sync; both ends ignore it, so a later version can add types.
+    #[error("unknown attach message type {0}")]
+    Unknown(u8),
 }
 
 /// Read and decode one frame.
@@ -245,7 +247,10 @@ pub enum FrameError {
 /// See [`FrameError`].
 pub fn read_frame(r: &mut impl Read) -> Result<Frame, FrameError> {
     let (msg_type, payload) = read_msg(r)?;
-    Ok(Frame::decode(msg_type, payload)?)
+    Frame::decode(msg_type, payload).map_err(|e| match e {
+        ProtocolError::UnknownType(msg_type) => FrameError::Unknown(msg_type),
+        e => FrameError::Malformed(e),
+    })
 }
 
 /// How long the sidecar waits for a connection's hello.
@@ -362,7 +367,6 @@ mod tests {
             Frame::InputDone(PushOutcome::Written { bytes: 9 }),
             Frame::InputDone(PushOutcome::Revoked(progress)),
             Frame::InputDone(PushOutcome::Closed(progress)),
-            Frame::Unknown(0x7f),
         ] {
             assert_eq!(round_trip(&frame), frame);
         }
@@ -456,8 +460,11 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_type_decodes_and_a_malformed_payload_does_not() {
-        assert_eq!(Frame::decode(0x7f, vec![1, 2]), Ok(Frame::Unknown(0x7f)));
+    fn an_unknown_type_and_a_malformed_payload_do_not_decode() {
+        assert_eq!(
+            Frame::decode(0x7f, vec![1, 2]),
+            Err(ProtocolError::UnknownType(0x7f))
+        );
         assert_eq!(
             Frame::decode(MSG_ACCEPTED, vec![0; 7]),
             Err(ProtocolError::Malformed("accepted"))
@@ -466,14 +473,20 @@ mod tests {
             Frame::decode(MSG_RESIZE, vec![0, 0, 0, 80]),
             Err(ProtocolError::Malformed("resize"))
         );
-        // A malformed frame leaves the stream in sync: the next frame reads.
+        // Unknown and malformed frames leave the stream in sync: the next
+        // frame reads.
         let mut bytes = Vec::new();
+        write_msg(&mut bytes, 0x7f, &[1, 2]).unwrap();
         write_msg(&mut bytes, MSG_RESIZE, &[0, 0, 0, 80]).unwrap();
         write_frame(&mut bytes, &Frame::Detach).unwrap();
         let mut reader = bytes.as_slice();
         assert!(matches!(
             read_frame(&mut reader),
-            Err(FrameError::Malformed(_))
+            Err(FrameError::Unknown(0x7f))
+        ));
+        assert!(matches!(
+            read_frame(&mut reader),
+            Err(FrameError::Malformed(ProtocolError::Malformed("resize")))
         ));
         assert_eq!(read_frame(&mut reader).unwrap(), Frame::Detach);
     }

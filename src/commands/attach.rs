@@ -362,7 +362,7 @@ mod unix_relay {
                         }
                     }
                     Ok(Frame::Retired(_)) => retired.store(true, Ordering::SeqCst),
-                    Ok(_) | Err(FrameError::Malformed(_)) => {}
+                    Ok(_) | Err(FrameError::Malformed(_) | FrameError::Unknown(_)) => {}
                     Err(FrameError::Io(_)) => break,
                 }
             }

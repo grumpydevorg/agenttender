@@ -2070,8 +2070,8 @@ fn handle_push_connection(
                 // `written` either way (PR #68 review, finding 4).
                 break PushOutcome::Written { bytes: written };
             }
-            // Other frames, and malformed ones, are ignored.
-            Ok(_) | Err(FrameError::Malformed(_)) => {}
+            // Other frames, and unknown or malformed ones, are ignored.
+            Ok(_) | Err(FrameError::Malformed(_) | FrameError::Unknown(_)) => {}
             Err(FrameError::Io(_)) if revoked.load(Ordering::SeqCst) => {
                 break PushOutcome::Revoked(Progress {
                     accepted: written,
@@ -2292,9 +2292,9 @@ fn handle_attach_connection(
                 }
                 Ok(Frame::Resize(size)) => writer.resize(&handle, size),
                 Ok(Frame::Detach) | Err(FrameError::Io(_)) => break,
-                // Other frames, and malformed ones such as a resize with a
-                // zero dimension, are ignored.
-                Ok(_) | Err(FrameError::Malformed(_)) => {}
+                // Other frames, unknown ones, and malformed ones such as a
+                // resize with a zero dimension, are ignored.
+                Ok(_) | Err(FrameError::Malformed(_) | FrameError::Unknown(_)) => {}
             }
         }
     }

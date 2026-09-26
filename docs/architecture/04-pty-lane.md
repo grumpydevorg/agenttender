@@ -49,7 +49,10 @@ Current PTY rules:
   handle frames as the typed `attach_proto::Frame`: an outcome is `written`
   only with every received byte accepted, never reports more accepted than
   received, and one that breaks either rule, or has an unknown status, is a
-  decode error at the boundary. A push
+  decode error at the boundary. A frame of a message type this version does
+  not know (`FrameError::Unknown`) is read whole and ignored, like a malformed
+  one, so a later version can add types; `Frame` holds only frames this
+  version can write back exactly. A push
   whose every frame was written is `written` even if a takeover lands before
   its end marker is served, and the CLI also succeeds when all of stdin was
   sent and accepted but a takeover cut the connection before the end marker

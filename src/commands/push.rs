@@ -119,7 +119,7 @@ fn push_over_attach_socket(session_dir: &std::path::Path) -> anyhow::Result<()> 
             Err(FrameError::Malformed(e)) => {
                 anyhow::bail!("malformed push outcome from the session: {e}")
             }
-            Ok(_) => {}
+            Ok(_) | Err(FrameError::Unknown(_)) => {}
             Err(FrameError::Io(e)) => anyhow::bail!(
                 "the session closed the push without reporting an outcome after {sent} bytes ({e})"
             ),
