@@ -48,6 +48,14 @@
 
 ### Fixed
 
+- **`tendr attach` detaches when the session's program changes the keyboard
+  encoding.** A child that enables the kitty keyboard protocol (as Claude Code
+  can in Ghostty, kitty, WezTerm and foot) or xterm's `modifyOtherKeys` makes the
+  terminal send `Ctrl-\` as an escape sequence rather than the `0x1c` byte, so
+  `Ctrl-\ d` reached the child instead of detaching. Both encodings are now
+  recognised, key releases, auto-repeat and modifier keys no longer interrupt
+  the escape, and
+  a doubled `Ctrl-\` is forwarded in the encoding typed.
 - **`tendr attach` ended by a signal restores the terminal.** SIGHUP, SIGTERM
   and SIGINT now detach, restore the terminal and exit 1 with
   `tendr: attach ended by SIG…`, instead of leaving it in raw mode. Window

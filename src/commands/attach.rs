@@ -273,7 +273,10 @@ mod unix_relay {
             if closed.load(Ordering::SeqCst) {
                 break Ending::SessionClosed;
             }
-            let timeout = size_due.saturating_duration_since(Instant::now()).min(POLL);
+            let mut timeout = size_due.saturating_duration_since(Instant::now()).min(POLL);
+            if let Some(due) = parser.partial_deadline() {
+                timeout = timeout.min(due.saturating_duration_since(Instant::now()));
+            }
             let ready = wait_ready(handlers.wake(), timeout);
             if ready.signal {
                 let received = handlers.take();
@@ -297,6 +300,11 @@ mod unix_relay {
                 }
             }
             if !ready.keyboard {
+                // An escape sequence left unfinished by the last read (a lone
+                // Esc key, say) is forwarded once it has waited long enough.
+                let mut forward = Vec::new();
+                parser.flush_expired(Instant::now(), &mut forward);
+                queue_keystrokes(&outbox, forward, &mut dropped);
                 continue;
             }
             let n = match stdin.read(&mut buf) {
@@ -307,12 +315,7 @@ mod unix_relay {
             };
             let mut forward = Vec::new();
             let decision = parser.feed(&buf[..n], &mut forward);
-            if !forward.is_empty() {
-                let len = forward.len();
-                if !outbox.push_data(forward) {
-                    dropped += len;
-                }
-            }
+            queue_keystrokes(&outbox, forward, &mut dropped);
             if decision == Escape::Detach {
                 break Ending::Detached;
             }
@@ -361,6 +364,17 @@ mod unix_relay {
             )));
         }
         Ok(())
+    }
+
+    /// Queue keystrokes for the session, counting them in `dropped` if the
+    /// outbox is full.
+    fn queue_keystrokes(outbox: &Outbox, forward: Vec<u8>, dropped: &mut usize) {
+        if !forward.is_empty() {
+            let len = forward.len();
+            if !outbox.push_data(forward) {
+                *dropped += len;
+            }
+        }
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

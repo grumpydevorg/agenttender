@@ -60,6 +60,7 @@ const DEL: u8 = 0x7f;
 /// | `mode:modify-other-keys=N` | `ESC[>4;Nm`; `=reset` for `ESC[>4m` and `ESC[>m`, `=off` for `ESC[>4n`, no suffix for a level above 3 |
 /// | `query:osc10`, `query:osc11` | `ESC]10;?`, `ESC]11;?` (also `ESC]10;?;?`), ended by BEL or `ESC\` |
 /// | `query:xtversion` | `ESC[>q`, `ESC[>0q` |
+/// | `query:kitty-graphics` | `ESC_G<control>;<payload>` with `a=q` among the comma-separated control keys (payload optional), ended by BEL or `ESC\` |
 /// | `mode:alt-screen-on`/`-off` | `ESC[?1049h` / `ESC[?1049l`, alone or among other private modes |
 /// | `mode:bracketed-paste-on`/`-off` | `ESC[?2004h` / `ESC[?2004l`, likewise |
 ///
@@ -76,10 +77,11 @@ const DEL: u8 = 0x7f;
 /// Parsing follows the usual VT rules closely enough to avoid look-alikes:
 /// `ESC` restarts a sequence, CAN and SUB cancel one, other C0 controls after
 /// `ESC` or inside a CSI are ignored, and a CSI with intermediate bytes (such as
-/// `ESC[ q`) matches only as DECRQM (`$p`). Only 7-bit introducers are recognised; the 8-bit C1 forms
-/// (`0x9B`, `0x9D`) are ambiguous in UTF-8 output. At most 256 bytes of a
-/// sequence are kept: a longer one (an OSC 52 clipboard write, say) is
-/// consumed to its end but not classified.
+/// `ESC[ q`) matches only as DECRQM (`$p`). Only 7-bit introducers are
+/// recognised; the 8-bit C1 forms (`0x9B`, `0x9D`, `0x9F`) are ambiguous in
+/// UTF-8 output. At most 256 bytes of a sequence are kept: a longer one (an
+/// OSC 52 clipboard write or a kitty graphics image transfer, say) is consumed
+/// to its end but not classified.
 ///
 /// # Errors
 ///
@@ -224,6 +226,7 @@ enum Marker {
     ForegroundColourQuery,
     BackgroundColourQuery,
     XtversionQuery,
+    KittyGraphicsQuery,
     AltScreen(bool),
     BracketedPaste(bool),
     /// XTMODKEYS `modifyOtherKeys`: the level set, `None` for one above 3.
@@ -247,6 +250,7 @@ impl Marker {
             Self::ForegroundColourQuery => "query:osc10",
             Self::BackgroundColourQuery => "query:osc11",
             Self::XtversionQuery => "query:xtversion",
+            Self::KittyGraphicsQuery => "query:kitty-graphics",
             Self::AltScreen(true) => "mode:alt-screen-on",
             Self::AltScreen(false) => "mode:alt-screen-off",
             Self::BracketedPaste(true) => "mode:bracketed-paste-on",
@@ -278,11 +282,18 @@ enum State {
     Escape,
     /// After `ESC [`.
     Csi,
-    /// After `ESC ]`.
+    /// Inside an OSC (after `ESC ]`) or an APC (after `ESC _`).
+    Str(StrKind),
+    /// After an `ESC` inside an OSC or APC, which is either the start of the
+    /// `ESC \` terminator or a new sequence starting in the given record.
+    StrEscape(StrKind, Sequence),
+}
+
+/// A control string ended by BEL or `ESC \`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StrKind {
     Osc,
-    /// After an `ESC` inside an OSC, which is either the start of the `ESC \`
-    /// terminator or a new sequence starting in the given record.
-    OscEscape(Sequence),
+    Apc,
 }
 
 /// Finds [`Marker`]s in output bytes fed record by record; see the module docs.
@@ -326,7 +337,11 @@ impl Scanner {
                 }
                 b']' => {
                     self.push(byte);
-                    self.state = State::Osc;
+                    self.state = State::Str(StrKind::Osc);
+                }
+                b'_' => {
+                    self.push(byte);
+                    self.state = State::Str(StrKind::Apc);
                 }
                 ESC => self.begin(sequence),
                 // Executed by the terminal without ending the sequence.
@@ -348,22 +363,22 @@ impl Scanner {
                 }
                 _ => self.reset(),
             },
-            State::Osc => match byte {
+            State::Str(kind) => match byte {
                 BEL => {
                     self.push(byte);
-                    self.osc_end(1, found);
+                    self.str_end(kind, 1, found);
                 }
                 ESC => {
                     self.push(byte);
-                    self.state = State::OscEscape(sequence);
+                    self.state = State::StrEscape(kind, sequence);
                 }
                 CAN | SUB => self.reset(),
                 _ => self.push(byte),
             },
-            State::OscEscape(escape_at) => {
+            State::StrEscape(kind, escape_at) => {
                 if byte == b'\\' {
                     self.push(byte);
-                    self.osc_end(2, found);
+                    self.str_end(kind, 2, found);
                 } else {
                     self.begin(escape_at);
                     self.step(sequence, byte, found);
@@ -372,11 +387,15 @@ impl Scanner {
         }
     }
 
-    /// Classify a finished OSC whose terminator is the last `terminator` bytes.
-    fn osc_end(&mut self, terminator: usize, found: &mut Vec<Finding>) {
+    /// Classify a finished OSC or APC whose terminator is the last
+    /// `terminator` bytes.
+    fn str_end(&mut self, kind: StrKind, terminator: usize, found: &mut Vec<Finding>) {
         if !self.overflow {
             let payload = &self.bytes[2..self.bytes.len() - terminator];
-            osc_markers(payload, |marker| self.found(marker, found));
+            match kind {
+                StrKind::Osc => osc_markers(payload, |marker| self.found(marker, found)),
+                StrKind::Apc => apc_markers(payload, |marker| self.found(marker, found)),
+            }
         }
         self.reset();
     }
@@ -478,6 +497,19 @@ fn csi_markers(body: &[u8], mut found: impl FnMut(Marker)) {
     }
 }
 
+/// Markers for a complete APC, given its payload between `ESC _` and the
+/// terminator. A kitty graphics command is `G`, comma-separated `key=value`
+/// control data, then optionally `;` and a payload; `a=q` makes it a query.
+fn apc_markers(payload: &[u8], mut found: impl FnMut(Marker)) {
+    let Some(command) = payload.strip_prefix(b"G") else {
+        return;
+    };
+    let control = command.split(|&b| b == b';').next().unwrap_or_default();
+    if control.split(|&b| b == b',').any(|kv| kv == b"a=q") {
+        found(Marker::KittyGraphicsQuery);
+    }
+}
+
 /// Markers for a complete OSC, given its payload between `ESC ]` and the
 /// terminator. `OSC Ps ; ? ; ? …` queries colour `Ps`, then `Ps + 1`, and so on.
 fn osc_markers(payload: &[u8], mut found: impl FnMut(Marker)) {
@@ -566,6 +598,13 @@ mod tests {
         (b"\x1b[>4;m", "mode:modify-other-keys=reset"),
         (b"\x1b[>m", "mode:modify-other-keys=reset"),
         (b"\x1b[>4n", "mode:modify-other-keys=off"),
+        // Claude Code 2.1.283's probe.
+        (
+            b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\",
+            "query:kitty-graphics",
+        ),
+        (b"\x1b_Ga=q,i=1;AAAA\x07", "query:kitty-graphics"),
+        (b"\x1b_Ga=q\x1b\\", "query:kitty-graphics"),
     ];
 
     #[test]
@@ -635,6 +674,12 @@ mod tests {
             b"\x1b[\x18c",                     // CAN cancels the sequence
             b"\x1b[\x1a6n",                    // SUB cancels the sequence
             b"\x1bP>|c\x1b\\",                 // DCS, not CSI
+            b"\x1b_Gi=31,a=T,f=24;AAAA\x1b\\", // kitty graphics transmit and display
+            b"\x1b_Gi=31;a=q\x1b\\",           // `a=q` in the payload, not the keys
+            b"\x1b_Gaa=q\x1b\\",               // another key
+            b"\x1b_Ga=qq\x1b\\",               // another value
+            b"\x1b_Xa=q\x1b\\",                // not a graphics command
+            b"\x1b_Ga=q\x18\x1b\\",            // CAN cancels the sequence
         ];
         for bytes in lookalikes {
             assert_eq!(labels(bytes), Vec::<&str>::new(), "{bytes:?}");
@@ -660,6 +705,25 @@ mod tests {
             scan(&[b"\x1b]0;title\x1b", b"[6n"]),
             [("query:dsr-cpr", 1, 2)]
         );
+    }
+
+    #[test]
+    fn a_kitty_graphics_query_split_across_records_is_flagged_from_its_first() {
+        assert_eq!(
+            scan(&[
+                b"x\x1b_Gi=31,s=1,v=1,",
+                b"a=q,t=d,f=24;AA",
+                b"AA\x1b",
+                b"\\y"
+            ]),
+            [("query:kitty-graphics", 1, 4)]
+        );
+    }
+
+    #[test]
+    fn an_escape_inside_an_apc_starts_a_new_sequence() {
+        assert_eq!(labels(b"\x1b_Ga=q;AA\x1b[6n"), ["query:dsr-cpr"]);
+        assert_eq!(scan(&[b"\x1b_Ga=T;AA\x1b", b"[c"]), [("query:da1", 1, 2)]);
     }
 
     #[test]
