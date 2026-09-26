@@ -108,6 +108,7 @@ fn exec_rejected_on_pty_session() {
         ])
         .output()
         .unwrap();
+    let _session = harness::SessionGuard::new(&root, "pty-shell");
     harness::wait_running(&root, "pty-shell");
 
     let output = tendr(&root)
@@ -121,8 +122,6 @@ fn exec_rejected_on_pty_session() {
         stderr.contains("not supported") || stderr.contains("PTY"),
         "should reject exec on PTY: {stderr}"
     );
-
-    tendr(&root).args(["kill", "pty-shell"]).output().ok();
 }
 
 #[test]
@@ -134,6 +133,7 @@ fn attach_to_non_pty_session_fails() {
         .args(["start", "pipe-session", "--", "sleep", "60"])
         .output()
         .unwrap();
+    let _session = harness::SessionGuard::new(&root, "pipe-session");
     harness::wait_running(&root, "pipe-session");
 
     let output = tendr(&root)
@@ -147,8 +147,6 @@ fn attach_to_non_pty_session_fails() {
         stderr.contains("PTY") || stderr.contains("not PTY"),
         "should reject attach on non-PTY: {stderr}"
     );
-
-    tendr(&root).args(["kill", "pipe-session"]).output().ok();
 }
 
 #[test]
@@ -160,6 +158,7 @@ fn attach_socket_exists_for_pty_session() {
         .args(["start", "pty-attach", "--pty", "--", "sleep", "60"])
         .output()
         .unwrap();
+    let _session = harness::SessionGuard::new(&root, "pty-attach");
     harness::wait_running(&root, "pty-attach");
 
     let breadcrumb = root
@@ -186,8 +185,6 @@ fn attach_socket_exists_for_pty_session() {
         std::path::Path::new(sock_path).exists(),
         "socket file should exist at {sock_path}"
     );
-
-    tendr(&root).args(["kill", "pty-attach"]).output().ok();
 }
 
 #[test]
@@ -200,6 +197,7 @@ fn push_to_pty_session_delivers_input() {
         .args(["start", "pty-push", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
+    let _session = harness::SessionGuard::new(&root, "pty-push");
     harness::wait_running(&root, "pty-push");
 
     // Push some input
@@ -226,8 +224,6 @@ fn push_to_pty_session_delivers_input() {
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-
-    tendr(&root).args(["kill", "pty-push"]).output().ok();
 }
 
 /// Python REPL exec works on PTY sessions.
@@ -249,6 +245,7 @@ fn exec_python_pty() {
         ])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "py-pty");
     harness::wait_running(&root, "py-pty");
     // No sleep: exec buffers the frame and waits for the result file, so the
     // REPL not being input-ready yet is a delay, not a lost command (PR #55).
@@ -273,8 +270,6 @@ fn exec_python_pty() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert!(result["stdout"].as_str().unwrap().contains("pty hello"));
-
-    let _ = tendr(&root).args(["kill", "py-pty", "--force"]).assert();
 }
 
 /// PTY exec is still rejected for shell targets.
@@ -296,6 +291,7 @@ fn exec_pty_still_rejected_for_shells() {
         ])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "pty-shell");
     harness::wait_running(&root, "pty-shell");
 
     tendr(&root)
@@ -303,8 +299,6 @@ fn exec_pty_still_rejected_for_shells() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("not supported on PTY"));
-
-    let _ = tendr(&root).args(["kill", "pty-shell", "--force"]).assert();
 }
 
 /// Wait for the attach socket breadcrumb and return the socket path.
@@ -431,6 +425,7 @@ fn push_rejected_during_human_control() {
         .args(["start", "pty-hc", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
+    let _session = harness::SessionGuard::new(&root, "pty-hc");
     harness::wait_running(&root, "pty-hc");
 
     let sock_path = wait_for_attach_socket(&root, "pty-hc");
@@ -469,8 +464,6 @@ fn push_rejected_during_human_control() {
         "push should succeed after detach: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-
-    tendr(&root).args(["kill", "pty-hc"]).output().ok();
 }
 
 /// The sidecar's own whole-meta writes must carry the live control owner, not
@@ -531,6 +524,7 @@ fn attach_contention_rejected() {
         .args(["start", "pty-contend", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
+    let _session = harness::SessionGuard::new(&root, "pty-contend");
     harness::wait_running(&root, "pty-contend");
 
     let sock_path = wait_for_attach_socket(&root, "pty-contend");
@@ -553,7 +547,6 @@ fn attach_contention_rejected() {
     );
 
     drop(_human);
-    tendr(&root).args(["kill", "pty-contend"]).output().ok();
 }
 
 #[test]
@@ -663,6 +656,7 @@ fn attach_detach_emit_control_changed_events() {
         .args(["start", "pty-ev", "--pty", "--stdin", "--", "cat"])
         .output()
         .unwrap();
+    let _session = harness::SessionGuard::new(&root, "pty-ev");
     harness::wait_running(&root, "pty-ev");
     let sock_path = wait_for_attach_socket(&root, "pty-ev");
 
@@ -706,8 +700,6 @@ fn attach_detach_emit_control_changed_events() {
     assert_eq!(changed[0]["writer"], changed[1]["writer"]);
     assert_eq!(changed[0]["seq"], 1);
     assert_eq!(changed[1]["seq"], 2);
-
-    tendr(&root).args(["kill", "pty-ev"]).output().ok();
 }
 
 // --- Cloud PTY control, slice 1: sidecar-enforced input authority ---

@@ -49,9 +49,9 @@ impl DeadlineAssertExt for Command {
 }
 
 /// Like [`assert_within_deadline`] but with an explicit deadline (used by the
-/// deadline's own regression test). If the invocation returns at or beyond
-/// `deadline`, this panics with an explicit message naming the command and the
-/// deadline. `assert_cmd` normally enforces that bound by killing an overrun,
+/// deadline's own regression test). If the invocation returns within 1 ms of
+/// `deadline` or later, this panics with an explicit message naming the
+/// command and the deadline. `assert_cmd` normally enforces that bound by killing an overrun,
 /// but the diagnostic intentionally states only the wall-clock fact we can
 /// observe rather than inferring how the process ended.
 #[allow(dead_code)]
@@ -60,9 +60,12 @@ pub fn assert_within(cmd: &mut Command, deadline: Duration) -> Assert {
     let start = Instant::now();
     let outcome = cmd.timeout(deadline).output();
     let elapsed = start.elapsed();
-    if elapsed >= deadline {
+    // assert_cmd enforces the deadline through wait-timeout, whose poll()
+    // truncates the remaining time to whole milliseconds: a killed overrun
+    // can return up to 1 ms before `deadline`. Round the same way.
+    if elapsed + Duration::from_millis(1) > deadline {
         panic!(
-            "HARNESS TIMEOUT: command exceeded the {:.1}s harness deadline; the invocation \
+            "HARNESS TIMEOUT: command reached the {:.1}s harness deadline; the invocation \
              returned after {:.1}s.\n  command: {desc}\n  This is the harness hang-detector \
              firing — on a loaded runner it may mean the process was starved, not a product failure. \
              Raise harness::CMD_DEADLINE only after ruling out a real hang.",
@@ -91,6 +94,40 @@ pub fn tendr(root: &TempDir) -> Command {
         }
     }
     cmd
+}
+
+/// Force-kills a session when dropped, whether the test passed or panicked.
+///
+/// A test that stops its session only on its last line leaks a live sidecar
+/// whenever an earlier assertion panics. The `TempDir` is then removed while
+/// unwinding, and nothing can reach the orphan (#87). Create the guard right
+/// after `start`, and after the `TempDir`: locals drop in reverse order, so the
+/// sidecar is stopped before its state directory disappears.
+#[allow(dead_code)]
+pub struct SessionGuard<'a> {
+    root: &'a TempDir,
+    name: String,
+}
+
+#[allow(dead_code)]
+impl<'a> SessionGuard<'a> {
+    pub fn new(root: &'a TempDir, name: &str) -> Self {
+        Self {
+            root,
+            name: name.to_owned(),
+        }
+    }
+}
+
+impl Drop for SessionGuard<'_> {
+    fn drop(&mut self) {
+        // The result is ignored: the session may already be terminal, and a
+        // panic here while unwinding would abort the whole test binary.
+        let _ = tendr(self.root)
+            .args(["kill", "--force", &self.name])
+            .timeout(CMD_DEADLINE)
+            .output();
+    }
 }
 
 /// Path to the `test_callback` fixture binary (built by cargo as a sibling of the test binary).
@@ -302,8 +339,18 @@ pub struct QuiescentTerminal {
 /// condition handshake acquires the lock instead of relying on a timing gap.
 #[allow(dead_code)]
 pub fn wait_terminal_quiescent(root: &TempDir, session_name: &str) -> QuiescentTerminal {
+    wait_terminal_quiescent_ns(root, "default", session_name)
+}
+
+/// [`wait_terminal_quiescent`] for a session in `namespace`.
+#[allow(dead_code)]
+pub fn wait_terminal_quiescent_ns(
+    root: &TempDir,
+    namespace: &str,
+    session_name: &str,
+) -> QuiescentTerminal {
     let session_root = SessionRoot::new(root.path().join(".tendr/sessions"));
-    let namespace = Namespace::new("default").expect("default namespace is valid");
+    let namespace = Namespace::new(namespace).expect("test namespace is valid");
     let session_name = SessionName::new(session_name).expect("test session name is valid");
 
     poll_until(Duration::from_secs(10), Duration::from_millis(10), || {

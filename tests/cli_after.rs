@@ -70,6 +70,7 @@ fn after_idempotent_on_running() {
         .args(["start", "job1", "--", "sleep", "30"])
         .assert()
         .success();
+    let _session_job1 = harness::SessionGuard::new(&root, "job1");
     harness::wait_running(&root, "job1");
 
     // Start job2 --after job1 (stays in Starting, waiting for job1)
@@ -77,6 +78,7 @@ fn after_idempotent_on_running() {
         .args(["start", "job2", "--after", "job1", "--", "sleep", "30"])
         .assert()
         .success();
+    let _session_job2 = harness::SessionGuard::new(&root, "job2");
 
     // No sleep: start returning proves the first scan completed — job2's metadata
     // is Starting and the sidecar holds the session lock.
@@ -86,12 +88,6 @@ fn after_idempotent_on_running() {
         .args(["start", "job2", "--after", "job1", "--", "sleep", "30"])
         .assert()
         .success();
-
-    // Clean up
-    let _ = harness::tendr(&root)
-        .args(["kill", "job1", "--force"])
-        .assert();
-    let _ = harness::tendr(&root).args(["kill", "job2"]).assert();
 }
 
 /// Idempotent start on Starting session (waiting for deps): same spec -> return existing.
@@ -105,6 +101,7 @@ fn after_idempotent_on_starting() {
         .args(["start", "job1", "--", "sleep", "30"])
         .assert()
         .success();
+    let _session_job1 = harness::SessionGuard::new(&root, "job1");
     harness::wait_running(&root, "job1");
 
     // Start job2 --after job1 (enters Starting, waits)
@@ -112,6 +109,7 @@ fn after_idempotent_on_starting() {
         .args(["start", "job2", "--after", "job1", "--", "echo", "done"])
         .assert()
         .success();
+    let _session_job2 = harness::SessionGuard::new(&root, "job2");
 
     // No sleep: start returning proves the first scan completed — job2's metadata
     // is Starting and the sidecar holds the session lock.
@@ -121,12 +119,6 @@ fn after_idempotent_on_starting() {
         .args(["start", "job2", "--after", "job1", "--", "echo", "done"])
         .assert()
         .success();
-
-    // Clean up
-    let _ = harness::tendr(&root)
-        .args(["kill", "job1", "--force"])
-        .assert();
-    let _ = harness::tendr(&root).args(["kill", "job2"]).assert();
 }
 
 /// Kill during dependency wait → DependencyFailed/Killed.
@@ -140,6 +132,7 @@ fn kill_during_dependency_wait() {
         .args(["start", "job1", "--", "sleep", "60"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "job1");
     harness::wait_running(&root, "job1");
 
     // Start job2 --after job1 (enters wait loop)
@@ -160,11 +153,6 @@ fn kill_during_dependency_wait() {
     let meta = harness::wait_terminal(&root, "job2");
     assert_eq!(meta["status"].as_str(), Some("DependencyFailed"));
     assert_eq!(meta["dep_reason"].as_str(), Some("Killed"));
-
-    // Clean up job1
-    let _ = harness::tendr(&root)
-        .args(["kill", "job1", "--force"])
-        .assert();
 }
 
 /// Dependency exits non-zero → DependencyFailed/Failed.
@@ -291,6 +279,7 @@ fn after_timeout_during_wait() {
         .args(["start", "job1", "--", "sleep", "60"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "job1");
     harness::wait_running(&root, "job1");
 
     harness::tendr(&root)
@@ -310,10 +299,6 @@ fn after_timeout_during_wait() {
     let meta = harness::wait_terminal(&root, "job2");
     assert_eq!(meta["status"].as_str(), Some("DependencyFailed"));
     assert_eq!(meta["dep_reason"].as_str(), Some("TimedOut"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "job1", "--force"])
-        .assert();
 }
 
 /// Multiple --after: waits for all deps.
@@ -355,10 +340,12 @@ fn after_idempotent_different_deps_conflicts() {
         .args(["start", "job1", "--", "sleep", "30"])
         .assert()
         .success();
+    let _session_job1 = harness::SessionGuard::new(&root, "job1");
     harness::tendr(&root)
         .args(["start", "job3", "--", "sleep", "30"])
         .assert()
         .success();
+    let _session_job3 = harness::SessionGuard::new(&root, "job3");
     harness::wait_running(&root, "job1");
     harness::wait_running(&root, "job3");
 
@@ -366,6 +353,7 @@ fn after_idempotent_different_deps_conflicts() {
         .args(["start", "job2", "--after", "job1", "--", "sleep", "30"])
         .assert()
         .success();
+    let _session_job2 = harness::SessionGuard::new(&root, "job2");
 
     // Different dep → conflict. start returned ⇒ first scan completed, job2's
     // metadata is Starting, and the sidecar holds the session lock.
@@ -374,14 +362,6 @@ fn after_idempotent_different_deps_conflicts() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("session conflict"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "job1", "--force"])
-        .assert();
-    let _ = harness::tendr(&root).args(["kill", "job2"]).assert();
-    let _ = harness::tendr(&root)
-        .args(["kill", "job3", "--force"])
-        .assert();
 }
 
 /// `tendr wait` on DependencyFailed session exits with code 4.
@@ -450,6 +430,7 @@ fn kill_force_during_dependency_wait() {
         .args(["start", "job1", "--", "sleep", "60"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "job1");
     harness::wait_running(&root, "job1");
 
     harness::tendr(&root)
@@ -467,10 +448,6 @@ fn kill_force_during_dependency_wait() {
     let meta = harness::wait_terminal(&root, "job2");
     assert_eq!(meta["status"].as_str(), Some("DependencyFailed"));
     assert_eq!(meta["dep_reason"].as_str(), Some("KilledForced"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "job1", "--force"])
-        .assert();
 }
 
 /// Satisfied dep is latched: replacing it after satisfaction doesn't fail the waiter.
@@ -484,6 +461,7 @@ fn after_satisfied_dep_not_invalidated_by_replace() {
         .args(["start", "job1", "--", "true"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "job1");
     harness::wait_terminal(&root, "job1");
 
     harness::tendr(&root)
@@ -515,8 +493,4 @@ fn after_satisfied_dep_not_invalidated_by_replace() {
     let meta = harness::wait_terminal(&root, "job2");
     assert_eq!(meta["status"].as_str(), Some("Exited"));
     assert_eq!(meta["reason"].as_str(), Some("ExitedOk"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "job1", "--force"])
-        .assert();
 }

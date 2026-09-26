@@ -789,6 +789,7 @@ fn host_exec_frame_end_to_end() {
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let tmp = fake_ssh_frame_shim();
@@ -810,10 +811,6 @@ fn host_exec_frame_end_to_end() {
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(envelope["exit_code"], 0);
     assert!(envelope["stdout"].as_str().unwrap().contains("remote hi"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// Non-zero inner exit codes propagate through ssh natively.
@@ -826,6 +823,7 @@ fn host_exec_inner_exit_code_propagates() {
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let tmp = fake_ssh_frame_shim();
@@ -840,10 +838,6 @@ fn host_exec_inner_exit_code_propagates() {
         .unwrap();
 
     assert_eq!(output.status.code(), Some(7), "inner exit code survives");
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// Timeout propagates: remote exits 124, envelope says timed_out.
@@ -856,6 +850,7 @@ fn host_exec_timeout_propagates() {
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let tmp = fake_ssh_frame_shim();
@@ -882,10 +877,6 @@ fn host_exec_timeout_propagates() {
     assert_eq!(output.status.code(), Some(124));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(envelope["timed_out"], true);
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// The acceptance fixture: a payload full of quoting hazards produces
@@ -900,6 +891,7 @@ fn host_exec_torture_payload_matches_local() {
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     // %s\n in printf's FORMAT: trailing newline without a newline byte
@@ -942,10 +934,6 @@ fn host_exec_torture_payload_matches_local() {
         local_env["stdout"].as_str().unwrap().trim_end_matches('\n'),
         torture
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// The remote argv contains nothing user-controlled: the payload rides
@@ -988,6 +976,7 @@ fn host_exec_frame_stdin_passes_through() {
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let tmp = fake_ssh_frame_shim();
@@ -1010,10 +999,6 @@ fn host_exec_frame_stdin_passes_through() {
     );
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(envelope["stdout"].as_str().unwrap().contains("piped frame"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 #[test]

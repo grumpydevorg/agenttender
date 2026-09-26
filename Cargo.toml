@@ -1,11 +1,11 @@
 [package]
 name = "tendr"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Agent process sitter — supervised runs, not processes"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/grumpydevorg/agenttender"
+repository = "https://github.com/grumpydevorg/tendr"
 readme = "README.md"
 default-run = "tendr"
 keywords = ["cli", "supervisor", "agent", "process", "session"]

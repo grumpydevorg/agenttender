@@ -371,22 +371,32 @@ fn push_resolves_session_in_namespace() {
         String::from_utf8_lossy(&push_out.stderr)
     );
 
-    // Kill and verify log contains pushed data
+    // `push` returns once the bytes are handed to the child's stdin, not once
+    // `cat` has echoed them into the log. Wait for the echo before killing, or a
+    // force-kill can land while the line is still in flight.
+    harness::poll_until(
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_millis(50),
+        || {
+            let log_out = tendr(&root)
+                .args(["log", "push-ns", "--namespace", "ns-push", "--raw"])
+                .output()
+                .unwrap();
+            let log = String::from_utf8_lossy(&log_out.stdout).into_owned();
+            if log.contains("hello from push") {
+                harness::Observation::Ready(())
+            } else {
+                harness::Observation::Pending(format!("log so far: {log:?}"))
+            }
+        },
+    )
+    .unwrap_or_else(|e| panic!("pushed data should appear in log: {e}"));
+
     tendr(&root)
         .args(["kill", "--force", "push-ns", "--namespace", "ns-push"])
         .output()
         .unwrap();
     wait_terminal_ns(&root, "ns-push", "push-ns");
-
-    let log_out = tendr(&root)
-        .args(["log", "push-ns", "--namespace", "ns-push", "--raw"])
-        .output()
-        .unwrap();
-    let log = String::from_utf8_lossy(&log_out.stdout);
-    assert!(
-        log.contains("hello from push"),
-        "pushed data should appear in log, got: {log}"
-    );
 }
 
 #[test]

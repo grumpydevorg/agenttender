@@ -1,6 +1,6 @@
 mod harness;
 
-use harness::{tendr, wait_running, wait_terminal};
+use harness::{tendr, wait_running};
 use std::sync::Mutex;
 use tempfile::TempDir;
 
@@ -25,29 +25,10 @@ fn create_terminal_session(root: &TempDir, name: &str, namespace: &str) {
         "start failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    wait_terminal_ns(root, namespace, name);
-}
-
-/// Wait for meta.json to reach a terminal state under a specific namespace.
-fn wait_terminal_ns(root: &TempDir, namespace: &str, session: &str) {
-    let path = root
-        .path()
-        .join(format!(".tendr/sessions/{namespace}/{session}/meta.json"));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) {
-                let status = meta["status"].as_str().unwrap_or("");
-                if status != "Starting" && status != "Running" {
-                    return;
-                }
-            }
-        }
-        if std::time::Instant::now() > deadline {
-            panic!("timed out waiting for terminal state in {namespace}/{session}");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    // Terminal metadata is written just before the sidecar releases its lock, and
+    // prune skips a locked session (#86). Wait until the lock can be taken, then
+    // release it so the test's prune can acquire it.
+    drop(harness::wait_terminal_quiescent_ns(root, namespace, name));
 }
 
 /// Parse NDJSON stdout into a Vec of serde_json::Value.
@@ -124,6 +105,7 @@ fn prune_skips_running_session() {
         .output()
         .unwrap();
     assert!(out.status.success());
+    let _session = harness::SessionGuard::new(&root, "prune-running");
     wait_running(&root, "prune-running");
 
     let out = tendr(&root).args(["prune", "--all"]).output().unwrap();
@@ -141,13 +123,6 @@ fn prune_skips_running_session() {
         session_dir.exists(),
         "running session dir should still exist"
     );
-
-    // Cleanup
-    tendr(&root)
-        .args(["kill", "--force", "prune-running"])
-        .output()
-        .unwrap();
-    wait_terminal(&root, "prune-running");
 }
 
 #[test]
@@ -351,6 +326,7 @@ fn prune_summary_counts_match_mixed_outcomes() {
         .output()
         .unwrap();
     assert!(out.status.success());
+    let _session = harness::SessionGuard::new(&root, "prune-mix-run");
     wait_running(&root, "prune-mix-run");
 
     // 3. Corrupt meta session (will be skipped)
@@ -378,13 +354,6 @@ fn prune_summary_counts_match_mixed_outcomes() {
         deleted + skipped + failed,
         "session line count must match summary totals"
     );
-
-    // Cleanup running session
-    tendr(&root)
-        .args(["kill", "--force", "prune-mix-run"])
-        .output()
-        .unwrap();
-    wait_terminal(&root, "prune-mix-run");
 }
 
 #[test]

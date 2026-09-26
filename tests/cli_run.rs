@@ -339,6 +339,7 @@ fn run_session_rejects_exec() {
         .assert_within_deadline()
         .success();
 
+    let _session = harness::SessionGuard::new(&root, "server");
     harness::wait_running(&root, "server");
 
     tendr(&root)
@@ -346,8 +347,6 @@ fn run_session_rejects_exec() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("no exec target"));
-
-    let _ = tendr(&root).args(["kill", "server", "--force"]).assert();
 }
 
 // ── Harness deadline diagnostics ────────────────────────────────────────
