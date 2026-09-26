@@ -398,6 +398,10 @@ enum Commands {
         best_effort: bool,
     },
     /// Delete terminal sessions: by name, older than a threshold, or all
+    ///
+    /// Also removes attach sockets that sidecars killed outright left in
+    /// ~/.tendr/sockets (counted as `sockets_removed`): only sockets no session
+    /// names, nothing listens on, and older than a minute.
     Prune {
         /// Sessions to delete, by name. They resolve in --namespace, or in
         /// `default`; a name that doesn't exist is reported and fails the command

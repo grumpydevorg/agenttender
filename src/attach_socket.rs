@@ -300,6 +300,129 @@ impl io::Read for DeadlineReader<'_> {
     }
 }
 
+/// How old an unnamed socket must be before [`sweep_orphans`] removes it: far
+/// longer than a bind takes to publish its breadcrumb.
+pub const ORPHAN_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Remove attach sockets that a sidecar killed outright left behind in
+/// `state_root/sockets` (only a sidecar that ends normally removes its own), or
+/// with `dry_run` only report them. Returns the orphans' paths.
+///
+/// A socket is removed only if every check passes, so a socket a live session
+/// could still be using is never touched:
+///
+/// - it is a socket owned by the effective user, named like a run's socket;
+/// - no session breadcrumb under `state_root/sessions` names it, live or not
+///   (a crashed session keeps its socket until the session is pruned or
+///   replaced);
+/// - it is older than [`ORPHAN_GRACE`], which covers the moment between a
+///   bind and its breadcrumb;
+/// - connecting to it is refused: nothing listens on it.
+///
+/// # Errors
+///
+/// The socket directory is unsafe, or the sessions or a breadcrumb cannot be
+/// read, so an unnamed socket cannot be told from a live one. Nothing is
+/// removed then.
+pub fn sweep_orphans(state_root: &Path, dry_run: bool) -> io::Result<Vec<PathBuf>> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    let dir = state_root.join(SOCKET_DIR);
+    let meta = match std::fs::symlink_metadata(&dir) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let euid = rustix::process::geteuid().as_raw();
+    if !meta.is_dir() || meta.uid() != euid {
+        return Err(io::Error::other(format!(
+            "{} is not a directory owned by this user",
+            dir.display()
+        )));
+    }
+    let named = breadcrumb_names(&state_root.join("sessions"))?;
+
+    let mut orphans = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !is_run_socket_name(&name) || named.contains(&name) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let old_enough = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= ORPHAN_GRACE);
+        if !meta.file_type().is_socket() || meta.uid() != euid || !old_enough {
+            continue;
+        }
+        let refused = matches!(
+            UnixStream::connect(&path),
+            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused
+        );
+        if !refused {
+            continue;
+        }
+        if dry_run || std::fs::remove_file(&path).is_ok() {
+            orphans.push(path);
+        }
+    }
+    Ok(orphans)
+}
+
+/// `<12 hex digits>.sock`, the shape [`socket_path`] gives a run's socket.
+fn is_run_socket_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .and_then(|n| n.strip_suffix(".sock"))
+        .is_some_and(|stem| stem.len() == 12 && stem.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// The file names every session breadcrumb under `sessions` points at.
+fn breadcrumb_names(sessions: &Path) -> io::Result<std::collections::HashSet<std::ffi::OsString>> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let read_dir = |dir: &Path| match std::fs::read_dir(dir) {
+        Ok(entries) => Ok(Some(entries)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    };
+    let mut names = std::collections::HashSet::new();
+    let Some(namespaces) = read_dir(sessions)? else {
+        return Ok(names);
+    };
+    for namespace in namespaces {
+        let namespace = namespace?.path();
+        if !namespace.is_dir() {
+            continue;
+        }
+        let Some(sessions) = read_dir(&namespace)? else {
+            continue;
+        };
+        for session in sessions {
+            let breadcrumb = session?.path().join("a.sock.path");
+            match std::fs::read(&breadcrumb) {
+                Ok(bytes) => {
+                    if let Some(name) = Path::new(std::ffi::OsStr::from_bytes(&bytes)).file_name() {
+                        names.insert(name.to_owned());
+                    }
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    ) => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

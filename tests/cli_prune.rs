@@ -547,3 +547,140 @@ fn prune_names_conflict_with_all_and_older_than() {
         );
     }
 }
+
+// ── orphaned attach sockets (PR #68 review, finding 5) ─────────────────
+
+/// Make an attach-socket file at `path` with no listener, as a SIGKILLed
+/// sidecar leaves it. Binding creates the file; dropping the listener closes
+/// the socket but leaves the path behind.
+#[cfg(unix)]
+fn dead_socket(path: &std::path::Path) {
+    drop(std::os::unix::net::UnixListener::bind(path).unwrap());
+}
+
+/// Set `path`'s modification time an hour back, without following symlinks.
+#[cfg(unix)]
+fn backdate(path: &std::path::Path) {
+    use std::os::unix::ffi::OsStrExt;
+    let then = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 3600;
+    let ts = libc::timespec {
+        tv_sec: libc::time_t::try_from(then).unwrap(),
+        tv_nsec: 0,
+    };
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: `c` is a valid NUL-terminated path; `times` points at two timespecs.
+    let rc = unsafe {
+        libc::utimensat(
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            [ts, ts].as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    assert_eq!(rc, 0, "utimensat: {}", std::io::Error::last_os_error());
+}
+
+#[cfg(unix)]
+fn socket_dir(root: &TempDir) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = root.path().join(".tendr/sockets");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
+
+/// A sidecar killed outright leaves its socket behind. prune removes such a
+/// socket once no session's breadcrumb names it, nothing listens on it, and it
+/// is older than any bind takes to publish its breadcrumb. Everything else in
+/// the directory is left alone.
+#[cfg(unix)]
+#[test]
+fn prune_sweeps_orphaned_attach_sockets_only() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let sockets = socket_dir(&root);
+
+    // A session prune keeps (too recent), whose breadcrumb names a dead socket.
+    create_terminal_session(&root, "kept", "default");
+    let named = sockets.join("aaaaaaaaaaaa.sock");
+    dead_socket(&named);
+    std::fs::write(
+        session_dir(&root, "default", "kept").join("a.sock.path"),
+        named.as_os_str().as_encoded_bytes(),
+    )
+    .unwrap();
+    let orphan = sockets.join("bbbbbbbbbbbb.sock");
+    dead_socket(&orphan);
+    let fresh = sockets.join("cccccccccccc.sock");
+    dead_socket(&fresh);
+    let live = sockets.join("dddddddddddd.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&live).unwrap();
+    let not_a_socket = sockets.join("eeeeeeeeeeee.sock");
+    std::fs::write(&not_a_socket, b"").unwrap();
+    for path in [&named, &orphan, &live, &not_a_socket] {
+        backdate(path);
+    }
+
+    let dry = tendr(&root)
+        .args(["prune", "--older-than", "1h", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(dry.status.success());
+    let lines = parse_ndjson(&dry.stdout);
+    let summary = lines.iter().find(|l| l["type"] == "summary").unwrap();
+    assert_eq!(summary["sockets_removed"], 1, "{summary}");
+    assert!(orphan.exists(), "a dry run removes nothing");
+
+    let out = tendr(&root)
+        .args(["prune", "--older-than", "1h"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lines = parse_ndjson(&out.stdout);
+    let summary = lines.iter().find(|l| l["type"] == "summary").unwrap();
+    assert_eq!(summary["sockets_removed"], 1, "{summary}");
+    assert!(!orphan.exists(), "the orphaned socket was not swept");
+    assert!(named.exists(), "a socket a session names is kept");
+    assert!(
+        fresh.exists(),
+        "a socket younger than the grace period is kept"
+    );
+    assert!(live.exists(), "a socket something listens on is kept");
+    assert!(not_a_socket.exists(), "only sockets are swept");
+}
+
+/// Pruning a session whose sidecar died with it removes the session's socket
+/// in the same run: the breadcrumb that protected it is gone with the session.
+#[cfg(unix)]
+#[test]
+fn prune_removes_a_pruned_sessions_dead_socket() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let sockets = socket_dir(&root);
+
+    create_terminal_session(&root, "crashed", "default");
+    let socket = sockets.join("ffffffffffff.sock");
+    dead_socket(&socket);
+    backdate(&socket);
+    std::fs::write(
+        session_dir(&root, "default", "crashed").join("a.sock.path"),
+        socket.as_os_str().as_encoded_bytes(),
+    )
+    .unwrap();
+
+    let out = tendr(&root).args(["prune", "--all"]).output().unwrap();
+    assert!(out.status.success());
+    assert!(!session_dir(&root, "default", "crashed").exists());
+    assert!(
+        !socket.exists(),
+        "the pruned session's socket was left behind"
+    );
+}

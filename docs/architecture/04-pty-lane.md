@@ -62,7 +62,12 @@ Current PTY rules:
   spawn the lifecycle guard owns the socket; if the recorder, input writer or
   listener cannot start, it stops the child and records
   `SidecarFailed { step: attach_bind }`
-  ([03-run-lifecycle.md](03-run-lifecycle.md#the-lifecycle-guard))
+  ([03-run-lifecycle.md](03-run-lifecycle.md#the-lifecycle-guard)). A sidecar
+  killed outright cannot remove its socket; `prune` removes such orphans
+  (reported as `sockets_removed`), but only a socket that no session
+  breadcrumb names, that nothing listens on, and that is over a minute old, so
+  a socket a live session could use is never touched. A crashed session's
+  socket goes when the session is pruned or replaced
 - both ends verify the peer's user id; the hello must complete within one overall
   deadline, and any frame declaring more than 64 KiB closes the connection
 - the `attach` CLI keeps keyboard, session writes, and terminal output on

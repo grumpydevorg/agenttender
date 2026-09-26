@@ -172,17 +172,44 @@ fn prune_sessions(
         }
     }
 
+    // After the sessions: a pruned session's breadcrumb no longer protects its
+    // socket, so a dead sidecar's socket goes in the same run.
+    let sockets_removed = sweep_attach_sockets(root, dry_run);
+
     let summary = PruneOutput::Summary {
         deleted,
         skipped,
         failed,
         bytes_reclaimed,
+        sockets_removed,
         dry_run,
         namespace: namespace.map(|ns| ns.as_str().to_owned()),
     };
     println!("{}", serde_json::to_string(&summary).unwrap());
 
     Ok(not_found)
+}
+
+/// Remove (or with `dry_run`, count) attach sockets that sidecars killed
+/// outright left behind (PR #68 review, finding 5). Best-effort: a sweep that
+/// cannot prove a socket unused removes nothing and warns on stderr.
+#[cfg(unix)]
+fn sweep_attach_sockets(root: &SessionRoot, dry_run: bool) -> u64 {
+    let Some(state_root) = root.path().parent() else {
+        return 0;
+    };
+    match tendr::attach_socket::sweep_orphans(state_root, dry_run) {
+        Ok(orphans) => orphans.len() as u64,
+        Err(e) => {
+            eprintln!("tendr: orphaned attach sockets not swept: {e}");
+            0
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn sweep_attach_sockets(_root: &SessionRoot, _dry_run: bool) -> u64 {
+    0
 }
 
 fn emit_skip(
@@ -304,6 +331,8 @@ enum PruneOutput {
         skipped: u64,
         failed: u64,
         bytes_reclaimed: u64,
+        /// Orphaned attach sockets removed (or, in a dry run, found).
+        sockets_removed: u64,
         dry_run: bool,
         namespace: Option<String>,
     },
