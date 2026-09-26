@@ -16,7 +16,7 @@
 //! request queued by a controller that has since been superseded writes nothing
 //! further. Contract: [`crate::model::pty_control`].
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use crate::model::ids::RunId;
 use crate::model::pty_control::{
-    ControlError, ControllerEpoch, ControllerHandle, ControllerKind, ControllerState, HolderId,
+    ControlError, ControllerEpoch, ControllerHandle, ControllerKind, HandleKey, HolderId,
     IncompleteReason, InputArbiter, InputOutcome, PendingInput, PtyInputSink, RequestId, Takeover,
     WriteStep,
 };
@@ -75,11 +75,13 @@ enum Control {
         reply: SyncSender<Result<Takeover, ControlError>>,
     },
     Resize {
-        handle: ControllerHandle,
+        key: HandleKey,
         size: Geometry,
     },
     /// Release now and cancel everything the holder still has queued.
-    Disconnect { handle: ControllerHandle },
+    Disconnect {
+        handle: ControllerHandle,
+    },
 }
 
 enum InputItem {
@@ -89,8 +91,8 @@ enum InputItem {
     },
     End {
         handle: ControllerHandle,
-        /// Receives whether the holder still held control and was released.
-        done: Option<SyncSender<bool>>,
+        /// Told once the end marker has been served.
+        done: Option<SyncSender<()>>,
     },
 }
 
@@ -186,12 +188,15 @@ impl InputWriter {
     }
 
     /// Apply a window size if `handle` still authorizes.
-    pub fn resize(&self, handle: ControllerHandle, size: Geometry) {
-        self.push_control(Control::Resize { handle, size });
+    pub fn resize(&self, handle: &ControllerHandle, size: Geometry) {
+        self.push_control(Control::Resize {
+            key: handle.key(),
+            size,
+        });
     }
 
     /// Queue `bytes` and wait for the outcome. Empty input is a no-op.
-    pub fn write(&self, handle: ControllerHandle, bytes: Vec<u8>) -> Option<InputOutcome> {
+    pub fn write(&self, handle: &ControllerHandle, bytes: Vec<u8>) -> Option<InputOutcome> {
         self.submit(handle, bytes)?.recv().ok()
     }
 
@@ -200,7 +205,7 @@ impl InputWriter {
     /// for empty input. A closed receiver means the writer stopped.
     pub fn submit(
         &self,
-        handle: ControllerHandle,
+        handle: &ControllerHandle,
         bytes: Vec<u8>,
     ) -> Option<std::sync::mpsc::Receiver<InputOutcome>> {
         let request = self.request(handle, bytes)?;
@@ -213,7 +218,7 @@ impl InputWriter {
     }
 
     /// Queue `bytes` without waiting for the outcome (waits only for queue space).
-    pub fn write_nowait(&self, handle: ControllerHandle, bytes: Vec<u8>) {
+    pub fn write_nowait(&self, handle: &ControllerHandle, bytes: Vec<u8>) {
         if let Some(request) = self.request(handle, bytes) {
             self.push_input(InputItem::Write {
                 request,
@@ -228,7 +233,7 @@ impl InputWriter {
     /// `false` if abandoned; nothing was queued then.
     pub fn write_nowait_unless(
         &self,
-        handle: ControllerHandle,
+        handle: &ControllerHandle,
         bytes: Vec<u8>,
         abandon: impl Fn() -> bool,
     ) -> bool {
@@ -257,7 +262,8 @@ impl InputWriter {
     }
 
     /// Release `handle` once every input it queued before this call is done.
-    /// A handle that no longer authorizes releases nothing.
+    /// A handle that no longer authorizes releases nothing. Consumes the
+    /// handle: its holder can queue nothing after its end marker.
     pub fn end_of_input(&self, handle: ControllerHandle) {
         self.push_input(InputItem::End { handle, done: None });
     }
@@ -266,24 +272,24 @@ impl InputWriter {
     /// queued input, and cancel everything it still has queued or in flight.
     /// Unlike [`InputWriter::end_of_input`], nothing it queued is written after
     /// this is served, so a full PTY cannot keep a vanished client in control.
+    /// Consumes the handle, so a holder disconnects at most once.
     pub fn disconnect(&self, handle: ControllerHandle) {
         self.push_control(Control::Disconnect { handle });
     }
 
-    /// Like [`InputWriter::end_of_input`], but wait for the release. `true` only
-    /// if `handle` still held control when its input ended, so every byte it
-    /// queued before this call was authorized; `false` if it had been superseded
-    /// or its input was cancelled.
-    pub fn end_of_input_and_wait(&self, handle: ControllerHandle) -> bool {
+    /// Like [`InputWriter::end_of_input`], but wait until the end marker is
+    /// served: every input queued before it is done, and the handle released
+    /// if it still held control.
+    pub fn end_of_input_and_wait(&self, handle: ControllerHandle) {
         let (done, rx) = sync_channel(1);
         self.push_input(InputItem::End {
             handle,
             done: Some(done),
         });
-        rx.recv().unwrap_or(false)
+        let _ = rx.recv();
     }
 
-    fn request(&self, handle: ControllerHandle, bytes: Vec<u8>) -> Option<PendingInput> {
+    fn request(&self, handle: &ControllerHandle, bytes: Vec<u8>) -> Option<PendingInput> {
         let id = RequestId::new(self.shared.next_request.fetch_add(1, Ordering::Relaxed));
         PendingInput::new(id, handle, bytes).ok()
     }
@@ -329,7 +335,6 @@ fn writer_loop<P: WritablePty, H: ControlHooks>(
     mut pty: P,
     mut hooks: H,
 ) {
-    let mut kinds: HashMap<HolderId, ControllerKind> = HashMap::new();
     let mut current: Option<Current> = None;
 
     loop {
@@ -364,21 +369,20 @@ fn writer_loop<P: WritablePty, H: ControlHooks>(
                     handle,
                     shared,
                     &mut arbiter,
-                    &mut kinds,
                     &mut pty,
                     &mut hooks,
                     &mut current,
                     &mut next_end,
                 );
             } else {
-                apply_control(control, &mut arbiter, &mut kinds, &pty, &mut hooks);
+                apply_control(control, &mut arbiter, &pty, &mut hooks);
             }
         }
 
         if let Some(InputItem::End { handle, done }) = next_end {
-            let released = release(&mut arbiter, &mut kinds, handle, &mut hooks);
+            release(&mut arbiter, handle, &mut hooks);
             if let Some(done) = done {
-                let _ = done.send(released);
+                let _ = done.send(());
             }
             continue;
         }
@@ -396,9 +400,7 @@ fn writer_loop<P: WritablePty, H: ControlHooks>(
                     ..
                 } = outcome
                 {
-                    let holder = writing.request.handle().holder();
-                    let kind = kinds.get(&holder).copied().unwrap_or(ControllerKind::Agent);
-                    hooks.input_revoked(kind, accepted, total);
+                    hooks.input_revoked(writing.request.kind(), accepted, total);
                 }
                 if let Some(reply) = writing.reply {
                     let _ = reply.send(outcome);
@@ -428,18 +430,16 @@ fn disconnect<P: WritablePty, H: ControlHooks>(
     handle: ControllerHandle,
     shared: &Shared,
     arbiter: &mut InputArbiter,
-    kinds: &mut HashMap<HolderId, ControllerKind>,
     pty: &mut P,
     hooks: &mut H,
     current: &mut Option<Current>,
     next_end: &mut Option<InputItem>,
 ) {
-    let holder = handle.holder();
-    let kind = kinds.get(&holder).copied();
-    let _ = release(arbiter, kinds, handle, hooks);
+    let (holder, kind) = (handle.holder(), handle.kind());
+    release(arbiter, handle, hooks);
 
     let belongs = |item: &InputItem| match item {
-        InputItem::Write { request, .. } => request.handle().holder() == holder,
+        InputItem::Write { request, .. } => request.key().holder() == holder,
         InputItem::End { handle, .. } => handle.holder() == holder,
     };
     let mut cancelled: Vec<InputItem> = {
@@ -455,7 +455,7 @@ fn disconnect<P: WritablePty, H: ControlHooks>(
     }
     if current
         .as_ref()
-        .is_some_and(|c| c.request.handle().holder() == holder)
+        .is_some_and(|c| c.request.key().holder() == holder)
     {
         if let Some(Current { request, reply }) = current.take() {
             cancelled.push(InputItem::Write { request, reply });
@@ -480,26 +480,21 @@ fn disconnect<P: WritablePty, H: ControlHooks>(
                 }
             }
             InputItem::End { done, .. } => {
+                // Cancelled by a disconnect, which has already released.
                 if let Some(done) = done {
-                    // Cancelled by a disconnect: its input did not complete.
-                    let _ = done.send(false);
+                    let _ = done.send(());
                 }
             }
         }
     }
     if bytes_total > 0 {
-        hooks.input_revoked(
-            kind.unwrap_or(ControllerKind::Human),
-            accepted_total,
-            bytes_total,
-        );
+        hooks.input_revoked(kind, accepted_total, bytes_total);
     }
 }
 
 fn apply_control<P: WritablePty, H: ControlHooks>(
     control: Control,
     arbiter: &mut InputArbiter,
-    kinds: &mut HashMap<HolderId, ControllerKind>,
     pty: &P,
     hooks: &mut H,
 ) {
@@ -510,18 +505,17 @@ fn apply_control<P: WritablePty, H: ControlHooks>(
             reply,
         } => {
             let result = arbiter.claim(holder, kind);
-            if result.is_ok() {
-                kinds.insert(holder, kind);
-                if kind == ControllerKind::Human {
-                    hooks.human_control("attach");
-                }
+            if result
+                .as_ref()
+                .is_ok_and(|handle| handle.kind() == ControllerKind::Human)
+            {
+                hooks.human_control("attach");
             }
             let _ = reply.send(result);
         }
         Control::Takeover { holder, reply } => {
             let result = arbiter.takeover(holder);
             if let Ok(takeover) = &result {
-                kinds.insert(holder, ControllerKind::Human);
                 hooks.human_control("takeover");
                 if let Some((retired, kind)) = takeover.retired {
                     hooks.retire(retired, kind, takeover.handle.epoch());
@@ -529,8 +523,8 @@ fn apply_control<P: WritablePty, H: ControlHooks>(
             }
             let _ = reply.send(result);
         }
-        Control::Resize { handle, size } => {
-            if arbiter.authorize(&handle).is_ok() {
+        Control::Resize { key, size } => {
+            if arbiter.authorize(key).is_ok() {
                 pty.resize(size);
             }
         }
@@ -543,30 +537,12 @@ fn apply_control<P: WritablePty, H: ControlHooks>(
     }
 }
 
-/// End of a holder's input: release if it still authorizes, and forget the
-/// holder either way (it queues nothing after its end marker). Returns whether
-/// the holder was still current and has now been released.
-fn release<H: ControlHooks>(
-    arbiter: &mut InputArbiter,
-    kinds: &mut HashMap<HolderId, ControllerKind>,
-    handle: ControllerHandle,
-    hooks: &mut H,
-) -> bool {
-    let human_owned = matches!(
-        arbiter.state(),
-        ControllerState::Owned {
-            kind: ControllerKind::Human,
-            ..
-        }
-    );
-    // A successful release proves `handle` was current, so `human_owned` then
-    // describes the holder that just released.
-    let released = arbiter.release(&handle).is_ok();
-    kinds.remove(&handle.holder());
-    if released && human_owned {
+/// End of a holder's input: release if it still authorizes. The handle is
+/// consumed, so its holder can queue nothing after this.
+fn release<H: ControlHooks>(arbiter: &mut InputArbiter, handle: ControllerHandle, hooks: &mut H) {
+    if arbiter.release(&handle).is_ok() && handle.kind() == ControllerKind::Human {
         hooks.human_released();
     }
-    released
 }
 
 #[cfg(test)]
@@ -656,12 +632,12 @@ mod tests {
             .claim(writer.next_holder(), ControllerKind::Human)
             .unwrap();
         for _ in 0..4 {
-            writer.write_nowait(human, vec![b'x'; 1024]);
+            writer.write_nowait(&human, vec![b'x'; 1024]);
         }
-        let stuck = {
-            let writer = writer.clone();
-            std::thread::spawn(move || writer.write(human, b"never-written".to_vec()))
-        };
+        let stuck = writer
+            .submit(&human, b"never-written".to_vec())
+            .expect("non-empty input");
+        let human_epoch = human.epoch();
 
         writer.disconnect(human);
 
@@ -677,10 +653,10 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
-        assert!(next.epoch() > human.epoch());
+        assert!(next.epoch() > human_epoch);
 
         // The disconnected client's in-flight write is cancelled, not written.
-        match stuck.join().unwrap() {
+        match stuck.recv().ok() {
             Some(InputOutcome::Incomplete {
                 accepted: 0,
                 reason: IncompleteReason::NotAuthorized(_),
@@ -698,13 +674,10 @@ mod tests {
         let agent = writer
             .claim(writer.next_holder(), ControllerKind::Agent)
             .unwrap();
-        writer.write_nowait(agent, b"first".to_vec());
-        writer.write_nowait(agent, b"second".to_vec());
+        writer.write_nowait(&agent, b"first".to_vec());
+        writer.write_nowait(&agent, b"second".to_vec());
 
-        assert!(
-            writer.end_of_input_and_wait(agent),
-            "released while current"
-        );
+        writer.end_of_input_and_wait(agent);
 
         assert_eq!(pty.0.lock().unwrap().as_slice(), b"firstsecond");
         assert!(
@@ -744,8 +717,8 @@ mod tests {
             .unwrap();
         let new = writer.takeover(writer.next_holder()).unwrap().handle;
 
-        writer.resize(old, Geometry::new(10, 20).unwrap());
-        writer.resize(new, Geometry::new(30, 40).unwrap());
+        writer.resize(&old, Geometry::new(10, 20).unwrap());
+        writer.resize(&new, Geometry::new(30, 40).unwrap());
         // Controls are served in order; a claim round-trip proves both resizes
         // were processed before asserting.
         let _ = writer.claim(writer.next_holder(), ControllerKind::Agent);
@@ -757,16 +730,57 @@ mod tests {
     }
 
     #[test]
-    fn end_of_input_reports_a_superseded_holder_as_not_released() {
-        let writer = InputWriter::spawn(RunId::new(), SlowPty::default(), Recorded::default());
+    fn a_superseded_holders_end_of_input_releases_nothing() {
+        let hooks = Recorded::default();
+        let writer = InputWriter::spawn(RunId::new(), SlowPty::default(), hooks.clone());
         let agent = writer
             .claim(writer.next_holder(), ControllerKind::Agent)
             .unwrap();
-        writer.takeover(writer.next_holder()).unwrap();
+        let human = writer.takeover(writer.next_holder()).unwrap().handle;
+
+        writer.end_of_input_and_wait(agent);
 
         assert!(
-            !writer.end_of_input_and_wait(agent),
-            "a push whose control was taken over must not be reported complete"
+            matches!(
+                writer.claim(writer.next_holder(), ControllerKind::Agent),
+                Err(RequestError::Control(ControlError::Busy {
+                    kind: ControllerKind::Human,
+                    ..
+                }))
+            ),
+            "the human who took over still holds control"
+        );
+        assert!(!hooks.calls().contains(&"human_released".to_owned()));
+        writer.disconnect(human);
+    }
+
+    /// The kind a revocation is reported under is the one the handle was
+    /// granted with, whichever way its input ends.
+    #[test]
+    fn revoked_input_is_reported_under_its_holders_kind() {
+        let hooks = Recorded::default();
+        let writer = InputWriter::spawn(RunId::new(), FullPty, hooks.clone());
+        let human = writer
+            .claim(writer.next_holder(), ControllerKind::Human)
+            .unwrap();
+        writer.write_nowait(&human, b"abc".to_vec());
+        writer.disconnect(human);
+
+        let agent = writer
+            .claim(writer.next_holder(), ControllerKind::Agent)
+            .unwrap();
+        let queued = writer.submit(&agent, b"de".to_vec()).unwrap();
+        writer.takeover(writer.next_holder()).unwrap();
+        let _ = queued.recv();
+
+        let revoked: Vec<String> = hooks
+            .calls()
+            .into_iter()
+            .filter(|c| c.starts_with("input_revoked"))
+            .collect();
+        assert_eq!(
+            revoked,
+            ["input_revoked:Human:0:3", "input_revoked:Agent:0:2"]
         );
     }
 }

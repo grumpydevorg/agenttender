@@ -921,7 +921,8 @@ fn forward_pty_stdin(
             return;
         };
         let handle = claim_for_fifo(writer, errors);
-        let mut authorized = handle;
+        // Cleared once a takeover revokes the claim.
+        let mut authorized = handle.is_some();
         loop {
             let n = match reader.read(&mut buf) {
                 Ok(0) => break,
@@ -932,7 +933,7 @@ fn forward_pty_stdin(
                     return;
                 }
             };
-            let Some(current) = authorized else {
+            let Some(current) = handle.as_ref().filter(|_| authorized) else {
                 continue; // rejected or revoked: drain and discard
             };
             match writer.write(current, buf[..n].to_vec()) {
@@ -940,7 +941,7 @@ fn forward_pty_stdin(
                 Some(InputOutcome::Incomplete {
                     reason: IncompleteReason::NotAuthorized(_),
                     ..
-                }) => authorized = None,
+                }) => authorized = false,
                 Some(InputOutcome::Incomplete { .. }) | None => {
                     lock(errors).push("stdin forwarding: child stdin closed".to_owned());
                     return;
@@ -950,7 +951,7 @@ fn forward_pty_stdin(
         if let Some(handle) = handle {
             // Release only after this push's input is done, so the next push can
             // claim; a revoked handle releases nothing.
-            let _ = writer.end_of_input_and_wait(handle);
+            writer.end_of_input_and_wait(handle);
         }
     }
 }
@@ -1897,13 +1898,14 @@ fn handle_push_connection(
             return reject_connection(&mut stream, &e.to_string());
         }
     };
-    let gone = |stream: &std::os::unix::net::UnixStream| {
+    // The client vanished or broke the protocol: cancel its input.
+    let gone = |stream: &std::os::unix::net::UnixStream, handle| {
         registry.remove(holder);
         let _ = stream.shutdown(std::net::Shutdown::Both);
         writer.disconnect(handle);
     };
     if write_frame(&mut stream, &Frame::Accepted(handle.epoch())).is_err() {
-        return gone(&stream);
+        return gone(&stream, handle);
     }
 
     // Bytes of the frames written so far: every byte of each, since a frame
@@ -1914,7 +1916,7 @@ fn handle_push_connection(
         match read_frame(&mut stream) {
             Ok(Frame::Data(payload)) => {
                 let len = payload.len() as u64;
-                let Some(outcome) = writer.submit(handle, payload) else {
+                let Some(outcome) = writer.submit(&handle, payload) else {
                     continue; // an empty frame writes nothing
                 };
                 // The bytes of this frame that were not written.
@@ -1922,7 +1924,7 @@ fn handle_push_connection(
                     accepted: written + accepted,
                     unwritten: len - accepted,
                 };
-                match await_push_write(&outcome, &stream, &revoked, writer, handle) {
+                match await_push_write(&outcome, &stream, &revoked) {
                     PushWrite::Done(InputOutcome::Accepted { .. }) => written += len,
                     PushWrite::Done(InputOutcome::Incomplete {
                         accepted, reason, ..
@@ -1935,7 +1937,7 @@ fn handle_push_connection(
                         };
                     }
                     PushWrite::WriterGone => break PushOutcome::Closed(stopped(0)),
-                    PushWrite::ClientGone => return gone(&stream),
+                    PushWrite::ClientGone => return gone(&stream, handle),
                 }
             }
             Ok(Frame::Detach) => {
@@ -1943,9 +1945,7 @@ fn handle_push_connection(
                 // frame that was not stopped the loop: all of this push is
                 // written. A takeover that lands before the end marker is
                 // served supersedes nothing still to write, so the push is
-                // `written` either way; the end marker releases control if
-                // it is still held (PR #68 review, finding 4).
-                let _ = writer.end_of_input_and_wait(handle);
+                // `written` either way (PR #68 review, finding 4).
                 break PushOutcome::Written { bytes: written };
             }
             // Other frames, and malformed ones, are ignored.
@@ -1956,14 +1956,16 @@ fn handle_push_connection(
                     unwritten: 0,
                 });
             }
-            // The client vanished or broke the protocol: cancel its input.
-            Err(FrameError::Io(_)) => return gone(&stream),
+            Err(FrameError::Io(_)) => return gone(&stream, handle),
         }
     };
-    registry.remove(holder);
-    if !matches!(outcome, PushOutcome::Written { .. }) {
+    if let PushOutcome::Written { .. } = outcome {
+        // The end marker releases control if it is still held.
+        writer.end_of_input_and_wait(handle);
+    } else {
         writer.disconnect(handle); // release if still held; nothing else is queued
     }
+    registry.remove(holder);
     let _ = write_frame(&mut stream, &Frame::InputDone(outcome));
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
@@ -1976,16 +1978,14 @@ enum PushWrite {
     ClientGone,
 }
 
-/// Wait for a push write's outcome, watching for the client to vanish. A
-/// vanished client's input is cancelled before returning, so the wait cannot
-/// outlast the PTY accepting nothing.
+/// Wait for a push write's outcome, watching for the client to vanish. On
+/// [`PushWrite::ClientGone`] the caller disconnects the handle, which cancels
+/// the write, so the wait cannot outlast the PTY accepting nothing.
 #[cfg(unix)]
 fn await_push_write(
     outcome: &std::sync::mpsc::Receiver<crate::model::pty_control::InputOutcome>,
     stream: &std::os::unix::net::UnixStream,
     revoked: &AtomicBool,
-    writer: &crate::pty_input::InputWriter,
-    handle: crate::model::pty_control::ControllerHandle,
 ) -> PushWrite {
     use std::sync::mpsc::RecvTimeoutError;
 
@@ -1999,8 +1999,6 @@ fn await_push_write(
                 if !revoked.load(Ordering::SeqCst)
                     && crate::attach_socket::peer_hung_up(stream) =>
             {
-                writer.disconnect(handle); // cancels this write
-                let _ = outcome.recv();
                 return PushWrite::ClientGone;
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -2163,14 +2161,14 @@ fn handle_attach_connection(
             match read_frame(&mut stream) {
                 Ok(Frame::Data(payload)) => {
                     // A full input queue must not hide a client that has left.
-                    let queued = writer.write_nowait_unless(handle, payload, || {
+                    let queued = writer.write_nowait_unless(&handle, payload, || {
                         crate::attach_socket::peer_hung_up(&stream)
                     });
                     if !queued {
                         break;
                     }
                 }
-                Ok(Frame::Resize(size)) => writer.resize(handle, size),
+                Ok(Frame::Resize(size)) => writer.resize(&handle, size),
                 Ok(Frame::Detach) | Err(FrameError::Io(_)) => break,
                 // Other frames, and malformed ones such as a resize with a
                 // zero dimension, are ignored.
