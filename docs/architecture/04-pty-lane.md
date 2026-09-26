@@ -93,8 +93,9 @@ Current PTY rules:
   twice sends one; `--escape none` disables it), recognised in the legacy byte
   encoding and in the kitty keyboard protocol and xterm `modifyOtherKeys`
   encodings a child can switch the terminal to (`src/attach_escape.rs`);
-  forwarded bytes are always the bytes typed. Key releases and modifier-key
-  events neither decide nor cancel a held prefix. An unfinished `ESC [` at the
+  forwarded bytes are always the bytes typed. Key releases, repeats of `\` and
+  modifier-key events neither decide nor cancel a held prefix, and a `\` repeat
+  never starts one. An unfinished `ESC [` at the
   end of a read is held only while it could still become a prefix, and the main
   thread's poll wakes to forward it after 20 ms, so a lone Esc is never stuck. The size is checked every
   100 ms and changes are forwarded; SIGWINCH only brings that check forward,

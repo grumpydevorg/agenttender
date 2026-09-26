@@ -27,8 +27,8 @@
 //!
 //! Modifiers are `1 +` a bitmask (shift 1, alt 2, ctrl 4, super or xterm's
 //! meta 8, hyper 16, meta 32, caps lock 64, num lock 128). The prefix is a
-//! press or repeat of key 92 with ctrl and no other modifier; the detach key
-//! is a press of key 100 with no modifier. Caps lock and num lock are ignored
+//! press of key 92 with ctrl and no other modifier; the detach key is a press
+//! of key 100 with no modifier. Caps lock and num lock are ignored
 //! in both: they are states, not keys the user is holding.
 //!
 //! Whatever the encoding, the bytes forwarded are the bytes typed. The one
@@ -39,14 +39,22 @@
 //! # Events that are not keys
 //!
 //! With kitty's report-event-types flag (2) the terminal also reports key
-//! releases (`:3` after the modifiers), and with report-all-keys (8) presses of
-//! the modifier keys themselves. Such an event can arrive between the prefix
-//! and the key the user types next, so it neither decides nor cancels the
-//! escape. It is held with the prefix and keeps its place: another key
-//! forwards the prefix, the held events and the key in the order typed. A
-//! detach or a doubled prefix discards the swallowed `Ctrl-\` press, so it
-//! also discards that key's releases and forwards the other held events,
-//! keeping every press the child saw paired with its release.
+//! repeats and releases (`:2` and `:3` after the modifiers), and with
+//! report-all-keys (8) presses of the modifier keys themselves. Such an event
+//! can arrive between the prefix and the key the user types next, so it
+//! neither decides nor cancels the escape. It is held with the prefix and
+//! keeps its place: another key forwards the prefix, the held events and the
+//! key in the order typed. A detach or a doubled prefix discards the
+//! swallowed `Ctrl-\` press, so it also discards that key's repeats and
+//! releases and forwards the other held events, keeping every press the child
+//! saw paired with its release.
+//!
+//! A repeat always follows a press already decided, so it never starts a
+//! prefix: with no prefix held, a `\` repeat belongs to a press the child
+//! received, and is forwarded. Without flag 2 a terminal reports a repeat as
+//! a press, indistinguishable from typing the key again, so holding `Ctrl-\`
+//! down there alternates between a held prefix and one forwarded `Ctrl-\`, as
+//! with the legacy byte.
 //!
 //! # Sequences split across reads
 //!
@@ -125,13 +133,15 @@ pub struct EscapeParser {
 /// One key or event, classified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Key {
-    /// A press or repeat of `Ctrl-\`.
+    /// A press of `Ctrl-\`.
     Prefix,
     /// A press of `d`.
     Detach,
-    /// A key release or a modifier key: neither decides nor cancels a held
-    /// prefix.
-    Incidental { releases_backslash: bool },
+    /// A key release, a key repeat of `\`, or a modifier key: neither decides
+    /// nor cancels a held prefix, and is forwarded when none is held.
+    /// `of_backslash` marks a repeat or release of the `\` key, which goes
+    /// with the held prefix's press.
+    Incidental { of_backslash: bool },
     /// Anything else.
     Other,
 }
@@ -225,9 +235,9 @@ impl EscapeParser {
             return Escape::Continue;
         };
         match key {
-            Key::Incidental { releases_backslash } => {
+            Key::Incidental { of_backslash } => {
                 self.between.extend_from_slice(bytes);
-                if !releases_backslash {
+                if !of_backslash {
                     self.between_kept.extend_from_slice(bytes);
                 }
                 self.prefix = Some(prefix);
@@ -332,28 +342,34 @@ fn classify_csi(params: &[u8], final_byte: u8) -> Option<Key> {
     let code = fields[0].split(|&b| b == b':').next().and_then(number);
     if event == EVENT_RELEASE {
         return Some(Key::Incidental {
-            releases_backslash: final_byte == b'u' && code == Some(KEY_BACKSLASH),
+            of_backslash: final_byte == b'u' && code == Some(KEY_BACKSLASH),
         });
     }
     if final_byte != b'u' || !matches!(event, EVENT_PRESS | EVENT_REPEAT) {
         return None;
     }
     let code = code?;
+    // A repeat follows a press already decided: with a prefix held it
+    // belongs to that press, and with none held the child saw the press.
+    if event == EVENT_REPEAT && code == KEY_BACKSLASH {
+        return Some(Key::Incidental { of_backslash: true });
+    }
     if is_modifier_key(code) {
         return Some(Key::Incidental {
-            releases_backslash: false,
+            of_backslash: false,
         });
     }
     Some(key_event(code, modifiers, event))
 }
 
-/// A press or repeat of `code` with the encoded `modifiers`.
+/// A press of `code` (or a repeat of a key other than `\`) with the encoded
+/// `modifiers`.
 fn key_event(code: u32, modifiers: u32, event: u32) -> Key {
     let Some(held) = modifiers.checked_sub(1).map(|m| m & !MOD_LOCKS) else {
         return Key::Other;
     };
     match (code, held, event) {
-        (KEY_BACKSLASH, MOD_CTRL, _) => Key::Prefix,
+        (KEY_BACKSLASH, MOD_CTRL, EVENT_PRESS) => Key::Prefix,
         (KEY_D, 0, EVENT_PRESS) => Key::Detach,
         _ => Key::Other,
     }
@@ -527,6 +543,7 @@ mod tests {
         escape: Escape,
         prefix: Option<Vec<u8>>,
         between: Vec<u8>,
+        between_kept: Vec<u8>,
         partial: Vec<u8>,
     }
 
@@ -545,6 +562,7 @@ mod tests {
             escape,
             prefix: parser.prefix,
             between: parser.between,
+            between_kept: parser.between_kept,
             partial: parser.partial,
         }
     }
@@ -555,7 +573,7 @@ mod tests {
             4 => proptest::sample::select(CTRL_BACKSLASH.to_vec()).prop_map(<[u8]>::to_vec),
             4 => proptest::sample::select(DETACH.to_vec()).prop_map(<[u8]>::to_vec),
             3 => proptest::sample::select(vec![
-                &b"\x1b[92;5:3u"[..], b"\x1b[57442;5u", b"\x1b[57442;1:3u", b"\x1b[1;1:3A",
+                &b"\x1b[92;5:3u"[..], b"\x1b[92;5:2u", b"\x1b[92;1:2u", b"\x1b[57442;5u", b"\x1b[57442;1:3u", b"\x1b[1;1:3A",
                 b"\x1b[A", b"\x1b[1;5A", b"\x1b[97;5u", b"\x1b[100;5u", b"\x1b[200~",
                 b"\x1b", b"\x1b[", b"\x1b[9", b"\x1b[92;", b"\x1b[27;5;", b";", b":", b"u", b"~",
             ]).prop_map(<[u8]>::to_vec),
@@ -573,6 +591,7 @@ mod tests {
                 b"\x1b[100u",
                 b"\x1b[27;1;100~",
                 b"\x1b[92;5:3u",
+                b"\x1b[92;5:2u",
                 b"\x1b[92u",
                 b"\x1b[92;7u",
                 b"\x1b[27;7;92~",
@@ -680,12 +699,11 @@ mod tests {
         b"\x1c",                // legacy
         b"\x1b[92;5u",          // kitty, flag 1; xterm formatOtherKeys=1
         b"\x1b[92;5:1u",        // kitty, flag 2: explicit press
-        b"\x1b[92;5:2u",        // kitty, flag 2: repeat
         b"\x1b[92::92;5u",      // kitty, flag 4: base layout key only
         b"\x1b[92:124:92;5:1u", // kitty, flag 4: shifted and base layout keys
         b"\x1b[92;69u",         // ctrl + caps_lock
         b"\x1b[92;133u",        // ctrl + num_lock
-        b"\x1b[92;197:2u",      // ctrl + caps_lock + num_lock, repeat
+        b"\x1b[92;197:1u",      // ctrl + caps_lock + num_lock, explicit press
         b"\x1b[27;5;92~",       // xterm modifyOtherKeys=2
         b"\x1b[27;69;92~",      // modifyOtherKeys with a lock bit
     ];
@@ -838,6 +856,80 @@ mod tests {
                 &[b"\x1b[92;5u\x1b[1;1:3A\x1b[97;1:3ud"]
             ),
             (b"\x1b[1;1:3A\x1b[97;1:3u".to_vec(), Escape::Detach)
+        );
+    }
+
+    #[test]
+    fn auto_repeat_of_the_held_prefix_belongs_to_the_swallowed_press() {
+        // Kitty flag 2: Ctrl-\ held down, then released, then `d`. Nothing of
+        // the `\` key reaches the child, which never saw its press.
+        assert_eq!(
+            run(
+                EscapeMode::CtrlBackslash,
+                &[b"a\x1b[92;5u\x1b[92;5:2u\x1b[92;5:2u\x1b[92;5:3ud"]
+            ),
+            (b"a".to_vec(), Escape::Detach)
+        );
+        // Released without ctrl still held: the repeats and release of the
+        // same physical key carry other modifiers.
+        assert_eq!(
+            run(
+                EscapeMode::CtrlBackslash,
+                &[b"\x1b[92;5u\x1b[92;1:2u\x1b[92;1:3u\x1b[100u"]
+            ),
+            (Vec::new(), Escape::Detach)
+        );
+        // Held, then another key: everything, in the order typed.
+        assert_eq!(
+            run(
+                EscapeMode::CtrlBackslash,
+                &[b"\x1b[92;5u\x1b[92;5:2u\x1b[92;5:2u\x1b[92;5:3ux"]
+            ),
+            (
+                b"\x1b[92;5u\x1b[92;5:2u\x1b[92;5:2u\x1b[92;5:3ux".to_vec(),
+                Escape::Continue
+            )
+        );
+        // Held, released, pressed again: one Ctrl-\, the second press.
+        assert_eq!(
+            run(
+                EscapeMode::CtrlBackslash,
+                &[b"\x1b[92;5u\x1b[92;5:2u\x1b[92;5:3u\x1b[92;5:1u"]
+            ),
+            (b"\x1b[92;5:1u".to_vec(), Escape::Continue)
+        );
+        // Held across a read boundary.
+        assert_eq!(
+            run(
+                EscapeMode::CtrlBackslash,
+                &[
+                    b"\x1b[92;5u\x1b[92;5:",
+                    b"2u\x1b[92;5:2u",
+                    b"\x1b[92;5:3u",
+                    b"d"
+                ]
+            ),
+            (Vec::new(), Escape::Detach)
+        );
+    }
+
+    #[test]
+    fn a_repeat_with_no_prefix_held_is_an_ordinary_key() {
+        // The repeat of a Ctrl-\ already forwarded (the second of a doubled
+        // prefix, held down) goes to the child and does not start a prefix.
+        assert_eq!(
+            run(
+                EscapeMode::CtrlBackslash,
+                &[b"\x1b[92;5u\x1b[92;5u\x1b[92;5:2u\x1b[92;5:2ud"]
+            ),
+            (
+                b"\x1b[92;5u\x1b[92;5:2u\x1b[92;5:2ud".to_vec(),
+                Escape::Continue
+            )
+        );
+        assert_eq!(
+            run(EscapeMode::CtrlBackslash, &[b"\x1b[92;5:2ud"]),
+            (b"\x1b[92;5:2ud".to_vec(), Escape::Continue)
         );
     }
 
