@@ -37,6 +37,10 @@
 
 ### Fixed
 
+- **`tendr attach` ended by a signal restores the terminal.** SIGHUP, SIGTERM
+  and SIGINT now detach, restore the terminal and exit 1 with
+  `tendr: attach ended by SIG…`, instead of leaving it in raw mode. Window
+  resizes are forwarded on SIGWINCH as well as by the 100 ms size check.
 - **`wait`, `kill` and `start --replace` report a session done only once its
   sidecar has released it** ([#91](https://github.com/grumpydevorg/tendr/issues/91)).
   The sidecar writes its final state just before releasing the session lock, so

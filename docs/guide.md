@@ -184,6 +184,10 @@ knowing:
 - **`tendr attach <name> --takeover`** takes the terminal anyway: the previous
   client is disconnected and any input it (or an in-flight `push`) had queued is
   dropped, never written. Use it to reconnect after a dropped SSH session.
+- Killing `tendr attach` with SIGTERM, SIGHUP or SIGINT (a closed terminal
+  window sends SIGHUP) detaches it the same way, restores your terminal, and
+  exits 1 with `tendr: attach ended by SIGTERM` (or the signal received). In
+  the attached terminal `Ctrl-C` is a key for the session, not a signal.
 - On a PTY session, `push` holds the terminal for its duration and succeeds only
   once every byte has been written to it. It fails, reporting how many bytes
   were written, if another client holds the terminal or takes it over mid-push;
