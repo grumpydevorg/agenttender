@@ -76,6 +76,9 @@ fn handshake(stream: &mut std::os::unix::net::UnixStream, takeover: bool) -> any
         Ok(Frame::Accepted(_)) => {}
         Ok(Frame::Rejected(reason)) => anyhow::bail!("attach rejected: {reason}"),
         Ok(other) => anyhow::bail!("unexpected attach reply {other:?}"),
+        Err(attach_proto::FrameError::Unknown(msg_type)) => anyhow::bail!(
+            "the session replied with attach message type {msg_type}, which this tendr does not know; it may be newer"
+        ),
         Err(e) => anyhow::bail!(
             "the session did not complete the attach handshake ({e}); it may predate attach protocol v1"
         ),

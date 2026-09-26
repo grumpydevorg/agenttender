@@ -82,7 +82,8 @@ Current PTY rules:
   (reported as `sockets_removed`), but only a socket that no session
   breadcrumb names, that nothing listens on, and that is over a minute old, so
   a socket a live session could use is never touched. A crashed session's
-  socket goes when the session is pruned or replaced
+  socket becomes sweepable once the session is pruned or replaced, and the
+  next `prune` removes it
 - both ends verify the peer's user id; the hello must complete within one overall
   deadline, and any frame declaring more than 64 KiB closes the connection
 - the `attach` CLI keeps keyboard, session writes, and terminal output on

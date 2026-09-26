@@ -4,11 +4,36 @@
 
 ### Added
 
+- **PTY sessions have one input owner, attach takeover and an exact recording**
+  ([#68](https://github.com/grumpydevorg/tendr/pull/68)). The sidecar decides who
+  may write to a PTY: one human (`tendr attach`) or one agent (`tendr push`,
+  `exec`) at a time. `tendr attach --takeover` supersedes the current holder,
+  whose queued input is revoked. A slow viewer is disconnected instead of
+  stalling capture. Every PTY session records its output and applied resizes
+  exactly under `<session>/recording/<run_id>/` (up to 1 GiB per run; there is
+  no opt-out yet). Attach sockets move to `~/.tendr/sockets` and both ends check
+  the peer's user id.
+
 - **`tendr prune NAME…` deletes finished sessions by name** ([#70](https://github.com/grumpydevorg/tendr/issues/70)).
   Names resolve in `--namespace`, or in `default`. Each goes through the same
   checks as `--all`, so a running or locked session is skipped, never deleted.
   A name that doesn't exist is reported as `not_found` and makes the command
   exit 1. Names can't be combined with `--all` or `--older-than`.
+
+### Changed
+
+- **Attaching to a PTY session needs the new attach protocol** ([#68](https://github.com/grumpydevorg/tendr/pull/68)).
+  An older `tendr` cannot attach to a session started by this version, and this
+  version reports a session started by an older sidecar instead of attaching.
+- **`tendr push` to a PTY session is acknowledged.** It exits non-zero, with
+  byte counts, when it is refused or its bytes are not all written; a second
+  concurrent push is refused instead of interleaving. Pipe sessions are unchanged.
+- **In `tendr attach`, `Ctrl-\` is an escape prefix:** `Ctrl-\ d` detaches and
+  `Ctrl-\ Ctrl-\` sends one. `--escape none` turns it off.
+- **PTY children start at 24×80** instead of 0×0, and a resize with a zero
+  dimension is ignored.
+- **`prune` removes orphaned attach sockets** left by a sidecar that was killed
+  outright, and its summary gains `sockets_removed`.
 
 ### Fixed
 

@@ -84,6 +84,9 @@ fn push_over_attach_socket(session_dir: &std::path::Path) -> anyhow::Result<()> 
         Ok(Frame::Accepted(_)) => {}
         Ok(Frame::Rejected(reason)) => anyhow::bail!("push refused: {reason}"),
         Ok(other) => anyhow::bail!("unexpected push reply {other:?}"),
+        Err(FrameError::Unknown(msg_type)) => anyhow::bail!(
+            "the session replied with attach message type {msg_type}, which this tendr does not know; it may be newer"
+        ),
         Err(e) => anyhow::bail!(
             "the session did not accept the push ({e}); it may predate acknowledged push"
         ),
