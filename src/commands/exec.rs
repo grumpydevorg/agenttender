@@ -430,9 +430,12 @@ fn run_exec(
     // 4. Wait for result
     match wait_mode {
         WaitMode::SideChannel => wait_side_channel_result(session, &session_name, token, deadline),
-        WaitMode::Sentinel => wait_sentinel_result(session, &session_name, token, cursor, deadline),
+        WaitMode::Sentinel => {
+            wait_sentinel_result(session, &session_name, token, cursor, deadline, true)
+        }
         WaitMode::SentinelWithStderrCheck => {
-            let mut result = wait_sentinel_result(session, &session_name, token, cursor, deadline)?;
+            let mut result =
+                wait_sentinel_result(session, &session_name, token, cursor, deadline, false)?;
 
             // DuckDB's sentinel hardcodes exit code 0 (SQL has no $?).
             // Detect errors from stderr. Stderr lines may arrive in the log
@@ -457,32 +460,56 @@ fn run_exec(
     }
 }
 
-/// Scan output.log for the sentinel line (PosixShell, PowerShell).
+/// How long exec keeps reading after the stdout sentinel for the stderr end
+/// marker. Only reached when the session shell's stderr no longer reaches the
+/// sidecar (e.g. an earlier `push 'exec 2>/dev/null'`).
+const ERR_MARKER_GRACE: Duration = Duration::from_secs(1);
+
+/// Scan output.log for the result of one framed exec (PosixShell, DuckDB).
+///
+/// The sidecar logs stdout and stderr from separate threads, so their lines
+/// interleave in no fixed order. With `require_err_marker` (the POSIX frame)
+/// the exec is complete only once both the stdout sentinel and the stderr end
+/// marker are logged; each pipe is logged in order, so nothing of the
+/// command's output can still be in flight (#92). DuckDB's frame has no stderr
+/// marker and relies on `drain_trailing_stderr` instead.
 fn wait_sentinel_result(
     session: &SessionDir,
     session_name: &str,
     token: &str,
     cursor: u64,
     deadline: Option<Instant>,
+    require_err_marker: bool,
 ) -> anyhow::Result<ExecResult> {
     let log_path = session.path().join("output.log");
 
     let mut stdout_lines: Vec<String> = Vec::new();
     let mut stderr_lines: Vec<String> = Vec::new();
+    // The stdout sentinel's (exit code, cwd), and when it was seen.
+    let mut sentinel: Option<(i32, String, Instant)> = None;
+    let mut err_marked = !require_err_marker;
+
+    let result = |stdout: &[String], stderr: &[String], done: Option<(i32, String)>| {
+        let (exit_code, cwd_after, timed_out) = match done {
+            Some((code, cwd)) => (code, cwd, false),
+            None => (-1, String::new(), true),
+        };
+        ExecResult {
+            session: session_name.to_string(),
+            stdout: stdout.join("\n"),
+            stderr: stderr.join("\n"),
+            exit_code,
+            cwd_after,
+            timed_out,
+            truncated: false,
+        }
+    };
 
     // Wait for log file to exist
     while !log_path.exists() {
         if let Some(dl) = deadline {
             if Instant::now() >= dl {
-                return Ok(ExecResult {
-                    session: session_name.to_string(),
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    exit_code: -1,
-                    cwd_after: String::new(),
-                    timed_out: true,
-                    truncated: false,
-                });
+                return Ok(result(&[], &[], None));
             }
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -494,24 +521,39 @@ fn wait_sentinel_result(
 
     let mut buf = String::new();
     loop {
-        // Check timeout
-        if let Some(dl) = deadline {
+        if let Some((code, cwd, _)) = &sentinel {
+            if err_marked {
+                return Ok(result(
+                    &stdout_lines,
+                    &stderr_lines,
+                    Some((*code, cwd.clone())),
+                ));
+            }
+        } else if let Some(dl) = deadline {
+            // No sentinel by the deadline: the command is still running.
             if Instant::now() >= dl {
-                return Ok(ExecResult {
-                    session: session_name.to_string(),
-                    stdout: stdout_lines.join("\n"),
-                    stderr: stderr_lines.join("\n"),
-                    exit_code: -1,
-                    cwd_after: String::new(),
-                    timed_out: true,
-                    truncated: false,
-                });
+                return Ok(result(&stdout_lines, &stderr_lines, None));
             }
         }
 
         buf.clear();
         let bytes = reader.read_line(&mut buf)?;
         if bytes == 0 {
+            if let Some((code, cwd, seen_at)) = &sentinel {
+                if seen_at.elapsed() >= ERR_MARKER_GRACE {
+                    eprintln!(
+                        "tendr exec: stderr end marker not seen; the session shell's stderr \
+                         may be redirected, so stderr may be incomplete"
+                    );
+                    return Ok(result(
+                        &stdout_lines,
+                        &stderr_lines,
+                        Some((*code, cwd.clone())),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
             // No data available — check session is still running
             let current = session::read_meta(session)?;
             if !matches!(current.status(), RunStatus::Running { .. }) {
@@ -525,36 +567,44 @@ fn wait_sentinel_result(
         let Some(parsed) = serde_json::from_str::<LogLine>(trimmed).ok() else {
             continue;
         };
+        let Some(content) = parsed.content_text() else {
+            continue; // annotations and other structured lines
+        };
 
         match parsed.tag.as_str() {
             "O" => {
-                // Check if this is the sentinel line
-                if let Some((exit_code, cwd)) = parsed
-                    .content_text()
-                    .and_then(|content| exec_frame::parse_sentinel(content, token))
+                if let Some((residual, code, cwd)) = exec_frame::parse_sentinel(content, token) {
+                    if !residual.is_empty() {
+                        stdout_lines.push(residual.to_owned());
+                    }
+                    sentinel.get_or_insert((code, cwd, Instant::now()));
+                } else if let Some(residual) = require_err_marker
+                    .then(|| exec_frame::parse_err_marker(content, token))
+                    .flatten()
                 {
-                    return Ok(ExecResult {
-                        session: session_name.to_string(),
-                        stdout: stdout_lines.join("\n"),
-                        stderr: stderr_lines.join("\n"),
-                        exit_code,
-                        cwd_after: cwd,
-                        timed_out: false,
-                        truncated: false,
-                    });
-                }
-                if let Some(content) = parsed.content_text() {
+                    // A PTY merges both streams onto stdout.
+                    if !residual.is_empty() {
+                        stdout_lines.push(residual.to_owned());
+                    }
+                    err_marked = true;
+                } else {
                     stdout_lines.push(content.to_owned());
                 }
             }
             "E" => {
-                if let Some(content) = parsed.content_text() {
+                if let Some(residual) = require_err_marker
+                    .then(|| exec_frame::parse_err_marker(content, token))
+                    .flatten()
+                {
+                    if !residual.is_empty() {
+                        stderr_lines.push(residual.to_owned());
+                    }
+                    err_marked = true;
+                } else {
                     stderr_lines.push(content.to_owned());
                 }
             }
-            _ => {
-                // Skip annotations and other tags
-            }
+            _ => {}
         }
     }
 }
@@ -881,6 +931,66 @@ fn write_exec_annotation(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// A session dir whose output.log holds exactly `lines` (tag, content).
+    fn session_with_log(tmp: &tempfile::TempDir, lines: &[(&str, &str)]) -> SessionDir {
+        use tendr::model::ids::{Namespace, SessionName};
+        let root = SessionRoot::new(tmp.path().join("sessions"));
+        let dir = session::create(
+            &root,
+            &Namespace::new("default").unwrap(),
+            &SessionName::new("s").unwrap(),
+        )
+        .unwrap();
+        let log: String = lines
+            .iter()
+            .map(|(tag, content)| {
+                format!(
+                    "{}\n",
+                    serde_json::json!({"ts": 1.0, "tag": tag, "content": content})
+                )
+            })
+            .collect();
+        std::fs::write(dir.path().join("output.log"), log).unwrap();
+        dir
+    }
+
+    /// Stderr logged after the stdout sentinel still belongs to the exec: the
+    /// two pipes are logged by separate threads (#92). Before the stderr end
+    /// marker, exec returned at the sentinel with `stderr == ""`.
+    #[test]
+    fn stderr_logged_after_the_sentinel_is_kept() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = session_with_log(
+            &tmp,
+            &[
+                ("O", "__TENDR_EXEC__ tok 0 /tmp"),
+                ("E", "late"),
+                ("E", "__TENDR_EXEC_ERR__ tok"),
+            ],
+        );
+        let result = wait_sentinel_result(&dir, "s", "tok", 0, None, true).unwrap();
+        assert_eq!(result.stderr, "late");
+        assert_eq!(result.exit_code, 0);
+        assert!(!result.timed_out);
+    }
+
+    /// Unterminated last lines come back glued to both markers (#95).
+    #[test]
+    fn glued_residuals_are_kept_as_output() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = session_with_log(
+            &tmp,
+            &[
+                ("E", "y__TENDR_EXEC_ERR__ tok"),
+                ("O", "foo__TENDR_EXEC__ tok 3 /tmp"),
+            ],
+        );
+        let result = wait_sentinel_result(&dir, "s", "tok", 0, None, true).unwrap();
+        assert_eq!(result.stdout, "foo");
+        assert_eq!(result.stderr, "y");
+        assert_eq!(result.exit_code, 3);
+    }
 
     /// Independent SHA-256 hex reference (does not go through exec.rs's own helper).
     fn expected_sha256(s: &str) -> String {

@@ -10,6 +10,20 @@
   A name that doesn't exist is reported as `not_found` and makes the command
   exit 1. Names can't be combined with `--all` or `--older-than`.
 
+### Fixed
+
+- **`exec` no longer hangs when a command's output doesn't end in a newline**
+  ([#95](https://github.com/grumpydevorg/tendr/issues/95)). `exec shell -- printf foo`
+  never returned, even with `--timeout`, and held the session's exec lock until
+  the session died. The completion marker is now recognised at the end of a line.
+- **`exec` on a POSIX shell no longer drops stderr written just before the command
+  ends** ([#92](https://github.com/grumpydevorg/tendr/issues/92)). The frame now also
+  prints a stderr end marker, and exec returns only once both it and the stdout
+  sentinel are logged. If the session shell's stderr no longer reaches tendr
+  (for example after `exec 2>/dev/null` was pushed to it), exec returns after
+  one second with a warning that stderr may be incomplete. `tendr log` shows
+  one extra `E` marker line per exec.
+
 ## v0.3.0 — Renamed to `tendr`
 
 ### Breaking changes

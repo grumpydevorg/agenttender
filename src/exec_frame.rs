@@ -32,6 +32,11 @@ pub fn python_frame(code: &str, result_path: &str) -> String {
 ///
 /// Token must be hex-only (as produced by `generate_token`); block_id is
 /// a UUID (hex + dashes).
+/// Printed on stderr after the command and before the stdout sentinel. The
+/// sidecar logs each pipe in order, so once this marker is in the log every
+/// earlier stderr byte of the command is too (#92).
+pub const EXEC_ERR_MARKER: &str = "__TENDR_EXEC_ERR__";
+
 pub fn unix_frame(argv: &[String], token: &str, block_id: &str) -> String {
     debug_assert!(
         token.bytes().all(|b| b.is_ascii_hexdigit()),
@@ -43,7 +48,7 @@ pub fn unix_frame(argv: &[String], token: &str, block_id: &str) -> String {
     );
     let cmd = shell_words::join(argv);
     format!(
-        "export TENDR_BLOCK_ID='{block_id}'; {cmd}; __tendr_s=$?; unset TENDR_BLOCK_ID; printf '__TENDR_EXEC__ %s %s %s\\n' '{token}' \"$__tendr_s\" \"$(pwd)\"\n"
+        "export TENDR_BLOCK_ID='{block_id}'; {cmd}; __tendr_s=$?; unset TENDR_BLOCK_ID; printf '{EXEC_ERR_MARKER} %s\\n' '{token}' >&2; printf '__TENDR_EXEC__ %s %s %s\\n' '{token}' \"$__tendr_s\" \"$(pwd)\"\n"
     )
 }
 
@@ -97,17 +102,27 @@ pub fn duckdb_frame(sql: &str, token: &str) -> String {
     format!(".mode json\n.nullvalue null\n{sql}\n.print __TENDR_EXEC__ {token} 0 .\n")
 }
 
-/// Parse a sentinel line, extracting exit code and cwd.
-/// Returns None if the line is not a sentinel or token doesn't match.
-pub fn parse_sentinel(line: &str, expected_token: &str) -> Option<(i32, String)> {
-    let rest = line.strip_prefix("__TENDR_EXEC__ ")?;
-    let (token, rest) = rest.split_once(' ')?;
-    if token != expected_token {
-        return None;
-    }
-    let (code_str, cwd) = rest.split_once(' ')?;
+/// Parse a sentinel line into `(residual, exit code, cwd)`.
+///
+/// The sentinel may end a line rather than start one: a command whose output
+/// lacks a trailing newline leaves its last bytes in front of it (#95). Those
+/// bytes are returned as `residual`, which is the command's own output.
+/// Returns None if the line holds no sentinel for `expected_token`.
+pub fn parse_sentinel<'a>(line: &'a str, expected_token: &str) -> Option<(&'a str, i32, String)> {
+    let needle = format!("__TENDR_EXEC__ {expected_token} ");
+    let at = line.rfind(&needle)?;
+    let (code_str, cwd) = line[at + needle.len()..].split_once(' ')?;
     let code: i32 = code_str.parse().ok()?;
-    Some((code, cwd.to_owned()))
+    Some((&line[..at], code, cwd.to_owned()))
+}
+
+/// Parse the stderr end marker, returning the bytes in front of it: the
+/// command's unterminated last stderr line, or `""`. Returns None if the line
+/// does not end with the marker for `expected_token`.
+pub fn parse_err_marker<'a>(line: &'a str, expected_token: &str) -> Option<&'a str> {
+    line.strip_suffix(expected_token)?
+        .strip_suffix(' ')?
+        .strip_suffix(EXEC_ERR_MARKER)
 }
 
 /// Generate a unique token for sentinel matching.
@@ -164,8 +179,8 @@ mod tests {
     #[test]
     fn parse_sentinel_valid() {
         let result = parse_sentinel("__TENDR_EXEC__ a1b2c3 0 /home/user", "a1b2c3");
-        assert!(result.is_some());
-        let (exit_code, cwd) = result.unwrap();
+        let (residual, exit_code, cwd) = result.unwrap();
+        assert_eq!(residual, "");
         assert_eq!(exit_code, 0);
         assert_eq!(cwd, "/home/user");
     }
@@ -173,7 +188,7 @@ mod tests {
     #[test]
     fn parse_sentinel_nonzero_exit() {
         let result = parse_sentinel("__TENDR_EXEC__ a1b2c3 42 /tmp", "a1b2c3");
-        let (exit_code, cwd) = result.unwrap();
+        let (_, exit_code, cwd) = result.unwrap();
         assert_eq!(exit_code, 42);
         assert_eq!(cwd, "/tmp");
     }
@@ -181,7 +196,7 @@ mod tests {
     #[test]
     fn parse_sentinel_cwd_with_spaces() {
         let result = parse_sentinel("__TENDR_EXEC__ a1b2c3 0 /home/user/my project", "a1b2c3");
-        let (_, cwd) = result.unwrap();
+        let (_, _, cwd) = result.unwrap();
         assert_eq!(cwd, "/home/user/my project");
     }
 
@@ -195,6 +210,52 @@ mod tests {
     fn parse_sentinel_not_sentinel() {
         let result = parse_sentinel("hello world", "a1b2c3");
         assert!(result.is_none());
+    }
+
+    /// Output without a trailing newline leaves its last bytes in front of the
+    /// sentinel on the same line (#95).
+    #[test]
+    fn parse_sentinel_keeps_a_glued_residual_as_output() {
+        let (residual, code, cwd) =
+            parse_sentinel("foo__TENDR_EXEC__ a1b2c3 0 /a b", "a1b2c3").unwrap();
+        assert_eq!(residual, "foo");
+        assert_eq!(code, 0);
+        assert_eq!(cwd, "/a b");
+    }
+
+    #[test]
+    fn parse_err_marker_exact() {
+        assert_eq!(
+            parse_err_marker("__TENDR_EXEC_ERR__ a1b2c3", "a1b2c3"),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn parse_err_marker_keeps_a_glued_residual() {
+        assert_eq!(
+            parse_err_marker("y__TENDR_EXEC_ERR__ a1b2c3", "a1b2c3"),
+            Some("y")
+        );
+    }
+
+    #[test]
+    fn parse_err_marker_rejects_another_token_and_plain_lines() {
+        assert_eq!(
+            parse_err_marker("__TENDR_EXEC_ERR__ deadbeef", "a1b2c3"),
+            None
+        );
+        assert_eq!(parse_err_marker("error: something", "a1b2c3"), None);
+    }
+
+    #[test]
+    fn unix_frame_prints_the_stderr_marker_before_the_stdout_sentinel() {
+        let frame = unix_frame(&["true".to_string()], "abc123", BLOCK);
+        let err = frame
+            .find("printf '__TENDR_EXEC_ERR__ %s\\n' 'abc123' >&2")
+            .expect("stderr marker printed to fd 2");
+        let out = frame.find("printf '__TENDR_EXEC__ %s %s %s").unwrap();
+        assert!(err < out, "stderr marker must come first: {frame}");
     }
 
     #[test]
@@ -303,8 +364,8 @@ mod tests {
     #[test]
     fn duckdb_sentinel_parses_with_dot_cwd() {
         let result = parse_sentinel("__TENDR_EXEC__ abc123 0 .", "abc123");
-        assert!(result.is_some());
-        let (exit_code, cwd) = result.unwrap();
+        let (residual, exit_code, cwd) = result.unwrap();
+        assert_eq!(residual, "");
         assert_eq!(exit_code, 0);
         assert_eq!(cwd, ".");
     }
