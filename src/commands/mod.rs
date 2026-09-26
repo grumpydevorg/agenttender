@@ -26,7 +26,7 @@ pub use guide::cmd_guide;
 pub use kill::cmd_kill;
 pub use list::cmd_list;
 pub use log::cmd_log;
-pub use prune::cmd_prune;
+pub use prune::{cmd_prune, cmd_prune_named};
 pub use push::cmd_push;
 pub use query::{QueryOptions, cmd_query};
 pub use run::cmd_run;

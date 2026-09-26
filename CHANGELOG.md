@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`tendr prune NAME…` deletes finished sessions by name** ([#70](https://github.com/grumpydevorg/tendr/issues/70)).
+  Names resolve in `--namespace`, or in `default`. Each goes through the same
+  checks as `--all`, so a running or locked session is skipped, never deleted.
+  A name that doesn't exist is reported as `not_found` and makes the command
+  exit 1. Names can't be combined with `--all` or `--older-than`.
+
 ## v0.3.0 — Renamed to `tendr`
 
 ### Breaking changes

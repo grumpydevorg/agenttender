@@ -403,3 +403,147 @@ fn prune_delete_failure_reports_error_and_continues() {
     // Cleanup: restore permissions so TempDir can clean up
     std::fs::set_permissions(&blocker, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
+
+// ── prune by name (#70) ─────────────────────────────────────────────────
+
+fn session_dir(root: &TempDir, namespace: &str, name: &str) -> std::path::PathBuf {
+    root.path()
+        .join(format!(".tendr/sessions/{namespace}/{name}"))
+}
+
+#[test]
+fn prune_by_name_deletes_only_that_session() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+
+    create_terminal_session(&root, "prune-one", "default");
+    create_terminal_session(&root, "prune-other", "default");
+
+    let out = tendr(&root).args(["prune", "prune-one"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "prune NAME failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(!session_dir(&root, "default", "prune-one").exists());
+    assert!(
+        session_dir(&root, "default", "prune-other").exists(),
+        "an unnamed session in the same namespace must be untouched"
+    );
+
+    let lines = parse_ndjson(&out.stdout);
+    let sessions: Vec<_> = lines.iter().filter(|l| l["type"] == "session").collect();
+    assert_eq!(
+        sessions.len(),
+        1,
+        "only the named session is considered: {lines:?}"
+    );
+    assert_eq!(sessions[0]["session"], "prune-one");
+    assert_eq!(sessions[0]["action"], "delete");
+}
+
+#[test]
+fn prune_by_name_skips_a_running_session() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+
+    tendr(&root)
+        .args(["start", "prune-live", "--", "sleep", "60"])
+        .assert()
+        .success();
+    let _session = harness::SessionGuard::new(&root, "prune-live");
+    wait_running(&root, "prune-live");
+
+    let out = tendr(&root).args(["prune", "prune-live"]).output().unwrap();
+    assert!(out.status.success(), "a skip is not an error");
+
+    let lines = parse_ndjson(&out.stdout);
+    let line = lines.iter().find(|l| l["type"] == "session").unwrap();
+    assert_eq!(line["action"], "skip");
+    assert_eq!(line["skip_reason"], "locked");
+    assert!(session_dir(&root, "default", "prune-live").exists());
+}
+
+#[test]
+fn prune_by_name_reports_an_unknown_name_and_fails() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+
+    create_terminal_session(&root, "prune-real", "default");
+
+    let out = tendr(&root)
+        .args(["prune", "prune-real", "prune-typo"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "an unknown name must exit non-zero");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("prune-typo"),
+        "stderr must name the missing session: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let lines = parse_ndjson(&out.stdout);
+    let typo = lines
+        .iter()
+        .find(|l| l["type"] == "session" && l["session"] == "prune-typo")
+        .expect("the unknown name gets its own line");
+    assert_eq!(typo["action"], "skip");
+    assert_eq!(typo["skip_reason"], "not_found");
+    assert!(
+        !session_dir(&root, "default", "prune-real").exists(),
+        "the names that do exist are still pruned"
+    );
+}
+
+#[test]
+fn prune_by_name_dry_run_removes_nothing() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+
+    create_terminal_session(&root, "prune-dry-one", "default");
+
+    let out = tendr(&root)
+        .args(["prune", "prune-dry-one", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    let lines = parse_ndjson(&out.stdout);
+    let line = lines.iter().find(|l| l["type"] == "session").unwrap();
+    assert_eq!(line["action"], "delete");
+    assert!(session_dir(&root, "default", "prune-dry-one").exists());
+}
+
+#[test]
+fn prune_by_name_resolves_in_the_given_namespace() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+
+    create_terminal_session(&root, "prune-same", "ns-a");
+    create_terminal_session(&root, "prune-same", "ns-b");
+
+    let out = tendr(&root)
+        .args(["prune", "prune-same", "--namespace", "ns-a"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(!session_dir(&root, "ns-a", "prune-same").exists());
+    assert!(session_dir(&root, "ns-b", "prune-same").exists());
+}
+
+#[test]
+fn prune_names_conflict_with_all_and_older_than() {
+    let root = TempDir::new().unwrap();
+    for flag in [&["--all"][..], &["--older-than", "1d"][..]] {
+        let mut args = vec!["prune", "some-session"];
+        args.extend_from_slice(flag);
+        let out = tendr(&root).args(&args).output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "names with {flag:?} must be a usage error: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}

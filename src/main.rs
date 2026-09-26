@@ -397,15 +397,20 @@ enum Commands {
         #[arg(long = "best-effort")]
         best_effort: bool,
     },
-    /// Delete terminal sessions older than a threshold
+    /// Delete terminal sessions: by name, older than a threshold, or all
     Prune {
+        /// Sessions to delete, by name. They resolve in --namespace, or in
+        /// `default`; a name that doesn't exist is reported and fails the command
+        #[arg(conflicts_with_all = ["older_than", "all"])]
+        names: Vec<String>,
         /// Delete sessions ended more than DURATION ago (e.g. 7d, 24h, 30m)
         #[arg(long, value_parser = parse_duration, conflicts_with = "all")]
         older_than: Option<Duration>,
         /// Delete all terminal sessions regardless of age
         #[arg(long, conflicts_with = "older_than")]
         all: bool,
-        /// Namespace to prune (prunes all namespaces if omitted)
+        /// Namespace to prune. Without names, every namespace if omitted; with
+        /// names, the namespace they are in (`default` if omitted)
         #[arg(long)]
         namespace: Option<String>,
         /// Show what would be deleted without deleting
@@ -770,12 +775,14 @@ impl Commands {
                 Some(args)
             }
             Commands::Prune {
+                names,
                 older_than,
                 all,
                 namespace,
                 dry_run,
             } => {
                 let mut args = vec!["prune".to_string()];
+                args.extend(names.iter().cloned());
                 if let Some(d) = older_than {
                     args.extend([
                         "--older-than".to_string(),
@@ -1177,12 +1184,20 @@ fn main() {
             best_effort,
         }),
         Commands::Prune {
+            names,
             older_than,
             all,
             namespace,
             dry_run,
-        } => parse_optional_namespace(namespace)
-            .and_then(|ns| commands::cmd_prune(older_than, all, ns.as_ref(), dry_run)),
+        } => {
+            if names.is_empty() {
+                parse_optional_namespace(namespace)
+                    .and_then(|ns| commands::cmd_prune(older_than, all, ns.as_ref(), dry_run))
+            } else {
+                resolve_namespace(namespace)
+                    .and_then(|ns| commands::cmd_prune_named(&names, &ns, dry_run))
+            }
+        }
         Commands::Wrap {
             session,
             namespace,
