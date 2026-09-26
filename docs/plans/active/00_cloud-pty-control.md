@@ -188,11 +188,14 @@ separate typed records, never terminal-output bytes.
 
 Initial limits: 64 KiB data frames and 8 MiB queued bytes per viewer, configurable
 within validated bounds. Control messages have a smaller separately bounded
-budget and cannot sit behind output backlog. Allow one controller and at most
-eight read-only viewers per run. Reserve a separate bounded admission path for
-up to four pending handshakes, each with a five-second deadline, so a full viewer
-set does not reject a replacement controller. Authenticate before admission;
-retire the old controller rather than count it as another viewer on takeover.
+budget and cannot sit behind output backlog. Allow one controller per run; in
+slice 1 its own connection is the only viewer, and one pool of eight
+connections, hellos included, admits it, each hello bounded by a five-second
+deadline. Read-only viewers (at most eight) and a separate bounded admission
+path for up to four pending handshakes arrive with the typed bridge in slice 3,
+so a full viewer set never rejects a replacement controller. Authenticate
+before admission; retire the old controller rather than count it as another
+viewer on takeover.
 These are starting operational defaults to validate, not performance claims.
 
 A slow viewer is disconnected with its last acknowledged/rendered cursor where
@@ -486,7 +489,7 @@ Basis: this plan document; branch `feat/pty-runtime-takeover` at `92512a0`; code
 | EOF handling | **Done** in both relay directions; terminal restored on drop. |
 | Cancellation by signal | **Done (step 1):** SIGHUP/SIGTERM/SIGINT detach, restore the terminal and exit 1 with `tendr: attach ended by SIG…`; `cli_sigterm_restores_the_terminal_and_releases_control`, `cli_sighup_detaches_cleanly`, `cli_sigterm_exits_while_terminal_output_is_blocked`. |
 | Takeover, retirement, revoked input, single writer, bounded viewers, private peer-verified sockets, exact recording | Done. |
-| Admission limits | **Simplified vs plan:** one pool `MAX_ATTACH_CONNECTIONS = 8` including pending hellos; no separate 4-slot pending pool, no reserved controller slot, no read-only viewer mode. |
+| Admission limits | **Slice-1 design (decided 2026-09-26):** one pool `MAX_ATTACH_CONNECTIONS = 8` including pending hellos; no separate 4-slot pending pool, no reserved controller slot, no read-only viewer mode until slice 3. Test: `thirty_two_half_open_takeovers_do_not_grow_connections_or_threads`. |
 | Repaint nudge after reattach | **Not done** (codec supports `ResizeCause::Repaint`, nothing emits it). |
 | Query/repaint measurement | **Not done**; no tool to inspect a recording. |
 | Nested `ssh -t` fixture, paste fixture, Ctrl-] named test | **Not done.** |
@@ -497,7 +500,7 @@ Basis: this plan document; branch `feat/pty-runtime-takeover` at `92512a0`; code
 
 1. **Signal-driven cancellation and SIGWINCH in the attach client** (local). Self-pipe in the `poll()` set; SIGWINCH forwards size at once; SIGHUP/SIGTERM/SIGINT → `Ending::Signalled`: send `MSG_DETACH`, restore terminal, exit non-zero. Tests: `cli_sigterm_restores_the_terminal_and_releases_control`, `cli_sighup_detaches_cleanly`.
 2. **Escape fixtures the invariant table names, plus doc gap** (local). Tests: `ctrl_right_bracket_passes_through`, `cli_prefix_held_across_a_read_boundary_then_detaches`, `cli_paste_with_embedded_prefixes_arrives_intact`. Decide "configurable" vs "fixed prefix, on/off" for slice 1.
-3. **Admission: a separate pending-hello pool; takeover never refused by a full pool** (local). Today eight trickling hellos can reject a takeover for up to 5 s. Tests: `pending_hellos_are_bounded_separately_from_admitted_connections`, `thirty_two_half_open_takeovers_do_not_grow_connections_or_threads`. Alternative: amend the plan to one pool of 8.
+3. **Reconnect accounting** (local). One pool of 8 including pending hellos is the slice-1 design (decided 2026-09-26); the sole viewer is the controller, so no viewer set can refuse a takeover before slice 3. Test: `thirty_two_half_open_takeovers_do_not_grow_connections_or_threads`.
 4. **Recording dump tool** (local, `examples/dump-recording.rs`, not shipped). Test: `dump_of_the_golden_fixture_is_stable`.
 5. **Query and repaint measurement on the VM** (VM, docs only). Detached vs attached Claude; same-size reattach redraw; same-size resize vs `kill -WINCH` vs rows−1/restore; `Ctrl-\ d` and `Ctrl-]` through Ghostty → `ssh -t`; exe.dev half-open timing. Output: a "Measurement" subsection plus the decision for step 6. If Claude stalls detached, that is a slice-1 blocker.
 6. **Best-effort repaint nudge after (re)attach** (local, design fixed by step 5). New `MSG_REPAINT`; recorded as `ResizeCause::Repaint { correlation }`. Tests: `reattach_at_the_same_size_records_a_tagged_repaint_pair`, `reattach_at_a_new_size_records_only_a_user_resize`, `a_repaint_is_authorized_like_input`.
