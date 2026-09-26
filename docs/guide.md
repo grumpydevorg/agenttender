@@ -197,7 +197,8 @@ tendr watch --namespace nightly --events --logs   # follow a whole namespace
 
 ```bash
 tendr kill  dev                  # stop a session
-tendr prune                      # remove terminated sessions (local-only)
+tendr prune dev                  # remove one finished session by name (local-only)
+tendr prune --older-than 7d      # or every finished session past an age; --all for all
 tendr run --detach ./job.sh      # one-shot convenience over `start` for scripts
 ```
 
