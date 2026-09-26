@@ -41,6 +41,7 @@
 //! - [`attach_escape`] — the attach client's `Ctrl-\ d` detach escape.
 //! - `attach_socket` (Unix) — private, peer-verified attach sockets under the
 //!   state root.
+//! - [`pty_exit`] — the exit codes (80–85) of `attach` and PTY `push`.
 //! - [`pty_input`] — the sidecar's single PTY input writer and its control
 //!   queue (claim, takeover, release).
 //! - [`recorder`] — the sidecar's exact PTY recorder (sequencing, rotation,
@@ -78,6 +79,7 @@ pub mod exec_request;
 pub mod log;
 pub mod model;
 pub mod platform;
+pub mod pty_exit;
 pub mod pty_input;
 pub mod ready_file;
 pub mod reconcile;

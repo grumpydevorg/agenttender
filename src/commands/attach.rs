@@ -1,9 +1,10 @@
 use tendr::attach_escape::EscapeMode;
 #[cfg(unix)]
-use tendr::attach_proto;
+use tendr::attach_proto::{self, Frame, FrameError, Mode};
 use tendr::model::ids::{Namespace, SessionName};
 use tendr::model::pty::PtyControl;
 use tendr::model::state::RunStatus;
+use tendr::pty_exit::PtyExitCode;
 use tendr::session::{self, SessionRoot};
 
 pub fn cmd_attach(
@@ -30,7 +31,9 @@ pub fn cmd_attach(
 
     // Informational pre-check for a clear message; the sidecar is the authority.
     if !takeover && pty.control == PtyControl::HumanControl {
-        anyhow::bail!("session is already under human control (use --takeover to take it over)");
+        return Err(PtyExitCode::Control.error(anyhow::anyhow!(
+            "session is already under human control (use --takeover to take it over)"
+        )));
     }
 
     #[cfg(not(unix))]
@@ -41,50 +44,116 @@ pub fn cmd_attach(
 
     #[cfg(unix)]
     {
-        let sock_path = attach_proto::read_sock_path(session.path())
-            .ok_or_else(|| anyhow::anyhow!("attach socket not found"))?;
-
         // Fail before any side effect — a takeover included — if there is no
         // terminal to drive.
         if !rustix::termios::isatty(std::io::stdin()) {
             anyhow::bail!("attach requires an interactive terminal on stdin");
         }
 
-        let mut stream = std::os::unix::net::UnixStream::connect(&sock_path)?;
-        // Keystrokes go only to a listener run by this same user: a spoofed
-        // socket owned by someone else is refused before the hello.
-        tendr::attach_socket::verify_peer(&stream)
-            .map_err(|e| anyhow::anyhow!("refusing attach socket {}: {e}", sock_path.display()))?;
-        handshake(&mut stream, takeover)?;
+        let mode = if takeover {
+            Mode::Takeover
+        } else {
+            Mode::Attach
+        };
+        let stream = connect(session.path(), mode)?;
         unix_relay::relay(stream, escape)
     }
 }
 
-/// Send the v1 hello and require the sidecar's acceptance.
+/// How long a client waits for the sidecar's answer to its hello.
 #[cfg(unix)]
-fn handshake(stream: &mut std::os::unix::net::UnixStream, takeover: bool) -> anyhow::Result<()> {
-    use attach_proto::{Frame, Mode};
+const HELLO_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-    let mode = if takeover {
-        Mode::Takeover
-    } else {
-        Mode::Attach
+/// Connect to the session's attach socket, check that its listener is this
+/// user's, and complete the v1 hello in `mode`; `attach` and PTY `push` both
+/// start here.
+///
+/// Every failure carries its PTY exit code ([`tendr::pty_exit`]): a socket
+/// that is missing or cannot be reached is a runtime failure (84), a listener
+/// of another user an identity failure (85), and the hello's reply is
+/// classified by [`hello_reply`].
+#[cfg(unix)]
+pub(super) fn connect(
+    session_dir: &std::path::Path,
+    mode: Mode,
+) -> anyhow::Result<std::os::unix::net::UnixStream> {
+    let sock_path = attach_proto::read_sock_path(session_dir)
+        .ok_or_else(|| PtyExitCode::Runtime.error(anyhow::anyhow!("attach socket not found")))?;
+    let mut stream = std::os::unix::net::UnixStream::connect(&sock_path).map_err(|e| {
+        PtyExitCode::Runtime.error(anyhow::anyhow!(
+            "cannot connect to attach socket {}: {e}",
+            sock_path.display()
+        ))
+    })?;
+    // Keystrokes and pushed input go only to a listener run by this same user:
+    // a spoofed socket owned by someone else is refused before the hello.
+    tendr::attach_socket::verify_peer(&stream).map_err(|e| {
+        PtyExitCode::of_peer_check(&e).error(anyhow::anyhow!(
+            "refusing attach socket {}: {e}",
+            sock_path.display()
+        ))
+    })?;
+
+    let what = verb(mode);
+    let transport = |e: std::io::Error| {
+        PtyExitCode::Runtime.error(anyhow::anyhow!("{what} handshake failed: {e}"))
     };
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
-    attach_proto::write_frame(stream, &Frame::Hello(mode))?;
-    match attach_proto::read_frame(stream) {
-        Ok(Frame::Accepted(_)) => {}
-        Ok(Frame::Rejected(reason)) => anyhow::bail!("attach rejected: {reason}"),
-        Ok(other) => anyhow::bail!("unexpected attach reply {other:?}"),
-        Err(attach_proto::FrameError::Unknown(msg_type)) => anyhow::bail!(
-            "the session replied with attach message type {msg_type}, which this tendr does not know; it may be newer"
-        ),
-        Err(e) => anyhow::bail!(
-            "the session did not complete the attach handshake ({e}); it may predate attach protocol v1"
-        ),
+    stream
+        .set_read_timeout(Some(HELLO_REPLY_TIMEOUT))
+        .map_err(transport)?;
+    attach_proto::write_frame(&mut stream, &Frame::Hello(mode)).map_err(transport)?;
+    hello_reply(attach_proto::read_frame(&mut stream), what)?;
+    // From here an attach waits for output, and a push as long as the terminal
+    // applies backpressure.
+    stream.set_read_timeout(None).map_err(transport)?;
+    Ok(stream)
+}
+
+#[cfg(unix)]
+fn verb(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Attach | Mode::Takeover => "attach",
+        Mode::Push => "push",
     }
-    stream.set_read_timeout(None)?;
-    Ok(())
+}
+
+/// What the sidecar's reply to a hello means for the client.
+///
+/// A refusal exits with its class's code. A reply that is not a v1 reply, or
+/// none before the deadline (a sidecar from before the hello waits silently),
+/// is a protocol failure (80); a connection that ends first is a transport
+/// failure (84).
+#[cfg(unix)]
+fn hello_reply(reply: Result<Frame, FrameError>, what: &str) -> anyhow::Result<()> {
+    let protocol = |message: String| Err(PtyExitCode::Protocol.error(anyhow::anyhow!(message)));
+    match reply {
+        Ok(Frame::Accepted(_)) => Ok(()),
+        Ok(Frame::Rejected { class, reason }) => {
+            Err(PtyExitCode::from(class).error(anyhow::anyhow!("{what} refused: {reason}")))
+        }
+        Ok(other) => protocol(format!(
+            "unexpected {what} reply {other:?}; the session may predate attach protocol v1"
+        )),
+        Err(FrameError::Unknown(msg_type)) => protocol(format!(
+            "the session replied with attach message type {msg_type}, which this tendr does not know; it may be newer"
+        )),
+        Err(FrameError::Malformed(e)) => protocol(format!(
+            "the session's reply to the {what} hello is malformed ({e}); it may be older or newer than this tendr"
+        )),
+        Err(FrameError::Io(e))
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            protocol(format!(
+                "the session did not answer the {what} hello ({e}); it may predate attach protocol v1"
+            ))
+        }
+        Err(FrameError::Io(e)) => Err(PtyExitCode::Runtime.error(anyhow::anyhow!(
+            "the session closed the connection before answering the {what} hello ({e})"
+        ))),
+    }
 }
 
 /// The interactive relay between the user's terminal and the session.
@@ -118,6 +187,7 @@ mod unix_relay {
 
     use tendr::attach_escape::{Escape, EscapeMode, EscapeParser};
     use tendr::attach_proto::{self, Frame, FrameError};
+    use tendr::pty_exit::PtyExitCode;
 
     /// Keystrokes that may wait for a session that is not accepting input.
     /// Beyond this, further keystrokes are dropped (and reported) rather than
@@ -135,8 +205,9 @@ mod unix_relay {
     const REPORT_GRACE: Duration = Duration::from_millis(200);
 
     pub fn relay(stream: UnixStream, escape: EscapeMode) -> anyhow::Result<()> {
-        let shutdown = stream.try_clone()?;
-        let reader_stream = stream.try_clone()?;
+        let socket = |e| PtyExitCode::Runtime.error(anyhow::anyhow!("attach socket: {e}"));
+        let shutdown = stream.try_clone().map_err(socket)?;
+        let reader_stream = stream.try_clone().map_err(socket)?;
         let closed = Arc::new(AtomicBool::new(false));
         let retired = Arc::new(AtomicBool::new(false));
         let outbox = Arc::new(Outbox::default());
@@ -226,12 +297,14 @@ mod unix_relay {
 
         // Only report once the terminal is restored, and never after a user
         // detach, whose terminal may be the thing that is blocked.
+        let taken_over = ending != Ending::Detached && retired.load(Ordering::SeqCst);
         let mut notes = Vec::new();
         if let Ending::Signalled(cancel) = ending {
             notes.push(format!("tendr: attach ended by {}", cancel.name()));
         }
         if ending != Ending::Detached {
-            if retired.load(Ordering::SeqCst) {
+            // Otherwise the takeover is the error returned below.
+            if taken_over && matches!(ending, Ending::Signalled(_)) {
                 notes.push("tendr: another client took over this session".to_owned());
             }
             if dropped > 0 {
@@ -245,6 +318,13 @@ mod unix_relay {
         }
         for note in notes {
             eprintln!("{note}");
+        }
+        if taken_over {
+            // This client lost control: a controller conflict, which a script
+            // must be able to tell from a detach.
+            return Err(PtyExitCode::Control.error(anyhow::anyhow!(
+                "tendr: another client took over this session"
+            )));
         }
         Ok(())
     }
@@ -772,6 +852,56 @@ mod unix_relay {
             assert_eq!((ts.tv_sec, ts.tv_nsec), (1, 500_000_000));
             let ts = poll_timespec(Duration::from_millis(100));
             assert_eq!((ts.tv_sec, ts.tv_nsec), (0, 100_000_000));
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::hello_reply;
+    use std::io;
+    use tendr::attach_proto::{Frame, FrameError, ProtocolError, RejectClass};
+    use tendr::model::pty_control::ControllerEpoch;
+    use tendr::pty_exit::exit_code;
+
+    fn code(reply: Result<Frame, FrameError>) -> Option<i32> {
+        hello_reply(reply, "attach").err().map(|e| exit_code(&e))
+    }
+
+    #[test]
+    fn a_refusal_exits_with_its_class_code() {
+        for (class, expected) in [
+            (RejectClass::Protocol, 80),
+            (RejectClass::Control, 81),
+            (RejectClass::Runtime, 84),
+            (RejectClass::Identity, 85),
+        ] {
+            let refusal = Frame::Rejected {
+                class,
+                reason: "why".to_owned(),
+            };
+            assert_eq!(code(Ok(refusal)), Some(expected), "{class:?}");
+        }
+        assert_eq!(code(Ok(Frame::Accepted(ControllerEpoch::new(1)))), None);
+    }
+
+    /// Anything but a v1 reply, or no reply before the deadline, is a
+    /// protocol failure; a connection that ends first is a transport failure.
+    #[test]
+    fn a_reply_outside_the_protocol_exits_80_and_a_lost_connection_84() {
+        assert_eq!(code(Ok(Frame::Data(b"output".to_vec()))), Some(80));
+        assert_eq!(code(Err(FrameError::Unknown(0x7f))), Some(80));
+        assert_eq!(
+            code(Err(FrameError::Malformed(
+                ProtocolError::UnknownRejectClass(b'b')
+            ))),
+            Some(80)
+        );
+        for kind in [io::ErrorKind::WouldBlock, io::ErrorKind::TimedOut] {
+            assert_eq!(code(Err(FrameError::Io(kind.into()))), Some(80), "{kind:?}");
+        }
+        for kind in [io::ErrorKind::UnexpectedEof, io::ErrorKind::ConnectionReset] {
+            assert_eq!(code(Err(FrameError::Io(kind.into()))), Some(84), "{kind:?}");
         }
     }
 }

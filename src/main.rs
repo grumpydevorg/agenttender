@@ -1244,6 +1244,7 @@ fn main() {
 
     if let Err(e) = result {
         eprintln!("{e:#}");
-        std::process::exit(1);
+        // 1, or a PTY operation's own code (80–85, `tendr::pty_exit`).
+        std::process::exit(tendr::pty_exit::exit_code(&e));
     }
 }
