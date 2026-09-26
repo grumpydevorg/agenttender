@@ -90,9 +90,18 @@ Current PTY rules:
   separate paths: the main thread polls the keyboard and terminal size and only
   queues messages (resize and detach ahead of keystrokes), a sender thread
   writes them, and a reader thread writes output. `Ctrl-\ d` detaches (`Ctrl-\`
-  twice sends one; `--escape none` disables it); size changes are forwarded as
-  they happen. Leaving never waits on a blocked path, and the terminal is
-  restored without draining output. A connection whose input is backed up is
+  twice sends one; `--escape none` disables it). The size is checked every
+  100 ms and changes are forwarded; SIGWINCH only brings that check forward,
+  since signals coalesce and the poll stays the source of truth. SIGHUP,
+  SIGTERM and SIGINT end the attach like a detach (a detach message with the
+  same bounded grace, then the terminal restored) and it exits 1 with
+  `tendr: attach ended by SIG…`; a cancelling signal inherited as ignored
+  stays ignored. The handlers only set a flag and write a byte to a self-pipe
+  in the main thread's `poll()`, and the previous dispositions are restored
+  when the relay ends. `Ctrl-C` is a keystroke to the session, since raw mode
+  clears `ISIG`. Leaving never waits on a blocked path: the terminal is
+  restored without draining output, and a signal's report gives up on a
+  terminal that is not reading. A connection whose input is backed up is
   still released promptly when its client hangs up
 - while a human is attached, `push` is rejected
 - PTY output is merged and recorded as `O` lines in `output.log`; capture only
