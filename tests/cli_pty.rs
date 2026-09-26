@@ -2261,45 +2261,74 @@ fn fifo_input_waits_behind_an_agent_push() {
 /// delivered once the child reads again, and the agent claim then released
 /// (PR #68 review, finding 6: not changed, because cancelling on hang-up would
 /// drop them).
+///
+/// How much a PTY and a pipe buffer differs by platform (a Linux PTY absorbs
+/// tens of KiB), so the test assumes no size. It writes until the FIFO itself
+/// stays full, which can only happen once the forwarder is stuck on a full
+/// PTY, and closes the writer there.
 #[test]
 fn fifo_input_is_delivered_after_its_writer_closes() {
+    use std::os::unix::fs::OpenOptionsExt;
+
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
     let _kill = harness::SessionGuard::new(&root, "pty-fifo-gone");
     let go = root.path().join("go");
+    let out = root.path().join("received");
 
-    // Consumes 1 KiB, reports READY, then stops reading until the go file
-    // exists, so the frame below fills the PTY and waits in the forwarder.
-    let script = "stty raw -echo; head -c 1024 >/dev/null; printf READY; \
-                  while [ ! -f \"$GO\" ]; do sleep 0.05; done; exec cat";
+    // Reads nothing until the go file exists, then copies its input to a file.
+    let script = "stty raw -echo; printf READY; \
+                  while [ ! -f \"$GO\" ]; do sleep 0.05; done; exec cat > \"$OUT\"";
     tendr(&root)
         .args(["start", "pty-fifo-gone", "--pty", "--stdin"])
         .arg("--env")
         .arg(format!("GO={}", go.display()))
+        .arg("--env")
+        .arg(format!("OUT={}", out.display()))
         .args(["--", "sh", "-c", script])
         .output()
         .unwrap();
     harness::wait_running(&root, "pty-fifo-gone");
+    wait_log_contains(&root, "pty-fifo-gone", "READY");
 
-    // More than the child consumes plus a PTY input buffer, but no more than
-    // one forwarder read, so the writer finishes and closes.
-    let mut frame = vec![b'a'; 6 * 1024];
-    frame.extend_from_slice(b"\nFIFO-TAIL\n");
-    let fifo = root
+    // Nonblocking, so a full FIFO is observed instead of waited on. The open
+    // is refused (ENXIO) until the forwarder has the FIFO open for reading.
+    let fifo_path = root
         .path()
         .join(".tendr/sessions/default/pty-fifo-gone/stdin.pipe");
-    let writer = std::thread::spawn(move || {
-        let mut f = std::fs::OpenOptions::new().write(true).open(fifo).unwrap();
-        f.write_all(&frame).unwrap();
-    });
-    wait_log_contains(&root, "pty-fifo-gone", "READY");
-    writer.join().unwrap();
-    std::thread::sleep(Duration::from_millis(300));
-    let log = wait_log_contains(&root, "pty-fifo-gone", "READY");
-    assert!(
-        !log.contains("FIFO-TAIL"),
-        "setup invariant: the frame must still be waiting on the PTY"
-    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut fifo = loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo_path)
+        {
+            Ok(f) => break f,
+            Err(e) => assert!(Instant::now() < deadline, "open stdin.pipe: {e}"),
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    // Fill the FIFO until it has stayed full for a whole second. The forwarder
+    // drains it as fast as the PTY takes input, so a FIFO that stays full means
+    // the PTY is full and the forwarder is stuck mid-frame.
+    let chunk = [b'a'; 1024];
+    let mut written = 0usize;
+    let mut last_progress = Instant::now();
+    while last_progress.elapsed() < Duration::from_secs(1) {
+        assert!(Instant::now() < deadline, "the FIFO never stayed full");
+        match fifo.write(&chunk) {
+            Ok(n) => {
+                written += n;
+                last_progress = Instant::now();
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("write stdin.pipe: {e}"),
+        }
+    }
+    drop(fifo); // the writer is gone; its frame is not all delivered
+
     let early = tendr(&root)
         .args(["push", "pty-fifo-gone"])
         .write_stdin("EARLY\n")
@@ -2308,26 +2337,37 @@ fn fifo_input_is_delivered_after_its_writer_closes() {
     let early_err = String::from_utf8_lossy(&early.stderr);
     assert!(
         !early.status.success() && early_err.contains("(Agent)"),
-        "setup invariant: the waiting frame still holds the input: {early_err}"
+        "the waiting frame still holds the input after its writer closed: {early_err}"
     );
 
+    // Once the child reads again, every byte of the frame arrives, and then
+    // the frame no longer holds the input.
     std::fs::write(&go, b"").unwrap();
-    wait_log_contains(&root, "pty-fifo-gone", "FIFO-TAIL");
-
-    // Delivered in full, the frame no longer holds the input.
-    let mut push = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
+    let received = || std::fs::metadata(&out).map_or(0, |m| m.len() as usize);
+    while received() < written {
+        assert!(
+            Instant::now() < deadline,
+            "{} of {written} bytes delivered",
+            received()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let after = tendr(&root)
         .args(["push", "pty-fifo-gone"])
-        .env("HOME", root.path())
-        .stdin(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+        .write_stdin("AFTER\n")
+        .output()
         .unwrap();
-    push.stdin.take().unwrap().write_all(b"AFTER\n").unwrap();
-    let out = push.wait_with_output().unwrap();
     assert!(
-        out.status.success(),
+        after.status.success(),
         "push after the frame: {}",
-        String::from_utf8_lossy(&out.stderr)
+        String::from_utf8_lossy(&after.stderr)
     );
-    wait_log_contains(&root, "pty-fifo-gone", "AFTER");
+    while received() < written + 6 {
+        assert!(Instant::now() < deadline, "the later push never arrived");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let bytes = std::fs::read(&out).unwrap();
+    assert_eq!(bytes.len(), written + 6);
+    assert!(bytes[..written].iter().all(|&b| b == b'a'));
+    assert_eq!(&bytes[written..], b"AFTER\n");
 }
