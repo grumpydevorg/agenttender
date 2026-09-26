@@ -586,6 +586,10 @@ fn wrap_forwards_sigterm_and_writes_annotation() {
             "-c",
             script.as_str(),
         ])
+        // `wrap` reads its stdin to EOF before spawning the child, so an
+        // inherited stdin that stays open (a pipe or socket from the shell
+        // running `cargo test`) would hold the child back past the deadline.
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
