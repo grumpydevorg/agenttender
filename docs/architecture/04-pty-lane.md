@@ -42,7 +42,9 @@ Current PTY rules:
   receives `MSG_RETIRED` and is disconnected
 - input queued by a superseded controller is never written and is recorded as
   `pty.input_revoked`; PTY `exec` frames still arrive over the stdin FIFO, whose
-  forwarder is arbitrated the same way but cannot report an outcome
+  forwarder is arbitrated the same way but cannot report an outcome: it waits
+  behind another agent's push, and a human holder refuses it (the frame is
+  discarded and recorded as a run warning)
 - the attach socket is bound in `~/.tendr/sockets` (owner-only directory,
   `0600` socket, short run-derived name) and its breadcrumb published before the
   child is spawned; an unsafe directory, overlong path, or pre-existing path fails

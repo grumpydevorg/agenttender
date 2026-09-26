@@ -2188,3 +2188,69 @@ fn a_finished_runs_attach_client_cannot_touch_its_replacement() {
 
     std::fs::write(&gate, b"").unwrap();
 }
+
+/// Input arriving on the stdin FIFO (how `exec` reaches a PTY python-repl)
+/// while an agent `push` holds the PTY input waits its turn instead of being
+/// dropped (PR #68 review, finding 2).
+#[test]
+fn fifo_input_waits_behind_an_agent_push() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-fifo");
+    let go = root.path().join("go");
+
+    // Consumes 1 KiB, reports READY, then stops reading until the go file
+    // exists, so the push below stays in flight holding the input.
+    let script = "stty raw -echo; head -c 1024 >/dev/null; printf READY; \
+                  while [ ! -f \"$GO\" ]; do sleep 0.05; done; exec cat";
+    tendr(&root)
+        .args(["start", "pty-fifo", "--pty", "--stdin"])
+        .arg("--env")
+        .arg(format!("GO={}", go.display()))
+        .args(["--", "sh", "-c", script])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-fifo");
+
+    let mut payload = vec![b'a'; 1 << 20];
+    payload.extend_from_slice(b"\nPUSH-TAIL\n");
+    let mut agent = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
+        .args(["push", "pty-fifo"])
+        .env("HOME", root.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut agent_stdin = agent.stdin.take().unwrap();
+    let feeder = std::thread::spawn(move || {
+        let _ = agent_stdin.write_all(&payload);
+    });
+    wait_log_contains(&root, "pty-fifo", "READY");
+    assert!(
+        agent.try_wait().unwrap().is_none(),
+        "setup invariant: the push must still hold the input"
+    );
+
+    // An exec-style frame through the FIFO while the push holds the input.
+    let fifo = root
+        .path()
+        .join(".tendr/sessions/default/pty-fifo/stdin.pipe");
+    let writer = std::thread::spawn(move || {
+        let mut f = std::fs::OpenOptions::new().write(true).open(fifo).unwrap();
+        f.write_all(b"FIFO-LINE\n").unwrap();
+    });
+
+    std::fs::write(&go, b"").unwrap();
+    feeder.join().unwrap();
+    let status = agent.wait().unwrap();
+    assert!(status.success(), "the push itself completes");
+    writer.join().unwrap();
+
+    let log = wait_log_contains(&root, "pty-fifo", "FIFO-LINE");
+    assert!(log.contains("PUSH-TAIL"), "the push was written in full");
+    assert!(
+        log.find("PUSH-TAIL") < log.find("FIFO-LINE"),
+        "the FIFO input waits for the push rather than interleaving"
+    );
+}

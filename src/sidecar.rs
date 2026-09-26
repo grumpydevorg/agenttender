@@ -884,9 +884,10 @@ fn setup_pty_stdin_forwarding(
 /// Each push connection claims the PTY as an agent for its duration and writes
 /// through the input writer, one acknowledged chunk at a time.
 ///
-/// A push that cannot claim (a human holds control) or whose claim is revoked by
-/// a takeover has its remaining bytes drained and discarded — never written to
-/// the PTY. The FIFO is drained rather than closed because reopening it would
+/// A push that finds another agent holding the input waits its turn
+/// ([`claim_for_fifo`]). One that cannot claim (a human holds control) or whose
+/// claim is revoked by a takeover has its remaining bytes drained and discarded,
+/// never written to the PTY. The FIFO is drained rather than closed because reopening it would
 /// hand the still-connected push writer to the next accept. The legacy push CLI
 /// therefore cannot observe the rejection; revocation is recorded as a
 /// `pty.input_revoked` event and the rejection as a run warning.
@@ -897,20 +898,14 @@ fn forward_pty_stdin(
     writer: &crate::pty_input::InputWriter,
     errors: &Mutex<Vec<String>>,
 ) {
-    use crate::model::pty_control::{ControllerKind, IncompleteReason, InputOutcome};
+    use crate::model::pty_control::{IncompleteReason, InputOutcome};
 
     let mut buf = [0u8; 8192];
     loop {
         let Some(mut reader) = Current::accept_stdin_connection(&transport, session_dir) else {
             return;
         };
-        let handle = match writer.claim(writer.next_holder(), ControllerKind::Agent) {
-            Ok(handle) => Some(handle),
-            Err(e) => {
-                lock(errors).push(format!("push rejected: {e}"));
-                None
-            }
-        };
+        let handle = claim_for_fifo(writer, errors);
         let mut authorized = handle;
         loop {
             let n = match reader.read(&mut buf) {
@@ -941,6 +936,36 @@ fn forward_pty_stdin(
             // Release only after this push's input is done, so the next push can
             // claim; a revoked handle releases nothing.
             let _ = writer.end_of_input_and_wait(handle);
+        }
+    }
+}
+
+/// Claim the PTY input for one FIFO writer (an `exec` frame).
+///
+/// Another agent's push is waited out: agents take the input one at a time,
+/// so the frame is queued behind it rather than dropped (PR #68 review,
+/// finding 2). A human at the terminal is never typed into, so a human holder
+/// refuses the frame, which is then discarded and reported as a run warning.
+#[cfg(unix)]
+fn claim_for_fifo(
+    writer: &crate::pty_input::InputWriter,
+    errors: &Mutex<Vec<String>>,
+) -> Option<crate::model::pty_control::ControllerHandle> {
+    use crate::model::pty_control::{ControlError, ControllerKind};
+    use crate::pty_input::RequestError;
+
+    let holder = writer.next_holder();
+    loop {
+        match writer.claim(holder, ControllerKind::Agent) {
+            Ok(handle) => return Some(handle),
+            Err(RequestError::Control(ControlError::Busy {
+                kind: ControllerKind::Agent,
+                ..
+            })) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(e) => {
+                lock(errors).push(format!("push rejected: {e}"));
+                return None;
+            }
         }
     }
 }
