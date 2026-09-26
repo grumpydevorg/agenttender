@@ -119,9 +119,9 @@ impl ViewerQueue {
 /// Drain a viewer's queue into its connection until either closes.
 #[cfg(unix)]
 fn run_viewer_sender(queue: &ViewerQueue, conn: &Mutex<Box<dyn Write + Send>>) {
-    use crate::attach_proto;
+    use crate::attach_proto::{Frame, write_frame};
     while let Some(chunk) = queue.next() {
-        if attach_proto::write_msg(&mut *lock(conn), attach_proto::MSG_DATA, &chunk).is_err() {
+        if write_frame(&mut *lock(conn), &Frame::Data(chunk)).is_err() {
             queue.close();
             return;
         }
@@ -1828,16 +1828,12 @@ fn retire_connection(
     control: &std::os::unix::net::UnixStream,
     sink: &AttachSink,
 ) {
-    use crate::attach_proto;
+    use crate::attach_proto::{Frame, write_frame};
 
     let _ = control.set_write_timeout(Some(std::time::Duration::from_millis(200)));
     for _ in 0..20 {
         if let Ok(mut conn) = conn.try_lock() {
-            let _ = attach_proto::write_msg(
-                &mut *conn,
-                attach_proto::MSG_RETIRED,
-                &epoch.get().to_be_bytes(),
-            );
+            let _ = write_frame(&mut *conn, &Frame::Retired(epoch));
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -1873,7 +1869,7 @@ fn handle_push_connection(
     writer: &crate::pty_input::InputWriter,
     registry: &ConnectionRegistry,
 ) {
-    use crate::attach_proto::{self, INPUT_CLOSED, INPUT_REVOKED, INPUT_WRITTEN};
+    use crate::attach_proto::{Frame, FrameError, Progress, PushOutcome, read_frame, write_frame};
     use crate::model::pty_control::{ControllerKind, IncompleteReason, InputOutcome};
 
     let holder = writer.next_holder();
@@ -1906,45 +1902,43 @@ fn handle_push_connection(
         let _ = stream.shutdown(std::net::Shutdown::Both);
         writer.disconnect(handle);
     };
-    if attach_proto::write_msg(
-        &mut stream,
-        attach_proto::MSG_ACCEPTED,
-        &handle.epoch().get().to_be_bytes(),
-    )
-    .is_err()
-    {
+    if write_frame(&mut stream, &Frame::Accepted(handle.epoch())).is_err() {
         return gone(&stream);
     }
 
-    let (mut accepted, mut received) = (0u64, 0u64);
-    let status = loop {
-        match attach_proto::read_msg(&mut stream) {
-            Ok((attach_proto::MSG_DATA, payload)) => {
-                received += payload.len() as u64;
+    // Bytes of the frames written so far: every byte of each, since a frame
+    // not written in full ends the push. The outcome is built from this and
+    // the frame that stopped it, so it can only report what happened.
+    let mut written = 0u64;
+    let outcome = loop {
+        match read_frame(&mut stream) {
+            Ok(Frame::Data(payload)) => {
+                let len = payload.len() as u64;
                 let Some(outcome) = writer.submit(handle, payload) else {
                     continue; // an empty frame writes nothing
                 };
+                // The bytes of this frame that were not written.
+                let stopped = |accepted: u64| Progress {
+                    accepted: written + accepted,
+                    unwritten: len - accepted,
+                };
                 match await_push_write(&outcome, &stream, &revoked, writer, handle) {
-                    PushWrite::Done(InputOutcome::Accepted { bytes, .. }) => {
-                        accepted += bytes as u64;
-                    }
+                    PushWrite::Done(InputOutcome::Accepted { .. }) => written += len,
                     PushWrite::Done(InputOutcome::Incomplete {
-                        accepted: partial,
-                        reason,
-                        ..
+                        accepted, reason, ..
                     }) => {
-                        accepted += partial as u64;
+                        let progress = stopped(accepted as u64);
                         break if matches!(reason, IncompleteReason::NotAuthorized(_)) {
-                            INPUT_REVOKED
+                            PushOutcome::Revoked(progress)
                         } else {
-                            INPUT_CLOSED
+                            PushOutcome::Closed(progress)
                         };
                     }
-                    PushWrite::WriterGone => break INPUT_CLOSED,
+                    PushWrite::WriterGone => break PushOutcome::Closed(stopped(0)),
                     PushWrite::ClientGone => return gone(&stream),
                 }
             }
-            Ok((attach_proto::MSG_DETACH, _)) => {
+            Ok(Frame::Detach) => {
                 // Every frame was written before the next was read, and any
                 // frame that was not stopped the loop: all of this push is
                 // written. A takeover that lands before the end marker is
@@ -1952,23 +1946,25 @@ fn handle_push_connection(
                 // `written` either way; the end marker releases control if
                 // it is still held (PR #68 review, finding 4).
                 let _ = writer.end_of_input_and_wait(handle);
-                break INPUT_WRITTEN;
+                break PushOutcome::Written { bytes: written };
             }
-            Ok(_) => {}
-            Err(_) if revoked.load(Ordering::SeqCst) => break INPUT_REVOKED,
+            // Other frames, and malformed ones, are ignored.
+            Ok(_) | Err(FrameError::Malformed(_)) => {}
+            Err(FrameError::Io(_)) if revoked.load(Ordering::SeqCst) => {
+                break PushOutcome::Revoked(Progress {
+                    accepted: written,
+                    unwritten: 0,
+                });
+            }
             // The client vanished or broke the protocol: cancel its input.
-            Err(_) => return gone(&stream),
+            Err(FrameError::Io(_)) => return gone(&stream),
         }
     };
     registry.remove(holder);
-    if status != INPUT_WRITTEN {
+    if !matches!(outcome, PushOutcome::Written { .. }) {
         writer.disconnect(handle); // release if still held; nothing else is queued
     }
-    let _ = attach_proto::write_msg(
-        &mut stream,
-        attach_proto::MSG_INPUT_DONE,
-        &attach_proto::input_done_payload(status, accepted, received),
-    );
+    let _ = write_frame(&mut stream, &Frame::InputDone(outcome));
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
@@ -2069,9 +2065,9 @@ fn run_attach_listener(
 
 #[cfg(unix)]
 fn reject_connection(stream: &mut std::os::unix::net::UnixStream, reason: &str) {
-    use crate::attach_proto;
+    use crate::attach_proto::{Frame, write_frame};
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(200)));
-    let _ = attach_proto::write_msg(stream, attach_proto::MSG_REJECTED, reason.as_bytes());
+    let _ = write_frame(stream, &Frame::Rejected(reason.to_owned()));
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
@@ -2085,31 +2081,25 @@ fn handle_attach_connection(
     attach_sink: &AttachSink,
 ) {
     use crate::attach_proto::{
-        self, MODE_ATTACH, MODE_PUSH, MODE_TAKEOVER, MSG_HELLO, PROTOCOL_VERSION,
+        self, Frame, FrameError, Mode, ProtocolError, read_frame, write_frame,
     };
     use crate::model::pty_control::ControllerKind;
 
     // One overall deadline for the whole hello: a client trickling bytes cannot
     // hold a connection slot open by keeping each individual read short.
-    let hello = attach_proto::read_msg(&mut crate::attach_socket::DeadlineReader {
+    let hello = read_frame(&mut crate::attach_socket::DeadlineReader {
         stream: &stream,
         deadline: std::time::Instant::now() + attach_proto::HELLO_TIMEOUT,
     });
     let mode = match hello {
-        Ok((MSG_HELLO, p))
-            if p.len() == 2
-                && p[0] == PROTOCOL_VERSION
-                && matches!(p[1], MODE_ATTACH | MODE_TAKEOVER | MODE_PUSH) =>
-        {
-            p[1]
-        }
-        Ok((MSG_HELLO, _)) => {
-            return reject_connection(&mut stream, "unsupported attach protocol version or mode");
+        Ok(Frame::Hello(mode)) => mode,
+        Err(FrameError::Malformed(e @ ProtocolError::UnsupportedHello)) => {
+            return reject_connection(&mut stream, &e.to_string());
         }
         _ => return reject_connection(&mut stream, "attach requires a protocol hello"),
     };
     let _ = stream.set_read_timeout(None);
-    if mode == MODE_PUSH {
+    if mode == Mode::Push {
         return handle_push_connection(stream, writer, registry);
     }
 
@@ -2132,7 +2122,7 @@ fn handle_attach_connection(
     if !registered {
         return reject_connection(&mut stream, "session ended");
     }
-    let granted = if mode == MODE_TAKEOVER {
+    let granted = if mode == Mode::Takeover {
         writer.takeover(holder).map(|t| t.handle)
     } else {
         writer.claim(holder, ControllerKind::Human)
@@ -2146,11 +2136,7 @@ fn handle_attach_connection(
     };
 
     // Reply before installing the viewer, so tee output never precedes it.
-    let accepted = attach_proto::write_msg(
-        &mut *lock(&conn),
-        attach_proto::MSG_ACCEPTED,
-        &handle.epoch().get().to_be_bytes(),
-    );
+    let accepted = write_frame(&mut *lock(&conn), &Frame::Accepted(handle.epoch()));
     let queue = Arc::new(ViewerQueue::default());
     if accepted.is_ok() {
         let sender = {
@@ -2174,8 +2160,8 @@ fn handle_attach_connection(
         drop(sender); // detached: exits when the queue or connection closes
 
         loop {
-            match attach_proto::read_msg(&mut stream) {
-                Ok((attach_proto::MSG_DATA, payload)) => {
+            match read_frame(&mut stream) {
+                Ok(Frame::Data(payload)) => {
                     // A full input queue must not hide a client that has left.
                     let queued = writer.write_nowait_unless(handle, payload, || {
                         crate::attach_socket::peer_hung_up(&stream)
@@ -2184,14 +2170,11 @@ fn handle_attach_connection(
                         break;
                     }
                 }
-                Ok((attach_proto::MSG_RESIZE, payload)) => {
-                    // A size with a zero dimension does not parse, and is ignored.
-                    if let Some(size) = attach_proto::parse_resize(&payload) {
-                        writer.resize(handle, size);
-                    }
-                }
-                Ok((attach_proto::MSG_DETACH, _)) | Err(_) => break,
-                Ok(_) => {}
+                Ok(Frame::Resize(size)) => writer.resize(handle, size),
+                Ok(Frame::Detach) | Err(FrameError::Io(_)) => break,
+                // Other frames, and malformed ones such as a resize with a
+                // zero dimension, are ignored.
+                Ok(_) | Err(FrameError::Malformed(_)) => {}
             }
         }
     }
@@ -2629,7 +2612,7 @@ mod tests {
     /// reports `written` (PR #68 review, finding 4).
     #[test]
     fn a_push_taken_over_after_its_last_frame_reports_written() {
-        use crate::attach_proto::{self, INPUT_WRITTEN};
+        use crate::attach_proto::{Frame, PushOutcome, read_frame, write_frame};
         use std::os::unix::net::UnixStream;
 
         let pty = RecordingPty::default();
@@ -2640,10 +2623,12 @@ mod tests {
             let (writer, registry) = (writer.clone(), registry.clone());
             std::thread::spawn(move || handle_push_connection(server, &writer, &registry))
         };
-        let (reply, _) = attach_proto::read_msg(&mut client).unwrap();
-        assert_eq!(reply, attach_proto::MSG_ACCEPTED);
+        assert!(matches!(
+            read_frame(&mut client).unwrap(),
+            Frame::Accepted(_)
+        ));
 
-        attach_proto::write_msg(&mut client, attach_proto::MSG_DATA, b"abc").unwrap();
+        write_frame(&mut client, &Frame::Data(b"abc".to_vec())).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while lock(&pty.0).len() < 3 {
             assert!(
@@ -2655,13 +2640,11 @@ mod tests {
         // The frame is written, so its Accepted outcome is already on its way;
         // the takeover is served before the end marker below.
         writer.takeover(writer.next_holder()).unwrap();
-        attach_proto::write_msg(&mut client, attach_proto::MSG_DETACH, &[]).unwrap();
+        write_frame(&mut client, &Frame::Detach).unwrap();
 
-        let (kind, payload) = attach_proto::read_msg(&mut client).unwrap();
-        assert_eq!(kind, attach_proto::MSG_INPUT_DONE);
         assert_eq!(
-            attach_proto::parse_input_done(&payload),
-            Some((INPUT_WRITTEN, 3, 3)),
+            read_frame(&mut client).unwrap(),
+            Frame::InputDone(PushOutcome::Written { bytes: 3 }),
             "every byte was written, so the push must not report revoked"
         );
         handler.join().unwrap();

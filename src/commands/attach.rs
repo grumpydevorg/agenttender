@@ -63,23 +63,19 @@ pub fn cmd_attach(
 /// Send the v1 hello and require the sidecar's acceptance.
 #[cfg(unix)]
 fn handshake(stream: &mut std::os::unix::net::UnixStream, takeover: bool) -> anyhow::Result<()> {
+    use attach_proto::{Frame, Mode};
+
     let mode = if takeover {
-        attach_proto::MODE_TAKEOVER
+        Mode::Takeover
     } else {
-        attach_proto::MODE_ATTACH
+        Mode::Attach
     };
     stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
-    attach_proto::write_msg(
-        stream,
-        attach_proto::MSG_HELLO,
-        &[attach_proto::PROTOCOL_VERSION, mode],
-    )?;
-    match attach_proto::read_msg(stream) {
-        Ok((attach_proto::MSG_ACCEPTED, _)) => {}
-        Ok((attach_proto::MSG_REJECTED, reason)) => {
-            anyhow::bail!("attach rejected: {}", String::from_utf8_lossy(&reason));
-        }
-        Ok((other, _)) => anyhow::bail!("unexpected attach reply {other:#04x}"),
+    attach_proto::write_frame(stream, &Frame::Hello(mode))?;
+    match attach_proto::read_frame(stream) {
+        Ok(Frame::Accepted(_)) => {}
+        Ok(Frame::Rejected(reason)) => anyhow::bail!("attach rejected: {reason}"),
+        Ok(other) => anyhow::bail!("unexpected attach reply {other:?}"),
         Err(e) => anyhow::bail!(
             "the session did not complete the attach handshake ({e}); it may predate attach protocol v1"
         ),
@@ -113,7 +109,7 @@ mod unix_relay {
     use std::time::{Duration, Instant};
 
     use tendr::attach_escape::{Escape, EscapeMode, EscapeParser};
-    use tendr::attach_proto;
+    use tendr::attach_proto::{self, Frame, FrameError};
 
     /// Keystrokes that may wait for a session that is not accepting input.
     /// Beyond this, further keystrokes are dropped (and reported) rather than
@@ -140,10 +136,7 @@ mod unix_relay {
 
         let mut size = terminal_size();
         if let Some(size) = size {
-            outbox.push_control(
-                attach_proto::MSG_RESIZE,
-                attach_proto::resize_payload(size).to_vec(),
-            );
+            outbox.push_control(Frame::Resize(size));
         }
 
         let mut parser = EscapeParser::new(escape);
@@ -158,10 +151,7 @@ mod unix_relay {
             if now.is_some() && now != size {
                 size = now;
                 if let Some(size) = now {
-                    outbox.push_control(
-                        attach_proto::MSG_RESIZE,
-                        attach_proto::resize_payload(size).to_vec(),
-                    );
+                    outbox.push_control(Frame::Resize(size));
                 }
             }
             if !stdin_readable(POLL) {
@@ -187,7 +177,7 @@ mod unix_relay {
         };
 
         if ending == Ending::Detached {
-            outbox.push_control(attach_proto::MSG_DETACH, Vec::new());
+            outbox.push_control(Frame::Detach);
             outbox.wait_controls_sent(DETACH_GRACE);
         }
         // Unblocks the sender and reader on the socket; the session treats a
@@ -271,7 +261,7 @@ mod unix_relay {
 
     #[derive(Default)]
     struct OutboxState {
-        controls: VecDeque<(u8, Vec<u8>)>,
+        controls: VecDeque<Frame>,
         data: VecDeque<Vec<u8>>,
         data_bytes: usize,
         sending_control: bool,
@@ -283,8 +273,8 @@ mod unix_relay {
             self.state.lock().unwrap_or_else(|e| e.into_inner())
         }
 
-        fn push_control(&self, msg_type: u8, payload: Vec<u8>) {
-            self.lock().controls.push_back((msg_type, payload));
+        fn push_control(&self, frame: Frame) {
+            self.lock().controls.push_back(frame);
             self.changed.notify_all();
         }
 
@@ -302,7 +292,7 @@ mod unix_relay {
         }
 
         /// The next message to send, controls first; `None` once closed.
-        fn next(&self) -> Option<(u8, Vec<u8>)> {
+        fn next(&self) -> Option<Frame> {
             let mut state = self.lock();
             loop {
                 if state.closed {
@@ -314,7 +304,7 @@ mod unix_relay {
                 }
                 if let Some(data) = state.data.pop_front() {
                     state.data_bytes -= data.len();
-                    return Some((attach_proto::MSG_DATA, data));
+                    return Some(Frame::Data(data));
                 }
                 state = self.changed.wait(state).unwrap_or_else(|e| e.into_inner());
             }
@@ -349,8 +339,8 @@ mod unix_relay {
 
     fn spawn_sender(mut stream: UnixStream, outbox: Arc<Outbox>, closed: Arc<AtomicBool>) {
         std::thread::spawn(move || {
-            while let Some((msg_type, payload)) = outbox.next() {
-                let written = attach_proto::write_msg(&mut stream, msg_type, &payload);
+            while let Some(frame) = outbox.next() {
+                let written = attach_proto::write_frame(&mut stream, &frame);
                 outbox.sent();
                 if written.is_err() {
                     closed.store(true, Ordering::SeqCst);
@@ -365,15 +355,15 @@ mod unix_relay {
         std::thread::spawn(move || {
             let mut stdout = std::io::stdout().lock();
             loop {
-                match attach_proto::read_msg(&mut stream) {
-                    Ok((attach_proto::MSG_DATA, payload)) => {
+                match attach_proto::read_frame(&mut stream) {
+                    Ok(Frame::Data(payload)) => {
                         if stdout.write_all(&payload).is_err() || stdout.flush().is_err() {
                             break;
                         }
                     }
-                    Ok((attach_proto::MSG_RETIRED, _)) => retired.store(true, Ordering::SeqCst),
-                    Ok(_) => {}
-                    Err(_) => break,
+                    Ok(Frame::Retired(_)) => retired.store(true, Ordering::SeqCst),
+                    Ok(_) | Err(FrameError::Malformed(_)) => {}
+                    Err(FrameError::Io(_)) => break,
                 }
             }
             closed.store(true, Ordering::SeqCst);

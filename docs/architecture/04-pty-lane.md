@@ -38,11 +38,15 @@ Current PTY rules:
   takeover's acknowledgement or any input step. When the run ends, the
   effects already decided are written before the terminal record and nothing
   after it
-- `push` connects to the attach socket in push mode (`MODE_PUSH`), claims control
+- `push` connects to the attach socket in push mode (`Mode::Push`), claims control
   as an agent (refused if anyone holds it, so concurrent pushes never
   interleave), streams frames written one at a time, and ends with
   `MSG_INPUT_DONE {written | revoked | closed, accepted, received}`; the CLI
-  exits non-zero with the byte counts unless every byte was written. A push
+  exits non-zero with the byte counts unless every byte was written. Both ends
+  handle frames as the typed `attach_proto::Frame`: an outcome is `written`
+  only with every received byte accepted, never reports more accepted than
+  received, and one that breaks either rule, or has an unknown status, is a
+  decode error at the boundary. A push
   whose every frame was written is `written` even if a takeover lands before
   its end marker is served, and the CLI also succeeds when all of stdin was
   sent and accepted but a takeover cut the connection before the end marker

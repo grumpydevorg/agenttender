@@ -9,9 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tendr::attach_proto::{
-    MODE_ATTACH, MODE_PUSH, MODE_TAKEOVER, MSG_ACCEPTED, MSG_DATA, MSG_DETACH, MSG_HELLO,
-    MSG_INPUT_DONE, MSG_REJECTED, MSG_RESIZE, MSG_RETIRED, PROTOCOL_VERSION, read_msg,
-    resize_payload,
+    MSG_ACCEPTED, MSG_DATA, MSG_DETACH, MSG_HELLO, MSG_INPUT_DONE, MSG_REJECTED, MSG_RESIZE,
+    MSG_RETIRED, Mode, PROTOCOL_VERSION, read_msg, resize_payload,
 };
 use tendr::recording::Geometry;
 
@@ -324,9 +323,9 @@ fn wait_for_attach_socket(root: &TempDir, session: &str) -> std::path::PathBuf {
 
 /// Connect, send a v1 hello in `mode`, and return the stream with the sidecar's
 /// reply (`(message type, payload)`), read under a deadline.
-fn hello(sock_path: &std::path::Path, mode: u8) -> (UnixStream, (u8, Vec<u8>)) {
+fn hello(sock_path: &std::path::Path, mode: Mode) -> (UnixStream, (u8, Vec<u8>)) {
     let mut stream = UnixStream::connect(sock_path).expect("failed to connect to attach socket");
-    write_msg(&mut stream, MSG_HELLO, &[PROTOCOL_VERSION, mode]);
+    write_msg(&mut stream, MSG_HELLO, &[PROTOCOL_VERSION, mode as u8]);
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
@@ -343,7 +342,7 @@ fn epoch_of(payload: &[u8]) -> u64 {
 /// Attach as a human through the v1 handshake and hold the connection.
 /// Returns the stream so the caller can control when it disconnects.
 fn attach_as_human(sock_path: &std::path::Path) -> UnixStream {
-    let (stream, (msg_type, payload)) = hello(sock_path, MODE_ATTACH);
+    let (stream, (msg_type, payload)) = hello(sock_path, Mode::Attach);
     assert_eq!(
         msg_type,
         MSG_ACCEPTED,
@@ -1058,7 +1057,7 @@ fn cli_takeover_by_another_client_restores_the_terminal() {
     wrapped
         .cli
         .type_until_logged(&root, "pty-taken", "before-takeover\n");
-    let (_other, (msg_type, _)) = hello(&sock_path, MODE_TAKEOVER);
+    let (_other, (msg_type, _)) = hello(&sock_path, Mode::Takeover);
     assert_eq!(msg_type, MSG_ACCEPTED);
 
     wrapped.wait_exit(Duration::from_secs(10));
@@ -1250,12 +1249,12 @@ fn attach_is_accepted_with_an_epoch_and_a_second_attach_is_rejected() {
     let _kill = harness::SessionGuard::new(&root, "pty-epoch");
     let sock_path = start_cat(&root, "pty-epoch");
 
-    let (mut first, (msg_type, payload)) = hello(&sock_path, MODE_ATTACH);
+    let (mut first, (msg_type, payload)) = hello(&sock_path, Mode::Attach);
     assert_eq!(msg_type, MSG_ACCEPTED);
     assert_eq!(epoch_of(&payload), 1);
     wait_for_pty_control(&root, "pty-epoch", "HumanControl");
 
-    let (mut second, (msg_type, payload)) = hello(&sock_path, MODE_ATTACH);
+    let (mut second, (msg_type, payload)) = hello(&sock_path, Mode::Attach);
     assert_eq!(
         msg_type,
         MSG_REJECTED,
@@ -1279,7 +1278,7 @@ fn takeover_retires_the_previous_human_and_rejects_its_later_input() {
     let sock_path = start_cat(&root, "pty-takeover");
 
     let mut old = attach_as_human(&sock_path);
-    let (mut new, (msg_type, payload)) = hello(&sock_path, MODE_TAKEOVER);
+    let (mut new, (msg_type, payload)) = hello(&sock_path, Mode::Takeover);
     assert_eq!(msg_type, MSG_ACCEPTED);
     assert_eq!(epoch_of(&payload), 2);
 
@@ -1351,7 +1350,7 @@ fn takeover_revokes_queued_agent_input() {
         "setup invariant: the agent push must still be in flight at takeover"
     );
 
-    let (mut human, (msg_type, _)) = hello(&sock_path, MODE_TAKEOVER);
+    let (mut human, (msg_type, _)) = hello(&sock_path, Mode::Takeover);
     assert_eq!(msg_type, MSG_ACCEPTED);
     write_msg(&mut human, MSG_DATA, b"HUMAN-LINE\n");
     std::fs::write(&go, b"").unwrap();
@@ -1412,7 +1411,7 @@ fn takeover_after_a_silent_connection_reaches_the_same_running_process() {
     // A controller that goes silent without closing, like a half-open SSH session.
     let _silent = attach_as_human(&sock_path);
 
-    let (mut new, (msg_type, _)) = hello(&sock_path, MODE_TAKEOVER);
+    let (mut new, (msg_type, _)) = hello(&sock_path, Mode::Takeover);
     assert_eq!(msg_type, MSG_ACCEPTED);
     write_msg(&mut new, MSG_DATA, b"echo \"pid=\"$$\n");
 
@@ -1593,7 +1592,7 @@ fn a_trickled_hello_is_cut_off_at_the_overall_deadline() {
     // A well-formed hello sent one byte per second: every individual read is
     // quick, but the whole handshake takes 7 s, past the 5 s deadline.
     let mut slow = UnixStream::connect(&sock_path).unwrap();
-    let hello = [MSG_HELLO, 0, 0, 0, 2, PROTOCOL_VERSION, MODE_ATTACH];
+    let hello = [MSG_HELLO, 0, 0, 0, 2, PROTOCOL_VERSION, Mode::Attach as u8];
     let started = Instant::now();
     for byte in hello {
         if slow.write_all(&[byte]).is_err() {
@@ -1677,7 +1676,7 @@ fn detach_releases_control_even_when_pty_input_is_full() {
 
     // The detached client must not keep control behind its unwritable input.
     wait_for_pty_control(&root, "pty-full-detach", "AgentControl");
-    let (_next, (msg_type, reason)) = hello(&sock_path, MODE_ATTACH);
+    let (_next, (msg_type, reason)) = hello(&sock_path, Mode::Attach);
     assert_eq!(
         msg_type,
         MSG_ACCEPTED,
@@ -1705,7 +1704,7 @@ fn a_disconnected_push_releases_control_behind_a_full_pty() {
 
     // A push client that sends more than the child will read, then vanishes
     // while the sidecar is still waiting for the PTY to accept it.
-    let (mut agent, (msg_type, _)) = hello(&sock_path, MODE_PUSH);
+    let (mut agent, (msg_type, _)) = hello(&sock_path, Mode::Push);
     assert_eq!(msg_type, MSG_ACCEPTED);
     agent
         .set_write_timeout(Some(Duration::from_secs(5)))
@@ -1717,7 +1716,7 @@ fn a_disconnected_push_releases_control_behind_a_full_pty() {
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let (_next, (msg_type, reason)) = hello(&sock_path, MODE_ATTACH);
+        let (_next, (msg_type, reason)) = hello(&sock_path, Mode::Attach);
         if msg_type == MSG_ACCEPTED {
             break;
         }
@@ -1741,14 +1740,14 @@ fn idle_pushes_retired_by_takeover_do_not_exhaust_connection_slots() {
     // idle; the client never closes it.
     let mut idle_pushes = Vec::new();
     for round in 0..9 {
-        let (mut push, (msg_type, reason)) = hello(&sock_path, MODE_PUSH);
+        let (mut push, (msg_type, reason)) = hello(&sock_path, Mode::Push);
         assert_eq!(
             msg_type,
             MSG_ACCEPTED,
             "push {round}: {}",
             String::from_utf8_lossy(&reason)
         );
-        let (mut human, (msg_type, reason)) = hello(&sock_path, MODE_TAKEOVER);
+        let (mut human, (msg_type, reason)) = hello(&sock_path, Mode::Takeover);
         assert_eq!(
             msg_type,
             MSG_ACCEPTED,
@@ -1762,9 +1761,14 @@ fn idle_pushes_retired_by_takeover_do_not_exhaust_connection_slots() {
             .iter()
             .find(|(t, _)| *t == MSG_INPUT_DONE)
             .unwrap_or_else(|| panic!("push {round} got no outcome: {seen:?}"));
-        assert_eq!(
-            tendr::attach_proto::parse_input_done(&done.1).map(|(s, _, _)| s),
-            Some(tendr::attach_proto::INPUT_REVOKED)
+        assert!(
+            matches!(
+                tendr::attach_proto::Frame::decode(done.0, done.1.clone()),
+                Ok(tendr::attach_proto::Frame::InputDone(
+                    tendr::attach_proto::PushOutcome::Revoked(_)
+                ))
+            ),
+            "push {round}: {done:?}"
         );
         idle_pushes.push(push);
 
