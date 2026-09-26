@@ -29,6 +29,7 @@ use crate::model::pty_control::{
     IncompleteReason, InputArbiter, InputOutcome, PendingInput, PtyInputSink, RequestId, Takeover,
     WriteStep,
 };
+use crate::recording::Geometry;
 
 /// Maximum queued control requests before senders wait.
 const CONTROL_CAPACITY: usize = 16;
@@ -47,7 +48,7 @@ pub trait WritablePty: PtyInputSink + Send + 'static {
     fn wait_writable(&self, timeout: Duration) -> io::Result<bool>;
 
     /// Apply a window size to the PTY.
-    fn resize(&self, rows: u16, cols: u16);
+    fn resize(&self, size: Geometry);
 }
 
 /// Side effects of ownership changes, run on the writer thread. Implementations
@@ -75,8 +76,7 @@ enum Control {
     },
     Resize {
         handle: ControllerHandle,
-        rows: u16,
-        cols: u16,
+        size: Geometry,
     },
     /// Release now and cancel everything the holder still has queued.
     Disconnect { handle: ControllerHandle },
@@ -186,8 +186,8 @@ impl InputWriter {
     }
 
     /// Apply a window size if `handle` still authorizes.
-    pub fn resize(&self, handle: ControllerHandle, rows: u16, cols: u16) {
-        self.push_control(Control::Resize { handle, rows, cols });
+    pub fn resize(&self, handle: ControllerHandle, size: Geometry) {
+        self.push_control(Control::Resize { handle, size });
     }
 
     /// Queue `bytes` and wait for the outcome. Empty input is a no-op.
@@ -529,9 +529,9 @@ fn apply_control<P: WritablePty, H: ControlHooks>(
             }
             let _ = reply.send(result);
         }
-        Control::Resize { handle, rows, cols } => {
+        Control::Resize { handle, size } => {
             if arbiter.authorize(&handle).is_ok() {
-                pty.resize(rows, cols);
+                pty.resize(size);
             }
         }
         Control::Disconnect { .. } => {
@@ -589,7 +589,7 @@ mod tests {
             Ok(false)
         }
 
-        fn resize(&self, _rows: u16, _cols: u16) {}
+        fn resize(&self, _size: Geometry) {}
     }
 
     /// A PTY that accepts one byte per attempt and records everything written.
@@ -608,7 +608,7 @@ mod tests {
             Ok(true)
         }
 
-        fn resize(&self, _rows: u16, _cols: u16) {}
+        fn resize(&self, _size: Geometry) {}
     }
 
     /// Records hook calls in order.
@@ -717,7 +717,7 @@ mod tests {
 
     /// Records applied window sizes; accepts all input.
     #[derive(Clone, Default)]
-    struct SizedPty(Arc<Mutex<Vec<(u16, u16)>>>);
+    struct SizedPty(Arc<Mutex<Vec<Geometry>>>);
 
     impl PtyInputSink for SizedPty {
         fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -730,8 +730,8 @@ mod tests {
             Ok(true)
         }
 
-        fn resize(&self, rows: u16, cols: u16) {
-            self.0.lock().unwrap().push((rows, cols));
+        fn resize(&self, size: Geometry) {
+            self.0.lock().unwrap().push(size);
         }
     }
 
@@ -744,13 +744,16 @@ mod tests {
             .unwrap();
         let new = writer.takeover(writer.next_holder()).unwrap().handle;
 
-        writer.resize(old, 10, 20);
-        writer.resize(new, 30, 40);
+        writer.resize(old, Geometry::new(10, 20).unwrap());
+        writer.resize(new, Geometry::new(30, 40).unwrap());
         // Controls are served in order; a claim round-trip proves both resizes
         // were processed before asserting.
         let _ = writer.claim(writer.next_holder(), ControllerKind::Agent);
 
-        assert_eq!(pty.0.lock().unwrap().as_slice(), &[(30, 40)]);
+        assert_eq!(
+            pty.0.lock().unwrap().as_slice(),
+            &[Geometry::new(30, 40).unwrap()]
+        );
     }
 
     #[test]

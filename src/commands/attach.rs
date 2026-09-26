@@ -139,10 +139,10 @@ mod unix_relay {
         spawn_reader(reader_stream, Arc::clone(&closed), Arc::clone(&retired));
 
         let mut size = terminal_size();
-        if let Some((rows, cols)) = size {
+        if let Some(size) = size {
             outbox.push_control(
                 attach_proto::MSG_RESIZE,
-                attach_proto::resize_payload(rows, cols).to_vec(),
+                attach_proto::resize_payload(size).to_vec(),
             );
         }
 
@@ -157,10 +157,10 @@ mod unix_relay {
             let now = terminal_size();
             if now.is_some() && now != size {
                 size = now;
-                if let Some((rows, cols)) = now {
+                if let Some(size) = now {
                     outbox.push_control(
                         attach_proto::MSG_RESIZE,
-                        attach_proto::resize_payload(rows, cols).to_vec(),
+                        attach_proto::resize_payload(size).to_vec(),
                     );
                 }
             }
@@ -397,14 +397,16 @@ mod unix_relay {
         })
     }
 
-    fn terminal_size() -> Option<(u16, u16)> {
+    /// The terminal's size; `None` if unknown or if either dimension is zero,
+    /// which the session could not apply.
+    fn terminal_size() -> Option<tendr::recording::Geometry> {
         use std::os::unix::io::AsRawFd;
         let fd = std::io::stdout().as_raw_fd();
         // SAFETY: winsize is plain old data; TIOCGWINSZ fills it on success.
         let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
         // SAFETY: `fd` is stdout; TIOCGWINSZ takes a winsize out-pointer.
         if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 {
-            Some((ws.ws_row, ws.ws_col))
+            tendr::recording::Geometry::new(ws.ws_row, ws.ws_col)
         } else {
             None
         }

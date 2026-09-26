@@ -1,6 +1,8 @@
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::recording::Geometry;
+
 /// Message types for the attach protocol.
 /// Minimal framing: 1 byte type + 4 byte big-endian length + payload.
 pub const MSG_DATA: u8 = 0x01;
@@ -93,20 +95,26 @@ pub fn read_msg(r: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
     Ok((msg_type, payload))
 }
 
-pub fn resize_payload(rows: u16, cols: u16) -> [u8; 4] {
+/// Encode a [`MSG_RESIZE`] payload: `[rows u16 BE][cols u16 BE]`.
+#[must_use]
+pub fn resize_payload(size: Geometry) -> [u8; 4] {
     let mut buf = [0u8; 4];
-    buf[0..2].copy_from_slice(&rows.to_be_bytes());
-    buf[2..4].copy_from_slice(&cols.to_be_bytes());
+    buf[0..2].copy_from_slice(&size.rows().to_be_bytes());
+    buf[2..4].copy_from_slice(&size.cols().to_be_bytes());
     buf
 }
 
-pub fn parse_resize(payload: &[u8]) -> Option<(u16, u16)> {
+/// Decode a [`MSG_RESIZE`] payload. `None` if it is short or either dimension
+/// is zero: no terminal program can draw into such a size, and it cannot be
+/// recorded, so it is refused here rather than at the PTY.
+#[must_use]
+pub fn parse_resize(payload: &[u8]) -> Option<Geometry> {
     if payload.len() < 4 {
         return None;
     }
     let rows = u16::from_be_bytes([payload[0], payload[1]]);
     let cols = u16::from_be_bytes([payload[2], payload[3]]);
-    Some((rows, cols))
+    Geometry::new(rows, cols)
 }
 
 /// Read the attach socket path from the session's breadcrumb (`a.sock.path`),
@@ -132,6 +140,15 @@ mod tests {
         out.extend_from_slice(&declared_len.to_be_bytes());
         out.extend_from_slice(payload);
         out
+    }
+
+    #[test]
+    fn a_resize_round_trips_and_a_zero_dimension_is_refused_at_parse() {
+        let size = Geometry::new(40, 120).unwrap();
+        assert_eq!(parse_resize(&resize_payload(size)), Some(size));
+        assert_eq!(parse_resize(&[0, 0, 0, 100]), None, "zero rows");
+        assert_eq!(parse_resize(&[0, 24, 0, 0]), None, "zero columns");
+        assert_eq!(parse_resize(&[0, 24, 0]), None, "short");
     }
 
     #[test]

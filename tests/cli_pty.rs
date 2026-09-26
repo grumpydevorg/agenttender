@@ -13,6 +13,7 @@ use tendr::attach_proto::{
     MSG_INPUT_DONE, MSG_REJECTED, MSG_RESIZE, MSG_RETIRED, PROTOCOL_VERSION, read_msg,
     resize_payload,
 };
+use tendr::recording::Geometry;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -618,7 +619,11 @@ fn resize_reaches_child_pty() {
     // bare `__RESIZE_DONE__` (the quotes are only stripped when the command
     // runs), so that token can appear only in the command's output — strictly
     // after `stty size` has printed the dimensions.
-    write_msg(&mut stream, MSG_RESIZE, &resize_payload(40, 120));
+    write_msg(
+        &mut stream,
+        MSG_RESIZE,
+        &resize_payload(Geometry::new(40, 120).unwrap()),
+    );
     write_msg(
         &mut stream,
         MSG_DATA,
@@ -1963,7 +1968,11 @@ fn an_applied_resize_is_recorded_between_the_output_around_it() {
     let mut human = attach_as_human(&sock);
     write_msg(&mut human, MSG_DATA, b"one\n");
     wait_log_contains(&root, "pty-rec-resize", "one");
-    write_msg(&mut human, MSG_RESIZE, &resize_payload(30, 100));
+    write_msg(
+        &mut human,
+        MSG_RESIZE,
+        &resize_payload(Geometry::new(30, 100).unwrap()),
+    );
     write_msg(&mut human, MSG_DATA, b"two\n");
     wait_log_contains(&root, "pty-rec-resize", "two");
     write_msg(&mut human, MSG_DETACH, &[]);
@@ -2011,7 +2020,8 @@ fn a_resize_with_a_zero_dimension_is_ignored() {
     let sock = wait_for_attach_socket(&root, "pty-zero-size");
 
     let mut human = attach_as_human(&sock);
-    write_msg(&mut human, MSG_RESIZE, &resize_payload(0, 100));
+    // Built by hand: `resize_payload` cannot encode a zero dimension.
+    write_msg(&mut human, MSG_RESIZE, &[0, 0, 0, 100]);
     write_msg(&mut human, MSG_DATA, b"stty size\n");
     wait_log_contains(&root, "pty-zero-size", "24 80");
     write_msg(&mut human, MSG_DETACH, &[]);

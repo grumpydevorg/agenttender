@@ -93,7 +93,8 @@ Current PTY rules:
   `<session>/recording/<run_id>/` (`0700` directories, `0600` segments): capture
   offers every output chunk, and the input writer applies each resize while
   holding the recorder's sequencer, so output that follows a new size is always
-  recorded after it. A size with a zero dimension is ignored. Sequencing never
+  recorded after it. A resize frame with a zero dimension does not parse and
+  is ignored. Sequencing never
   waits for storage; one recorder thread appends, rotates at 64 MiB, publishes
   segments atomically, and syncs at most a second apart and on close. Input is
   not recorded

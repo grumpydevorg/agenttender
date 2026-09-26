@@ -1528,18 +1528,14 @@ impl crate::pty_input::WritablePty for UnixPtyInput {
         self.writer.wait_writable(timeout)
     }
 
-    /// A size with a zero dimension is ignored: it cannot be recorded, and no
-    /// terminal program can draw into it.
-    fn resize(&self, rows: u16, cols: u16) {
-        let (Some(fd), Some(geometry)) =
-            (&self.resize, crate::recording::Geometry::new(rows, cols))
-        else {
+    fn resize(&self, size: crate::recording::Geometry) {
+        let Some(fd) = &self.resize else {
             return;
         };
-        let apply = || apply_pty_resize(fd, rows, cols);
+        let apply = || apply_pty_resize(fd, size);
         let _ = match &self.recorder {
             Some(recorder) => {
-                recorder.resize_applied(geometry, crate::recording::ResizeCause::User, apply)
+                recorder.resize_applied(size, crate::recording::ResizeCause::User, apply)
             }
             None => apply(),
         };
@@ -2189,8 +2185,9 @@ fn handle_attach_connection(
                     }
                 }
                 Ok((attach_proto::MSG_RESIZE, payload)) => {
-                    if let Some((rows, cols)) = attach_proto::parse_resize(&payload) {
-                        writer.resize(handle, rows, cols);
+                    // A size with a zero dimension does not parse, and is ignored.
+                    if let Some(size) = attach_proto::parse_resize(&payload) {
+                        writer.resize(handle, size);
                     }
                 }
                 Ok((attach_proto::MSG_DETACH, _)) | Err(_) => break,
@@ -2214,11 +2211,11 @@ fn handle_attach_connection(
 }
 
 #[cfg(unix)]
-fn apply_pty_resize(fd: &std::fs::File, rows: u16, cols: u16) -> io::Result<()> {
+fn apply_pty_resize(fd: &std::fs::File, size: crate::recording::Geometry) -> io::Result<()> {
     use std::os::unix::io::AsRawFd;
     let ws = libc::winsize {
-        ws_row: rows,
-        ws_col: cols,
+        ws_row: size.rows(),
+        ws_col: size.cols(),
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
@@ -2601,7 +2598,7 @@ mod tests {
             Ok(true)
         }
 
-        fn resize(&self, _rows: u16, _cols: u16) {}
+        fn resize(&self, _size: crate::recording::Geometry) {}
     }
 
     /// Hooks with no side effects: a takeover supersedes the push without
