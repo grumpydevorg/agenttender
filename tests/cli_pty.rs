@@ -481,6 +481,7 @@ fn sidecar_meta_write_keeps_human_control() {
         .args(["start", "pty-keep", "--pty", "--", "cat"])
         .output()
         .unwrap();
+    let _session = harness::SessionGuard::new(&root, "pty-keep");
     harness::wait_running(&root, "pty-keep");
 
     let sock_path = wait_for_attach_socket(&root, "pty-keep");
@@ -511,8 +512,6 @@ fn sidecar_meta_write_keeps_human_control() {
 
     assert_eq!(meta["status"], "Running");
     assert_eq!(meta["pty"]["control"], "HumanControl");
-
-    tendr(&root).args(["kill", "pty-keep"]).output().ok();
 }
 
 #[test]
@@ -703,21 +702,6 @@ fn attach_detach_emit_control_changed_events() {
 }
 
 // --- Cloud PTY control, slice 1: sidecar-enforced input authority ---
-
-/// Force-kills a session when dropped, so a failing assertion cannot leak a
-/// running sidecar and child.
-struct KillOnDrop<'a> {
-    root: &'a TempDir,
-    session: &'static str,
-}
-
-impl Drop for KillOnDrop<'_> {
-    fn drop(&mut self) {
-        let _ = tendr(self.root)
-            .args(["kill", self.session, "--force"])
-            .output();
-    }
-}
 
 /// Run the real `tendr attach` CLI inside a PTY, as a terminal user would.
 struct CliAttach {
@@ -936,10 +920,7 @@ impl WrappedAttach {
 fn cli_escape_detaches_and_restores_the_terminal() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-escape",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-escape");
     start_cat(&root, "pty-escape");
 
     let mut wrapped = WrappedAttach::spawn(&root, "escape", &["pty-escape"]);
@@ -969,10 +950,7 @@ fn start_visible_cat(root: &TempDir, session: &str) {
 fn cli_doubled_escape_and_other_keys_reach_the_session_unchanged() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-literal",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-literal");
     start_visible_cat(&root, "pty-literal");
 
     let mut wrapped = WrappedAttach::spawn(&root, "literal", &["pty-literal"]);
@@ -989,10 +967,7 @@ fn cli_doubled_escape_and_other_keys_reach_the_session_unchanged() {
 fn cli_escape_none_forwards_the_detach_sequence() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-noescape",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-noescape");
     start_visible_cat(&root, "pty-noescape");
 
     let mut wrapped =
@@ -1009,10 +984,7 @@ fn cli_escape_none_forwards_the_detach_sequence() {
 fn cli_forwards_later_terminal_resizes() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-winch",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-winch");
     tendr(&root)
         .args(["start", "pty-winch", "--pty", "--stdin", "--", "sh"])
         .output()
@@ -1047,10 +1019,7 @@ fn cli_forwards_later_terminal_resizes() {
 fn cli_takeover_by_another_client_restores_the_terminal() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-taken",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-taken");
     let sock_path = start_cat(&root, "pty-taken");
 
     let mut wrapped = WrappedAttach::spawn(&root, "taken", &["pty-taken"]);
@@ -1073,10 +1042,7 @@ fn cli_takeover_by_another_client_restores_the_terminal() {
 fn cli_session_end_restores_the_terminal() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-ended",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-ended");
     start_cat(&root, "pty-ended");
 
     let mut wrapped = WrappedAttach::spawn(&root, "ended", &["pty-ended"]);
@@ -1096,10 +1062,7 @@ fn cli_session_end_restores_the_terminal() {
 fn cli_detach_is_responsive_while_session_input_is_blocked() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-inblock",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-inblock");
     // The child never reads its input, so everything typed backs up.
     tendr(&root)
         .args(["start", "pty-inblock", "--pty", "--stdin", "--"])
@@ -1137,10 +1100,7 @@ fn cli_detach_is_responsive_while_session_input_is_blocked() {
 fn cli_detach_is_responsive_while_terminal_output_is_blocked() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-outblock",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-outblock");
     tendr(&root)
         .args(["start", "pty-outblock", "--pty", "--stdin", "--"])
         .args(["sh", "-c", "stty raw -echo; yes OUTPUT-FLOOD"])
@@ -1172,10 +1132,7 @@ fn cli_detach_is_responsive_while_terminal_output_is_blocked() {
 fn cli_attach_delivers_typed_input_through_the_handshake() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-cli",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-cli");
     start_cat(&root, "pty-cli");
 
     let mut cli = CliAttach::spawn(&root, &["pty-cli"]);
@@ -1188,10 +1145,7 @@ fn cli_attach_delivers_typed_input_through_the_handshake() {
 fn cli_attach_takeover_retires_the_current_controller() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-cli-take",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-cli-take");
     let sock_path = start_cat(&root, "pty-cli-take");
     let mut old = attach_as_human(&sock_path);
 
@@ -1232,10 +1186,7 @@ fn push(root: &TempDir, session: &str, bytes: &[u8]) {
 fn connection_without_hello_gains_no_control_and_is_closed() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-nohello",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-nohello");
     let sock_path = start_cat(&root, "pty-nohello");
 
     let mut raw = UnixStream::connect(&sock_path).unwrap();
@@ -1258,18 +1209,13 @@ fn connection_without_hello_gains_no_control_and_is_closed() {
         .unwrap();
     let meta: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(meta["pty"]["control"], "AgentControl");
-
-    tendr(&root).args(["kill", "pty-nohello"]).output().ok();
 }
 
 #[test]
 fn attach_is_accepted_with_an_epoch_and_a_second_attach_is_rejected() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-epoch",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-epoch");
     let sock_path = start_cat(&root, "pty-epoch");
 
     let (mut first, (msg_type, payload)) = hello(&sock_path, MODE_ATTACH);
@@ -1291,17 +1237,13 @@ fn attach_is_accepted_with_an_epoch_and_a_second_attach_is_rejected() {
     wait_log_contains(&root, "pty-epoch", "first-still-owns");
 
     drop(first);
-    tendr(&root).args(["kill", "pty-epoch"]).output().ok();
 }
 
 #[test]
 fn takeover_retires_the_previous_human_and_rejects_its_later_input() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-takeover",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-takeover");
     let sock_path = start_cat(&root, "pty-takeover");
 
     let mut old = attach_as_human(&sock_path);
@@ -1329,17 +1271,13 @@ fn takeover_retires_the_previous_human_and_rejects_its_later_input() {
     assert!(takeover_event.is_some(), "takeover is recorded as a fact");
 
     drop(new);
-    tendr(&root).args(["kill", "pty-takeover"]).output().ok();
 }
 
 #[test]
 fn takeover_revokes_queued_agent_input() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-revoke",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-revoke");
     let go = root.path().join("go");
 
     // The child consumes exactly 1 KiB of agent input, reports READY, then stops
@@ -1422,10 +1360,7 @@ fn takeover_revokes_queued_agent_input() {
 fn takeover_after_a_silent_connection_reaches_the_same_running_process() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-reconnect",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-reconnect");
 
     tendr(&root)
         .args(["start", "pty-reconnect", "--pty", "--stdin", "--", "sh"])
@@ -1461,10 +1396,7 @@ fn takeover_after_a_silent_connection_reaches_the_same_running_process() {
 fn stalled_viewer_cannot_block_output_capture() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-stalled",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-stalled");
     let go = root.path().join("go");
 
     // After the go file appears, the child writes ~10 MiB — more than one
@@ -1515,10 +1447,7 @@ fn stalled_viewer_cannot_block_output_capture() {
 fn a_second_push_is_refused_while_one_holds_the_terminal() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-twopush",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-twopush");
     let go = root.path().join("go");
     // The child consumes exactly 1 KiB of the first push, reports READY, then
     // reads nothing until the go file exists: the first push stays in flight.
@@ -1581,10 +1510,7 @@ fn attach_socket_is_private_and_under_the_state_root() {
     use std::os::unix::fs::PermissionsExt;
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-private",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-private");
     let sock_path = start_cat(&root, "pty-private");
 
     let sockets = root.path().join(".tendr").join("sockets");
@@ -1606,10 +1532,7 @@ fn attach_socket_is_private_and_under_the_state_root() {
 fn oversized_attach_frame_closes_the_connection_and_releases_control() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-bigframe",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-bigframe");
     let sock_path = start_cat(&root, "pty-bigframe");
 
     let mut human = attach_as_human(&sock_path);
@@ -1630,10 +1553,7 @@ fn oversized_attach_frame_closes_the_connection_and_releases_control() {
 fn a_trickled_hello_is_cut_off_at_the_overall_deadline() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-slowhello",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-slowhello");
     let sock_path = start_cat(&root, "pty-slowhello");
 
     // A well-formed hello sent one byte per second: every individual read is
@@ -1668,10 +1588,7 @@ fn a_trickled_hello_is_cut_off_at_the_overall_deadline() {
 fn an_unsafe_socket_directory_fails_start_loudly() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-unsafe",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-unsafe");
     let elsewhere = root.path().join("elsewhere");
     std::fs::create_dir(&elsewhere).unwrap();
     std::fs::create_dir_all(root.path().join(".tendr")).unwrap();
@@ -1703,10 +1620,7 @@ fn an_unsafe_socket_directory_fails_start_loudly() {
 fn detach_releases_control_even_when_pty_input_is_full() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-full-detach",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-full-detach");
     // The child never reads its input, so the PTY input buffer fills.
     tendr(&root)
         .args(["start", "pty-full-detach", "--pty", "--stdin", "--"])
@@ -1742,10 +1656,7 @@ fn detach_releases_control_even_when_pty_input_is_full() {
 fn a_disconnected_push_releases_control_behind_a_full_pty() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-push-gone",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-push-gone");
     tendr(&root)
         .args(["start", "pty-push-gone", "--pty", "--stdin", "--"])
         .args([
@@ -1789,10 +1700,7 @@ fn a_disconnected_push_releases_control_behind_a_full_pty() {
 fn idle_pushes_retired_by_takeover_do_not_exhaust_connection_slots() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-push-slots",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-push-slots");
     let sock_path = start_cat(&root, "pty-push-slots");
 
     // More rounds than there are connection slots. Each push stays connected and
@@ -1836,10 +1744,7 @@ fn idle_pushes_retired_by_takeover_do_not_exhaust_connection_slots() {
 fn an_old_runs_cleanup_cannot_remove_its_replacements_breadcrumb() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-replaced",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-replaced");
     let callback = root.path().join("callback.sh");
     let started = root.path().join("callback-started");
     let finish = root.path().join("callback-finish");
@@ -1980,10 +1885,7 @@ fn pty_output_is_recorded_exactly_with_the_initial_geometry() {
         ])
         .output()
         .unwrap();
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-rec",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-rec");
     harness::wait_terminal(&root, "pty-rec");
 
     let recording = decode_session_recording(&root, "pty-rec");
@@ -2027,10 +1929,7 @@ fn an_applied_resize_is_recorded_between_the_output_around_it() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = TempDir::new().unwrap();
     let sock = start_cat(&root, "pty-rec-resize");
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-rec-resize",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-rec-resize");
 
     let mut human = attach_as_human(&sock);
     write_msg(&mut human, MSG_DATA, b"one\n");
@@ -2079,10 +1978,7 @@ fn a_resize_with_a_zero_dimension_is_ignored() {
         .output()
         .unwrap();
     harness::wait_running(&root, "pty-zero-size");
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-zero-size",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-zero-size");
     let sock = wait_for_attach_socket(&root, "pty-zero-size");
 
     let mut human = attach_as_human(&sock);
@@ -2118,10 +2014,7 @@ fn a_recording_size_limit_stops_recording_but_not_the_session() {
         .output()
         .unwrap();
     harness::wait_running(&root, "pty-rec-limit");
-    let _kill = KillOnDrop {
-        root: &root,
-        session: "pty-rec-limit",
-    };
+    let _kill = harness::SessionGuard::new(&root, "pty-rec-limit");
 
     // A small record first: how the PTY coalesces the flood into reads (and so
     // whether any of it fits under the limit) differs between platforms.
