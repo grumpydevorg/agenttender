@@ -1145,6 +1145,90 @@ fn cli_paste_with_embedded_prefixes_arrives_intact() {
     wait_output_contains(&root, "pty-paste", &expected);
 }
 
+/// Detach with a `Ctrl-\` encoded as a child's keyboard mode makes the
+/// terminal send it: send `prefix` in one read after a marker, wait until the
+/// marker reached the child (so the prefix was held, not forwarded), then send
+/// `d` in a later read. Afterwards the child must have received neither.
+fn assert_encoded_prefix_detaches(label: &str, prefix: &[u8]) {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let session = format!("pty-{label}");
+    let _kill = harness::SessionGuard::new(&root, &session);
+    start_visible_cat(&root, &session);
+
+    let mut wrapped = WrappedAttach::spawn(&root, label, &[&session]);
+    wrapped
+        .cli
+        .type_until_logged(&root, &session, &format!("{label}-ready\n"));
+    let marker = format!("{label}-marker");
+    let mut typed = marker.clone().into_bytes();
+    typed.extend_from_slice(prefix);
+    wrapped.cli.type_bytes(&typed);
+    wait_output_contains(&root, &session, &marker);
+    wrapped.cli.type_bytes(b"d");
+
+    assert_eq!(wrapped.wait_exit(Duration::from_secs(10)), 0);
+    wrapped.assert_terminal_restored();
+
+    wait_for_pty_control(&root, &session, "AgentControl");
+    push(&root, &session, b"after-detach\n");
+    let after = wait_output_contains(&root, &session, "after-detach");
+    assert_eq!(
+        after.trim_start_matches(&format!("{label}-ready")),
+        format!("{marker}after-detach"),
+        "neither the encoded prefix nor the detach key may reach the child"
+    );
+}
+
+#[test]
+fn cli_kitty_encoded_prefix_then_d_detaches() {
+    assert_encoded_prefix_detaches("kitty-escape", b"\x1b[92;5u");
+}
+
+#[test]
+fn cli_modify_other_keys_encoded_prefix_then_d_detaches() {
+    assert_encoded_prefix_detaches("mok-escape", b"\x1b[27;5;92~");
+}
+
+#[test]
+fn cli_doubled_kitty_prefix_forwards_one_in_the_same_encoding() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-kitty-literal");
+    start_visible_cat(&root, "pty-kitty-literal");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "kitty-literal", &["pty-kitty-literal"]);
+    wrapped
+        .cli
+        .type_until_logged(&root, "pty-kitty-literal", "kitty-literal-ready\n");
+    wrapped.cli.type_bytes(b"A\x1b[92;5u\x1b[92;5uB");
+    let output = wait_output_contains(&root, "pty-kitty-literal", "A^[[92;5uB");
+    assert_eq!(
+        output.matches("^[[92;5u").count(),
+        1,
+        "exactly one Ctrl-\\ reaches the child; got: {output}"
+    );
+    assert!(!wrapped.exited(), "no detach was requested");
+}
+
+#[test]
+fn cli_lone_esc_reaches_the_child_without_another_key() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-lone-esc");
+    start_visible_cat(&root, "pty-lone-esc");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "lone-esc", &["pty-lone-esc"]);
+    wrapped
+        .cli
+        .type_until_logged(&root, "pty-lone-esc", "lone-esc-ready\n");
+    // A read ending in ESC could be the start of an encoded Ctrl-\, so it is
+    // held briefly; with nothing typed after it, it must still arrive.
+    wrapped.cli.type_bytes(b"esc-marker\x1b");
+    wait_output_contains(&root, "pty-lone-esc", "esc-marker^[");
+    assert!(!wrapped.exited(), "no detach was requested");
+}
+
 #[test]
 fn cli_forwards_later_terminal_resizes() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());

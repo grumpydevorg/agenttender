@@ -179,7 +179,12 @@ knowing:
   running. `Ctrl-\` twice sends one `Ctrl-\`, and `Ctrl-\` followed by any other
   key sends both. A trailing `Ctrl-\` is held until the next key decides it,
   `Ctrl-]` and every other key pass through unchanged, and `Enter ~ .` is the
-  outer `ssh`'s own escape, not tendr's. `--escape none` turns the escape off
+  outer `ssh`'s own escape, not tendr's. The escape works however the session's
+  program has set your terminal to encode keys: the legacy `Ctrl-\` byte, the
+  kitty keyboard protocol (which Claude Code can switch Ghostty, kitty, WezTerm
+  and foot to), and xterm's `modifyOtherKeys`. Key releases and modifier keys
+  those modes report do not interrupt it, and a doubled `Ctrl-\` is sent in the
+  encoding you typed. `--escape none` turns the escape off
   so every key reaches the session. Window resizes follow you, and your
   terminal settings are restored however the attach ends. It is refused while
   another client holds the terminal.

@@ -90,7 +90,13 @@ Current PTY rules:
   separate paths: the main thread polls the keyboard and terminal size and only
   queues messages (resize and detach ahead of keystrokes), a sender thread
   writes them, and a reader thread writes output. `Ctrl-\ d` detaches (`Ctrl-\`
-  twice sends one; `--escape none` disables it). The size is checked every
+  twice sends one; `--escape none` disables it), recognised in the legacy byte
+  encoding and in the kitty keyboard protocol and xterm `modifyOtherKeys`
+  encodings a child can switch the terminal to (`src/attach_escape.rs`);
+  forwarded bytes are always the bytes typed. Key releases and modifier-key
+  events neither decide nor cancel a held prefix. An unfinished `ESC [` at the
+  end of a read is held only while it could still become a prefix, and the main
+  thread's poll wakes to forward it after 20 ms, so a lone Esc is never stuck. The size is checked every
   100 ms and changes are forwarded; SIGWINCH only brings that check forward,
   since signals coalesce and the poll stays the source of truth. SIGHUP,
   SIGTERM and SIGINT end the attach like a detach (a detach message with the
