@@ -136,12 +136,11 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The sidecar's PTY input authority and live attach connections (Unix only;
-/// PTY sessions are unsupported elsewhere, so the type is uninhabited there).
+/// The sidecar's PTY input authority (Unix only; PTY sessions are unsupported
+/// elsewhere, so the type is uninhabited there).
 #[cfg(unix)]
 struct PtyInput {
     writer: crate::pty_input::InputWriter,
-    registry: ConnectionRegistry,
 }
 #[cfg(not(unix))]
 type PtyInput = std::convert::Infallible;
@@ -155,6 +154,8 @@ struct AttachSocketCleanup {
     socket: PathBuf,
     session_dir: PathBuf,
 }
+#[cfg(not(unix))]
+type AttachSocketCleanup = std::convert::Infallible;
 
 #[cfg(unix)]
 impl Drop for AttachSocketCleanup {
@@ -168,14 +169,13 @@ impl Drop for AttachSocketCleanup {
 
 /// A PTY run's private attach socket, bound and published before the child is
 /// spawned (Unix only; the type is uninhabited elsewhere). The lifecycle guard
-/// owns it after spawn and drops it, removing the socket, before it releases
-/// the session lock.
+/// owns it after spawn: starting the attach side moves the socket to the
+/// listener thread and keeps the cleanup, which removes the socket before the
+/// guard releases the session lock.
 #[cfg(unix)]
 struct AttachEndpoint {
-    /// Moved to the listener thread when it starts.
-    socket: Option<crate::attach_socket::BoundSocket>,
-    /// Held for its `Drop`.
-    _cleanup: AttachSocketCleanup,
+    socket: crate::attach_socket::BoundSocket,
+    cleanup: AttachSocketCleanup,
 }
 #[cfg(not(unix))]
 type AttachEndpoint = std::convert::Infallible;
@@ -1196,11 +1196,11 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     let attach = if meta.launch_spec().io_mode == IoMode::Pty {
         match crate::attach_socket::bind_for_session(session_dir, run_id) {
             Ok(bound) => Some(AttachEndpoint {
-                _cleanup: AttachSocketCleanup {
+                cleanup: AttachSocketCleanup {
                     socket: bound.path.clone(),
                     session_dir: session_dir.to_path_buf(),
                 },
-                socket: Some(bound),
+                socket: bound,
             }),
             Err(e) => {
                 meta.add_warning(format!("attach socket unavailable: {e}"));

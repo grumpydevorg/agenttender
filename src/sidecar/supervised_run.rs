@@ -31,11 +31,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::{
-    AttachEndpoint, AttachSink, LifecycleEvents, META_WRITE, PtyInput, PtyRecordingRun,
-    PtyTeardown, ReadyWriter, capture_stream, capture_stream_with_tee, collect_warnings,
-    deliver_ready, finished_recording, lock, run_on_exit_hooks, setup_kill_watcher,
-    setup_pty_stdin_forwarding, setup_stdin_forwarding, setup_timeout, stopped_state,
-    test_abort_point, test_fault, test_unlock_gate,
+    AttachEndpoint, AttachSink, AttachSocketCleanup, LifecycleEvents, META_WRITE, PtyInput,
+    PtyRecordingRun, PtyTeardown, ReadyWriter, capture_stream, capture_stream_with_tee,
+    collect_warnings, deliver_ready, finished_recording, lock, run_on_exit_hooks,
+    setup_kill_watcher, setup_pty_stdin_forwarding, setup_stdin_forwarding, setup_timeout,
+    stopped_state, test_abort_point, test_fault, test_unlock_gate,
 };
 #[cfg(unix)]
 use super::{
@@ -45,7 +45,7 @@ use super::{
 use crate::model::ids::{EpochTimestamp, ProcessIdentity};
 use crate::model::meta::Meta;
 use crate::model::pty::{PtyControl, PtyMeta, PtyRecording, RecordingState};
-use crate::model::spec::{IoMode, StdinMode};
+use crate::model::spec::StdinMode;
 use crate::model::state::{ExitReason, SidecarStep};
 use crate::platform::{Current, Platform, ProcessStatus};
 use crate::session::{self, LockGuard, SessionDir};
@@ -96,19 +96,10 @@ struct RunCore {
     /// The `start` client's readiness channel while it is still unsent.
     ready: Option<ReadyWriter>,
     stdin_errors: Arc<Mutex<Vec<String>>>,
-    /// Tee for PTY output to an attached client; `None` for pipe sessions.
-    attach_sink: Option<AttachSink>,
-    /// A PTY session's attach socket, bound before spawn. Dropped, removing
-    /// the socket and its breadcrumb, before the lock is released.
-    attach: Option<AttachEndpoint>,
-    /// A PTY session's exact recording of output and applied geometry, until
-    /// it is finished into meta.
-    recording: Option<PtyRecordingRun>,
-    /// A PTY session's input owner, set by the control effects thread once the
-    /// change is logged. `meta` never tracks it, so every write folds it in.
-    pty_control: Option<Arc<Mutex<PtyControl>>>,
-    /// Ends a PTY session's attach side with the run.
-    pty_teardown: Option<PtyTeardown>,
+    /// A PTY session's attach side; `None` for a pipe session, decided at
+    /// adoption. Dropped, removing the socket and its breadcrumb, before the
+    /// lock is released.
+    pty: Option<PtySide>,
     /// Stops the timeout and kill-request watchers once the run is ending.
     watch_cancel: Arc<AtomicBool>,
     timed_out: Arc<AtomicBool>,
@@ -118,6 +109,49 @@ struct RunCore {
     ended: bool,
     /// Released after the terminal record is written, before the hooks run.
     lock: Option<LockGuard>,
+}
+
+/// A PTY run's attach side, in two phases, so what exists together is
+/// constructed together.
+// Uninhabited off Unix, where AttachEndpoint and PtyTeardown are, so Started
+// is never built there.
+#[cfg_attr(not(unix), allow(dead_code))]
+enum PtySide {
+    /// The attach socket is bound and published; nothing is running yet.
+    Bound(AttachEndpoint),
+    /// The effects thread, recorder, input writer and listener are running.
+    Started(StartedPty),
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+struct StartedPty {
+    /// Held for its `Drop`, which removes the socket and its breadcrumb.
+    _socket: AttachSocketCleanup,
+    /// Tee for PTY output to an attached client.
+    sink: AttachSink,
+    /// The exact recording of output and applied geometry, until it is
+    /// finished into meta (before the teardown).
+    recording: Option<PtyRecordingRun>,
+    /// The input owner, set by the effects thread once the change is logged.
+    /// `meta` never tracks it, so every write folds it in.
+    control: Arc<Mutex<PtyControl>>,
+    /// Ends the attach side with the run.
+    teardown: PtyTeardown,
+}
+
+/// End a started attach side before the terminal record: shut its
+/// connections, record its pending effects, and fold the final owner into
+/// `meta`. Dropping it then removes the socket.
+#[cfg(unix)]
+fn end_attach_side(pty: StartedPty, meta: &mut Meta) {
+    pty.teardown.run();
+    // The effects thread has stopped: nothing changes the owner any more.
+    meta.set_pty_control(lock(&pty.control).clone());
+}
+
+#[cfg(not(unix))]
+fn end_attach_side(pty: StartedPty, _meta: &mut Meta) {
+    match pty.teardown {}
 }
 
 impl SupervisedRun<Spawned> {
@@ -145,11 +179,7 @@ impl SupervisedRun<Spawned> {
                 session,
                 ready,
                 stdin_errors: Arc::new(Mutex::new(Vec::new())),
-                attach_sink: None,
-                attach,
-                recording: None,
-                pty_control: None,
-                pty_teardown: None,
+                pty: attach.map(PtySide::Bound),
                 watch_cancel: Arc::new(AtomicBool::new(false)),
                 timed_out: Arc::new(AtomicBool::new(false)),
                 step: SidecarStep::Breadcrumb,
@@ -204,10 +234,6 @@ impl RunCore {
         self.session.path()
     }
 
-    fn is_pty(&self) -> bool {
-        self.meta.launch_spec().io_mode == IoMode::Pty
-    }
-
     /// End the run at `step`: stop the child, record `SidecarFailed`, and
     /// return the marker for the caller to propagate.
     fn fail(&mut self, step: SidecarStep, error: impl std::fmt::Display) -> SidecarFailure {
@@ -217,7 +243,6 @@ impl RunCore {
 
     fn publish_running(&mut self) -> Result<(), SidecarFailure> {
         let dir = self.session_dir().to_path_buf();
-        let is_pty = self.is_pty();
 
         // Recover: the breadcrumb only matters to crash recovery.
         self.step = SidecarStep::Breadcrumb;
@@ -235,15 +260,23 @@ impl RunCore {
 
         // End: a PTY session never runs without its listener, and the listener
         // reaches the PTY only through the input writer.
-        let pty_input = if is_pty {
-            self.step = SidecarStep::AttachBind;
-            self.attach_sink = Some(Arc::new(Mutex::new(None)));
-            match self.start_pty_input() {
-                Ok(input) => Some(input),
-                Err(e) => return Err(self.fail(SidecarStep::AttachBind, e)),
+        // A failed start drops the endpoint, removing the socket.
+        let pty_input = match self.pty.take() {
+            Some(PtySide::Bound(endpoint)) => {
+                self.step = SidecarStep::AttachBind;
+                match self.start_pty(endpoint) {
+                    Ok((started, input)) => {
+                        self.pty = Some(PtySide::Started(started));
+                        Some(input)
+                    }
+                    Err(e) => return Err(self.fail(SidecarStep::AttachBind, e)),
+                }
             }
-        } else {
-            None
+            // A pipe session; a started side is not reachable before Running.
+            other => {
+                self.pty = other;
+                None
+            }
         };
 
         // End: a --stdin run whose input can never arrive is a failed run.
@@ -267,7 +300,7 @@ impl RunCore {
         if let Err(e) = self.meta.transition_running(self.identity) {
             return Err(self.fail(SidecarStep::RunningMeta, e));
         }
-        if is_pty {
+        if self.pty.is_some() {
             self.meta.set_pty(PtyMeta::new());
         }
         self.lifecycle.emit(&mut self.meta, false);
@@ -302,76 +335,72 @@ impl RunCore {
     /// Start a PTY session's effects thread, its recorder (whose stop report
     /// goes through that thread), its single input writer (which owns the
     /// PTY's write half and records applied sizes) and the attach listener on
-    /// the socket bound before spawn.
+    /// the socket bound before spawn. Every fallible step comes first, so a
+    /// failure leaves nothing running.
     #[cfg(unix)]
-    fn start_pty_input(&mut self) -> io::Result<PtyInput> {
+    fn start_pty(&mut self, endpoint: AttachEndpoint) -> io::Result<(StartedPty, PtyInput)> {
         test_fault(SidecarStep::AttachBind.as_str())?;
-        let socket = self
-            .attach
-            .as_mut()
-            .and_then(|attach| attach.socket.take())
-            .ok_or_else(|| io::Error::other("no attach socket was bound"))?;
-        let sink = self
-            .attach_sink
-            .clone()
-            .ok_or_else(|| io::Error::other("no attach sink"))?;
         // Dup the resize fd before the write half is taken.
         let resize = Current::pty_resize_fd(&self.child);
         let writer = self
             .child
             .take_pty_writer()
             .ok_or_else(|| io::Error::other("PTY write half unavailable"))?;
+
+        let AttachEndpoint { socket, cleanup } = endpoint;
+        let sink: AttachSink = Arc::new(Mutex::new(None));
         let registry = ConnectionRegistry::default();
         let control = Arc::new(Mutex::new(PtyControl::AgentControl));
-        self.pty_control = Some(Arc::clone(&control));
         let effects = RunEffects::spawn(
             self.session_dir().to_path_buf(),
             self.lifecycle.with_fresh_writer(),
-            control,
+            Arc::clone(&control),
         );
-        self.recording = Some(start_pty_recording(
+        let recording = start_pty_recording(
             self.session.path(),
             self.meta.run_id(),
             &self.meta.launch_spec().env,
             recorder_limits(),
             effects.sender(),
-        ));
+        );
         let hooks = SidecarControlHooks {
             effects: effects.sender(),
             registry: registry.clone(),
             attach_sink: Arc::clone(&sink),
         };
-        self.pty_teardown = Some(PtyTeardown {
-            registry: registry.clone(),
-            effects,
-        });
         let input = PtyInput {
             writer: crate::pty_input::InputWriter::spawn(
                 self.meta.run_id(),
                 UnixPtyInput {
                     writer,
                     resize,
-                    recorder: self.recording.as_ref().map(|r| r.thread.recorder()),
+                    recorder: Some(recording.thread.recorder()),
                 },
                 hooks,
             ),
-            registry,
         };
-        let writer = input.writer.clone();
-        let registry = input.registry.clone();
-        std::thread::spawn(move || {
-            run_attach_listener(&socket.listener, &writer, &registry, &sink);
-        });
-        Ok(input)
+        {
+            let (writer, registry, sink) =
+                (input.writer.clone(), registry.clone(), Arc::clone(&sink));
+            std::thread::spawn(move || {
+                run_attach_listener(&socket.listener, &writer, &registry, &sink);
+            });
+        }
+        let started = StartedPty {
+            _socket: cleanup,
+            sink,
+            recording: Some(recording),
+            control,
+            teardown: PtyTeardown { registry, effects },
+        };
+        Ok((started, input))
     }
 
-    /// PTY sessions are Unix-only; the PTY spawn itself fails elsewhere.
+    /// PTY sessions are Unix-only; the PTY spawn itself fails elsewhere, so no
+    /// endpoint exists to start.
     #[cfg(not(unix))]
-    fn start_pty_input(&mut self) -> io::Result<PtyInput> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "PTY sessions are supported on Unix only",
-        ))
+    fn start_pty(&mut self, endpoint: AttachEndpoint) -> io::Result<(StartedPty, PtyInput)> {
+        match endpoint {}
     }
 
     /// Persist meta, serialized with the sidecar's other `meta.json` writers
@@ -382,18 +411,18 @@ impl RunCore {
     /// lock after this write: either way `meta.json` ends up `Stopped`.
     fn write_meta(&mut self) -> Result<(), session::SessionError> {
         let _serialized = lock(&META_WRITE);
-        if let Some(control) = &self.pty_control {
-            self.meta.set_pty_control(lock(control).clone());
-        }
-        if let Some(run) = &self.recording {
-            let state = run
-                .thread
-                .recorder()
-                .stopped()
-                .map_or(RecordingState::Recording, |stopped| {
-                    stopped_state(stopped, None)
-                });
-            self.meta.set_pty_recording(run.meta(state));
+        if let Some(PtySide::Started(pty)) = &self.pty {
+            self.meta.set_pty_control(lock(&pty.control).clone());
+            if let Some(run) = &pty.recording {
+                let state = run
+                    .thread
+                    .recorder()
+                    .stopped()
+                    .map_or(RecordingState::Recording, |stopped| {
+                        stopped_state(stopped, None)
+                    });
+                self.meta.set_pty_recording(run.meta(state));
+            }
         }
         session::write_meta_atomic(&self.session, &self.meta)
     }
@@ -413,7 +442,10 @@ impl RunCore {
     /// drained the PTY, or once the child is stopped. Bounded by the
     /// recorder's close timeout.
     fn finish_recording(&mut self) {
-        if let Some(PtyRecordingRun { thread, dir }) = self.recording.take() {
+        let Some(PtySide::Started(pty)) = &mut self.pty else {
+            return;
+        };
+        if let Some(PtyRecordingRun { thread, dir }) = pty.recording.take() {
             let (state, warning) = finished_recording(thread.finish());
             self.meta.set_pty_recording(PtyRecording {
                 dir,
@@ -477,8 +509,13 @@ impl RunCore {
         let log = Mutex::new(log);
         let stdout = Current::child_stdout(&mut self.child);
         let stderr = Current::child_stderr(&mut self.child); // None for PTY sessions
-        let attach_sink = self.attach_sink.as_ref();
-        let recorder = self.recording.as_ref().map(|r| r.thread.recorder());
+        let (attach_sink, recorder) = match &self.pty {
+            Some(PtySide::Started(pty)) => (
+                Some(&pty.sink),
+                pty.recording.as_ref().map(|r| r.thread.recorder()),
+            ),
+            _ => (None, None),
+        };
         let recorder = recorder.as_ref();
 
         let log_ref = &log;
@@ -583,13 +620,11 @@ impl RunCore {
             let _ = std::fs::remove_file(dir.join(name));
         }
         Current::remove_stdin_transport(dir);
-        if let Some(teardown) = self.pty_teardown.take() {
-            #[cfg(unix)]
-            teardown.run();
-            #[cfg(not(unix))]
-            match teardown {}
+        // Taking the side drops it here, started or only bound, which removes
+        // the socket.
+        if let Some(PtySide::Started(pty)) = self.pty.take() {
+            end_attach_side(pty, &mut self.meta);
         }
-        self.attach.take();
     }
 
     /// The failure path: stop the child first, then record
