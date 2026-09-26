@@ -2921,3 +2921,79 @@ fn cli_attach_and_push_refused_for_peer_identity_exit_85() {
         wrapped.cli.output()
     );
 }
+
+/// A session whose run has ended is a stale run for `attach`: the CLI's own
+/// check exits 81, as the sidecar's "session ended" refusal does when the run
+/// ends as the attach connects.
+#[test]
+fn cli_attach_to_a_finished_session_exits_81() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x81-ended");
+    tendr(&root)
+        .args(["start", "pty-x81-ended", "--pty", "--", "true"])
+        .output()
+        .unwrap();
+    harness::wait_terminal(&root, "pty-x81-ended");
+
+    let output = tendr(&root)
+        .args(["attach", "pty-x81-ended"])
+        .output()
+        .unwrap();
+    assert_exit(&output, 81, "attach to a finished session");
+}
+
+/// The same for a push to a PTY session; a pipe session keeps exit 1.
+#[test]
+fn cli_push_to_a_finished_session_exits_81_for_a_pty_and_1_for_a_pipe() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _pty = harness::SessionGuard::new(&root, "pty-x81-push-ended");
+    let _pipe = harness::SessionGuard::new(&root, "pipe-push-ended");
+    tendr(&root)
+        .args([
+            "start",
+            "pty-x81-push-ended",
+            "--pty",
+            "--stdin",
+            "--",
+            "true",
+        ])
+        .output()
+        .unwrap();
+    tendr(&root)
+        .args(["start", "pipe-push-ended", "--stdin", "--", "true"])
+        .output()
+        .unwrap();
+    harness::wait_terminal(&root, "pty-x81-push-ended");
+    harness::wait_terminal(&root, "pipe-push-ended");
+
+    let output = push_output(&root, "pty-x81-push-ended", b"too late\n");
+    assert_exit(&output, 81, "push to a finished PTY session");
+    let output = push_output(&root, "pipe-push-ended", b"too late\n");
+    assert_exit(&output, 1, "push to a finished pipe session");
+}
+
+/// A push to a session started without `--stdin` can never succeed, so that
+/// is what it reports, even while a human holds the terminal.
+#[test]
+fn cli_push_without_stdin_exits_1_even_while_a_human_holds_the_terminal() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x1-nostdin");
+    tendr(&root)
+        .args(["start", "pty-x1-nostdin", "--pty", "--", "cat"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-x1-nostdin");
+    let sock_path = wait_for_attach_socket(&root, "pty-x1-nostdin");
+    let _human = attach_as_human(&sock_path);
+    wait_for_pty_control(&root, "pty-x1-nostdin", "HumanControl");
+
+    let output = push_output(&root, "pty-x1-nostdin", b"nowhere\n");
+    assert_exit(&output, 1, "push to a session without --stdin");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not started with --stdin"),
+        "the refusal names the missing --stdin"
+    );
+}

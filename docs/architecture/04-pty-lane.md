@@ -74,7 +74,9 @@ Current PTY rules:
   `attach` and PTY `push` clients exit with the class's code (80, 81, 84, 85)
   and give their own failures codes from the same range
   ([guide](../guide.md#exit-codes), `tendr::pty_exit`): the CLI's own
-  human-control check is 81, a socket that is missing or unreachable 84, a
+  human-control and not-running checks are 81 (like the sidecar's "session
+  ended" refusal; a push to a pipe session that is not running keeps 1), a
+  socket that is missing or unreachable 84, a
   listener of another user 85, and a reply to the hello outside the protocol,
   or none within 10 s, 80. An attach retired by another client's `--takeover`
   exits 81

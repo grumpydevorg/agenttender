@@ -15,9 +15,21 @@ pub fn cmd_push(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
 
     let meta = session::read_meta(&session)?;
 
-    // Push requires Running state explicitly
+    // First what can never succeed, whatever the session is doing.
+    if meta.launch_spec().stdin_mode != StdinMode::Pipe {
+        anyhow::bail!("session was not started with --stdin");
+    }
+
+    // Push requires Running state explicitly. For a PTY session an ended run
+    // is a stale run (81), as the sidecar reports when it ends while the push
+    // connects; a pipe session keeps exit 1.
     if !matches!(meta.status(), RunStatus::Running { .. }) {
-        anyhow::bail!("session is not running");
+        let not_running = anyhow::anyhow!("session is not running");
+        return Err(if meta.pty().is_some() {
+            PtyExitCode::Control.error(not_running)
+        } else {
+            not_running
+        });
     }
 
     // Reject push while a human is attached to a PTY session
@@ -27,10 +39,6 @@ pub fn cmd_push(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
                 PtyExitCode::Control.error(anyhow::anyhow!("session is under human control"))
             );
         }
-    }
-
-    if meta.launch_spec().stdin_mode != StdinMode::Pipe {
-        anyhow::bail!("session was not started with --stdin");
     }
 
     // PTY sessions take pushes over the attach socket, which reports exactly

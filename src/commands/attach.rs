@@ -21,8 +21,11 @@ pub fn cmd_attach(
 
     let meta = session::read_meta(&session)?;
 
+    // A run that has ended is a stale run (81), as the sidecar reports when it
+    // ends while the attach connects. Only PTY sessions can be attached, so
+    // this is the PTY meaning whatever the session.
     if !matches!(meta.status(), RunStatus::Running { .. }) {
-        anyhow::bail!("session is not running");
+        return Err(PtyExitCode::Control.error(anyhow::anyhow!("session is not running")));
     }
 
     let pty = meta

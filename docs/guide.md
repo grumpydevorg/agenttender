@@ -483,7 +483,7 @@ command exits 0 on success and 1 on an error without a code of its own below
 | `query` | DuckDB's | DuckDB's exit code |
 | `guide`, `skill install` | 2 | Unknown topic; refusing to overwrite a modified skill file |
 | `attach`, `push` to a PTY session | 80 | Protocol: the session answered the hello outside this attach protocol, or not within 10 s (an older or newer `tendr`) |
-| `attach`, `push` to a PTY session | 81 | Control conflict: another client holds the terminal (a plain `attach` while a human is attached, or a `push` while anyone is), the attach was taken over by another client's `--takeover`, or the run ended as it connected |
+| `attach`, `push` to a PTY session | 81 | Control conflict: another client holds the terminal (a plain `attach` while a human is attached, or a `push` while anyone is), the attach was taken over by another client's `--takeover`, or the session is not running (its run has ended) |
 | `attach`, `push` to a PTY session | 82 | Reserved: operation deadline exceeded |
 | `attach`, `push` to a PTY session | 83 | Reserved: missing or incompatible screen extension |
 | `attach`, `push` to a PTY session | 84 | Runtime or transport: the attach socket is missing or unreachable, the connection fails, or a push ended revoked or stopped with bytes unwritten (stderr gives the byte counts) |
