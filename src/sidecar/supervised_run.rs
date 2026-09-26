@@ -272,10 +272,13 @@ impl RunCore {
                     Err(e) => return Err(self.fail(SidecarStep::AttachBind, e)),
                 }
             }
-            // A pipe session; a started side is not reachable before Running.
-            other => {
-                self.pty = other;
-                None
+            // A pipe session.
+            None => None,
+            // Only SupervisedRun<Spawned>::publish_running reaches here, and it
+            // consumes the run, so the side is started at most once. A panic
+            // is recorded by the guard as SidecarFailed.
+            Some(PtySide::Started(_)) => {
+                unreachable!("a PTY attach side is started only once, when Running is published")
             }
         };
 
