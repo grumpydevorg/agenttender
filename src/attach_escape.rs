@@ -121,6 +121,30 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_right_bracket_passes_through() {
+        // Alone, Ctrl-] is an ordinary byte: nothing about it is special to
+        // the parser.
+        assert_eq!(
+            run(EscapeMode::CtrlBackslash, &[b"\x1d"]),
+            (b"\x1d".to_vec(), Escape::Continue)
+        );
+
+        // As the byte that resolves a pending prefix, it is just an "other"
+        // key: both bytes forward unchanged.
+        assert_eq!(
+            run(EscapeMode::CtrlBackslash, &[b"\x1c\x1d"]),
+            (b"\x1c\x1d".to_vec(), Escape::Continue)
+        );
+
+        // Right after that resolution, a further Ctrl-] still passes
+        // through untouched — no state leaks from the resolved prefix.
+        assert_eq!(
+            run(EscapeMode::CtrlBackslash, &[b"\x1c\x1d\x1d"]),
+            (b"\x1c\x1d\x1d".to_vec(), Escape::Continue)
+        );
+    }
+
+    #[test]
     fn a_prefix_split_across_reads_is_held_then_decided() {
         assert_eq!(
             run(EscapeMode::CtrlBackslash, &[b"abc\x1c", b"d"]),

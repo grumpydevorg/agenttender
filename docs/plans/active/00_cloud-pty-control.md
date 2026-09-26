@@ -492,7 +492,8 @@ Basis: this plan document; branch `feat/pty-runtime-takeover` at `92512a0`; code
 | Admission limits | **Slice-1 design (decided 2026-09-26):** one pool `MAX_ATTACH_CONNECTIONS = 8` including pending hellos; no separate 4-slot pending pool, no reserved controller slot, no read-only viewer mode until slice 3. Accepted trade-off: eight connections that never send a hello still refuse a takeover with `too many attach connections` (`src/sidecar.rs:2168`) for up to `HELLO_TIMEOUT` = 5 s; the socket is owner-only and peer-verified, so this can only be self-inflicted. The separate pending pool arrives with slice 3's viewers. Test: `thirty_two_half_open_takeovers_do_not_grow_connections_or_threads`. |
 | Repaint nudge after reattach | **Not done** (codec supports `ResizeCause::Repaint`, nothing emits it). |
 | Query/repaint measurement | **Not done.** The inspection tool exists: `examples/dump-recording.rs` (step 4) dumps a recording and flags DA1/DA2, DSR (5n, 6n), DECRQM, kitty keyboard, modifyOtherKeys, OSC 10/11, XTVERSION, alt-screen and bracketed-paste sequences. |
-| Nested `ssh -t` fixture, paste fixture, Ctrl-] named test | **Not done.** |
+| Nested `ssh -t` fixture | **Not done.** |
+| Paste fixture, Ctrl-] named test | **Done.** Unit test `ctrl_right_bracket_passes_through`; CLI tests `cli_paste_with_embedded_prefixes_arrives_intact`, `cli_prefix_held_across_a_read_boundary_then_detaches`. |
 | Exit-code table in `docs/guide.md` | **Not done;** attach refusals exit 1. |
 | Recording policy (`--record-input`, recording off) | Deferred by the PR. |
 
