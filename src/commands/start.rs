@@ -195,24 +195,25 @@ fn handle_replace(
                 if let Some(child) = existing_meta.status().child() {
                     let _ = Current::kill_orphan(child, true);
                 }
-                // Wait for sidecar to write terminal state AND release lock
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-                let name = session_name.as_str();
-                loop {
-                    if let Ok(m) = session::read_meta(&existing) {
-                        if m.status().is_terminal()
-                            && !session::is_locked(&existing).unwrap_or(true)
-                        {
-                            break; // Terminal + unlocked = safe to remove
-                        }
+            }
+            // Wait for the sidecar to write terminal state AND release the lock,
+            // also when meta is already terminal: the sidecar writes it just
+            // before releasing, and on Windows a directory it still holds open
+            // cannot be removed (#91).
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let name = session_name.as_str();
+            loop {
+                if let Ok(m) = session::read_meta(&existing) {
+                    if m.status().is_terminal() && !session::is_locked(&existing).unwrap_or(true) {
+                        break; // Terminal + unlocked = safe to remove
                     }
-                    if std::time::Instant::now() >= deadline {
-                        anyhow::bail!(
-                            "replace timed out: old sidecar for {name} did not exit within 10s"
-                        );
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
                 }
+                if std::time::Instant::now() >= deadline {
+                    anyhow::bail!(
+                        "replace timed out: old sidecar for {name} did not exit within 10s"
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
             // Safe to remove -- sidecar has exited or timed out
             std::fs::remove_dir_all(existing.path())?;

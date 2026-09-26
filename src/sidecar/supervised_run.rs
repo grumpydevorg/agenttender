@@ -32,6 +32,7 @@ use super::{
     AttachSink, LifecycleEvents, ReadyWriter, SharedWriter, capture_stream,
     capture_stream_with_tee, collect_warnings, run_on_exit_hooks, setup_kill_watcher,
     setup_stdin_forwarding, setup_timeout, signal_readiness, test_abort_point, test_fault,
+    test_unlock_gate,
 };
 use crate::model::ids::{EpochTimestamp, ProcessIdentity};
 use crate::model::meta::Meta;
@@ -433,6 +434,7 @@ impl RunCore {
         }
 
         // Release the lock: the session is available for --replace.
+        test_unlock_gate();
         self.lock.take();
         run_on_exit_hooks(&self.meta, &dir, &mut self.lifecycle);
         recorded.map_err(|e| anyhow::anyhow!("terminal meta not written: {e}"))
@@ -531,6 +533,7 @@ impl RunCore {
             }
         }
 
+        test_unlock_gate();
         self.lock.take();
         run_on_exit_hooks(&self.meta, &dir, &mut self.lifecycle);
     }

@@ -5,7 +5,6 @@ use tendr::model::ids::{
 };
 use tendr::model::meta::Meta;
 use tendr::model::spec::LaunchSpec;
-#[cfg(unix)]
 use tendr::session::LockGuard;
 use tendr::session::{self, SessionError, SessionRoot};
 
@@ -300,4 +299,21 @@ fn lock_exclusivity_across_processes() {
 
     // After child dies, lock should be available
     let _guard = LockGuard::try_acquire(&session).unwrap();
+}
+
+/// `wait_unlocked` reports a held lock once the bound passes, and a free lock
+/// once it is released (#91).
+#[test]
+fn wait_unlocked_waits_for_the_lock_to_be_released() {
+    let (_dir, root) = tmp_root();
+    let name = SessionName::new("unlock").unwrap();
+    let session = session::create(&root, &default_ns(), &name).unwrap();
+
+    let guard = LockGuard::try_acquire(&session).unwrap();
+    let started = std::time::Instant::now();
+    assert!(!session::wait_unlocked(&session, std::time::Duration::from_millis(50)).unwrap());
+    assert!(started.elapsed() >= std::time::Duration::from_millis(50));
+
+    drop(guard);
+    assert!(session::wait_unlocked(&session, std::time::Duration::from_millis(50)).unwrap());
 }
