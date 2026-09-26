@@ -1815,6 +1815,15 @@ impl crate::pty_input::ControlHooks for SidecarControlHooks {
 /// Finish retiring a connection the takeover hook has already removed from the
 /// registry: tell it best-effort, shut the socket down (which also unblocks any
 /// output write stuck on it), and drop its viewer if it had installed one.
+///
+/// `MSG_RETIRED` is best-effort by design. It shares the connection's framed
+/// writer with the viewer's sender, which holds the lock for one output frame
+/// at a time, so a client that reads its output gets the message within the
+/// 200 ms spin. The lock stays held only while an output write is stalled,
+/// that is, while the client is not reading. Such a client could not read a
+/// message queued behind that output either, so it sees only end of stream.
+/// Nothing depends on delivery: the takeover has already been decided, and
+/// the shutdown follows either way (PR #68 review, open question a).
 #[cfg(unix)]
 fn retire_connection(
     holder: crate::model::pty_control::HolderId,

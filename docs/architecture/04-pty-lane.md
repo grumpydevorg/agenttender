@@ -49,7 +49,8 @@ Current PTY rules:
   was read
 - `attach` must open with a v1 hello (`MSG_HELLO`); a plain attach is refused
   while a human holds control, and `--takeover` supersedes the holder, which
-  receives `MSG_RETIRED` and is disconnected
+  is disconnected. `MSG_RETIRED` is sent first on a best-effort basis: a client
+  that has stopped reading its output misses it and sees only end of stream
 - input queued by a superseded controller is never written and is recorded as
   `pty.input_revoked`; PTY `exec` frames still arrive over the stdin FIFO, whose
   forwarder is arbitrated the same way but cannot report an outcome: it waits
