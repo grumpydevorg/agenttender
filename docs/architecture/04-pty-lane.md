@@ -32,17 +32,24 @@ Current PTY rules:
 - one sidecar input writer owns the run's `InputArbiter` and the PTY input; every
   write is authorized against the current controller epoch on that thread, and
   control requests are served before queued input. That thread only decides
-  ownership changes and revocations; their `pty.control_changed` and
-  `pty.input_revoked` events and the `pty.control` patch to `meta.json` are
-  written in order by a separate thread, so a slow state root never delays a
-  takeover's acknowledgement or any input step. When the run ends, the
-  effects already decided are written before the terminal record and nothing
-  after it
-- `push` connects to the attach socket in push mode (`MODE_PUSH`), claims control
+  ownership changes and revocations. The run's side effects on the session
+  paths (`pty.control_changed`, `pty.input_revoked` and `recording.stopped`
+  events, and the `pty.control` and `pty.recording` patches to `meta.json`)
+  travel as typed effects on one channel to one effects thread, which writes
+  them in order, so a slow state root never delays a takeover's
+  acknowledgement, any input step, or capture. When the run ends, a flush on
+  that channel writes every effect already decided before the terminal record;
+  the thread then stops, and anything sent later is dropped, so nothing
+  reaches the session paths after the run releases its lock
+- `push` connects to the attach socket in push mode (`Mode::Push`), claims control
   as an agent (refused if anyone holds it, so concurrent pushes never
   interleave), streams frames written one at a time, and ends with
   `MSG_INPUT_DONE {written | revoked | closed, accepted, received}`; the CLI
-  exits non-zero with the byte counts unless every byte was written. A push
+  exits non-zero with the byte counts unless every byte was written. Both ends
+  handle frames as the typed `attach_proto::Frame`: an outcome is `written`
+  only with every received byte accepted, never reports more accepted than
+  received, and one that breaks either rule, or has an unknown status, is a
+  decode error at the boundary. A push
   whose every frame was written is `written` even if a takeover lands before
   its end marker is served, and the CLI also succeeds when all of stdin was
   sent and accepted but a takeover cut the connection before the end marker
@@ -93,17 +100,19 @@ Current PTY rules:
   `<session>/recording/<run_id>/` (`0700` directories, `0600` segments): capture
   offers every output chunk, and the input writer applies each resize while
   holding the recorder's sequencer, so output that follows a new size is always
-  recorded after it. A size with a zero dimension is ignored. Sequencing never
+  recorded after it. A resize frame with a zero dimension does not parse and
+  is ignored. Sequencing never
   waits for storage; one recorder thread appends, rotates at 64 MiB, publishes
   segments atomically, and syncs at most a second apart and on close. Input is
   not recorded
 - recording stops explicitly at the last completed append when the run reaches
   1 GiB, storage fails, 16 MiB of output waits for storage, or storage is still
   stalled at close; an append completing after the stop is cut back off. The
-  stop is reported off the capture and storage paths as `recording.stopped` and
-  in `meta.json` (`pty.recording.state: Stopped`, with the last recorded
-  sequence), the run ends with a warning, and the child and viewers keep
-  running
+  recorder only queues the stop on the run's effects channel, at the moment it
+  stops, so it is written off the capture and storage paths as
+  `recording.stopped` and in `meta.json` (`pty.recording.state: Stopped`, with
+  the last recorded sequence) before the run's terminal record, never after it.
+  The run ends with a warning, and the child and viewers keep running
 
 PTY-specific I/O shape:
 

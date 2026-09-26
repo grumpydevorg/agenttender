@@ -114,6 +114,7 @@ fn claim_on_unowned_advances_epoch_and_binds_holder() {
     assert_eq!(handle.run_id(), run);
     assert_eq!(handle.epoch(), epoch(1));
     assert_eq!(handle.holder(), H1);
+    assert_eq!(handle.kind(), ControllerKind::Agent);
     assert_eq!(
         arbiter.state(),
         ControllerState::Owned {
@@ -151,6 +152,7 @@ fn takeover_of_owned_pty_advances_epoch_and_retires_previous_holder() {
 
     assert_eq!(takeover.handle.epoch(), epoch(2));
     assert_eq!(takeover.handle.holder(), H2);
+    assert_eq!(takeover.handle.kind(), ControllerKind::Human);
     assert_eq!(takeover.retired, Some((H1, ControllerKind::Agent)));
     assert_eq!(
         arbiter.state(),
@@ -313,7 +315,7 @@ fn empty_input_request_is_rejected() {
     let mut arbiter = InputArbiter::new(RunId::new());
     let handle = arbiter.claim(H1, ControllerKind::Agent).unwrap();
     assert_eq!(
-        PendingInput::new(RequestId::new(1), handle, Vec::new()),
+        PendingInput::new(RequestId::new(1), &handle, Vec::new()),
         Err(InputError::Empty)
     );
 }
@@ -322,7 +324,7 @@ fn empty_input_request_is_rejected() {
 fn fully_written_request_is_accepted_with_exact_byte_count() {
     let mut arbiter = InputArbiter::new(RunId::new());
     let handle = arbiter.claim(H1, ControllerKind::Agent).unwrap();
-    let mut pending = PendingInput::new(RequestId::new(7), handle, b"hello".to_vec()).unwrap();
+    let mut pending = PendingInput::new(RequestId::new(7), &handle, b"hello".to_vec()).unwrap();
     let mut sink = ScriptedSink::with([Attempt::Accept(2), Attempt::WouldBlock]);
 
     let outcome = run_until_done(&mut arbiter, &mut pending, &mut sink);
@@ -345,7 +347,7 @@ fn fully_written_request_is_accepted_with_exact_byte_count() {
 fn would_block_and_interrupted_leave_the_request_pending_without_progress() {
     let mut arbiter = InputArbiter::new(RunId::new());
     let handle = arbiter.claim(H1, ControllerKind::Agent).unwrap();
-    let mut pending = PendingInput::new(RequestId::new(1), handle, b"abc".to_vec()).unwrap();
+    let mut pending = PendingInput::new(RequestId::new(1), &handle, b"abc".to_vec()).unwrap();
     let mut sink = ScriptedSink::with([Attempt::WouldBlock, Attempt::Interrupted]);
 
     assert_eq!(
@@ -364,7 +366,7 @@ fn would_block_and_interrupted_leave_the_request_pending_without_progress() {
 fn takeover_between_chunks_revokes_the_remainder_and_reports_partial_count() {
     let mut arbiter = InputArbiter::new(RunId::new());
     let agent = arbiter.claim(H1, ControllerKind::Agent).unwrap();
-    let mut pending = PendingInput::new(RequestId::new(9), agent, b"abcdef".to_vec()).unwrap();
+    let mut pending = PendingInput::new(RequestId::new(9), &agent, b"abcdef".to_vec()).unwrap();
     let mut sink = ScriptedSink::with([Attempt::Accept(2)]);
 
     assert_eq!(
@@ -393,7 +395,7 @@ fn takeover_between_chunks_revokes_the_remainder_and_reports_partial_count() {
 fn queued_request_of_superseded_controller_writes_nothing() {
     let mut arbiter = InputArbiter::new(RunId::new());
     let agent = arbiter.claim(H1, ControllerKind::Agent).unwrap();
-    let mut queued = PendingInput::new(RequestId::new(3), agent, b"rm -rf".to_vec()).unwrap();
+    let mut queued = PendingInput::new(RequestId::new(3), &agent, b"rm -rf".to_vec()).unwrap();
     arbiter.takeover(H2).unwrap();
     let mut sink = ScriptedSink::default();
 
@@ -417,7 +419,7 @@ fn queued_request_of_superseded_controller_writes_nothing() {
 fn deadline_expiry_reports_bytes_written_so_far() {
     let mut arbiter = InputArbiter::new(RunId::new());
     let handle = arbiter.claim(H1, ControllerKind::Agent).unwrap();
-    let mut pending = PendingInput::new(RequestId::new(4), handle, b"abcd".to_vec()).unwrap();
+    let mut pending = PendingInput::new(RequestId::new(4), &handle, b"abcd".to_vec()).unwrap();
     let mut sink = ScriptedSink::with([Attempt::Accept(1), Attempt::WouldBlock]);
     arbiter.write_step(&mut pending, &mut sink);
     arbiter.write_step(&mut pending, &mut sink);
@@ -446,7 +448,7 @@ fn deadline_expiry_reports_bytes_written_so_far() {
 fn expire_after_completion_keeps_the_accepted_outcome() {
     let mut arbiter = InputArbiter::new(RunId::new());
     let handle = arbiter.claim(H1, ControllerKind::Agent).unwrap();
-    let mut pending = PendingInput::new(RequestId::new(5), handle, b"ok".to_vec()).unwrap();
+    let mut pending = PendingInput::new(RequestId::new(5), &handle, b"ok".to_vec()).unwrap();
     let mut sink = ScriptedSink::default();
     let accepted = run_until_done(&mut arbiter, &mut pending, &mut sink);
 
@@ -457,7 +459,7 @@ fn expire_after_completion_keeps_the_accepted_outcome() {
 fn zero_byte_write_means_closed() {
     let mut arbiter = InputArbiter::new(RunId::new());
     let handle = arbiter.claim(H1, ControllerKind::Agent).unwrap();
-    let mut pending = PendingInput::new(RequestId::new(6), handle, b"xy".to_vec()).unwrap();
+    let mut pending = PendingInput::new(RequestId::new(6), &handle, b"xy".to_vec()).unwrap();
     let mut sink = ScriptedSink::with([Attempt::Accept(1), Attempt::Zero]);
 
     let outcome = run_until_done(&mut arbiter, &mut pending, &mut sink);
@@ -478,7 +480,7 @@ fn zero_byte_write_means_closed() {
 fn sink_reporting_more_bytes_than_offered_fails_closed_without_panicking() {
     let mut arbiter = InputArbiter::new(RunId::new());
     let handle = arbiter.claim(H1, ControllerKind::Agent).unwrap();
-    let mut pending = PendingInput::new(RequestId::new(10), handle, b"abcd".to_vec()).unwrap();
+    let mut pending = PendingInput::new(RequestId::new(10), &handle, b"abcd".to_vec()).unwrap();
     let mut sink = ScriptedSink::with([Attempt::Accept(1), Attempt::OverReport(5)]);
 
     let outcome = run_until_done(&mut arbiter, &mut pending, &mut sink);
@@ -504,7 +506,7 @@ fn sink_reporting_more_bytes_than_offered_fails_closed_without_panicking() {
 fn terminal_sink_error_is_reported_with_its_kind() {
     let mut arbiter = InputArbiter::new(RunId::new());
     let handle = arbiter.claim(H1, ControllerKind::Agent).unwrap();
-    let mut pending = PendingInput::new(RequestId::new(8), handle, b"xy".to_vec()).unwrap();
+    let mut pending = PendingInput::new(RequestId::new(8), &handle, b"xy".to_vec()).unwrap();
     let mut sink = ScriptedSink::with([Attempt::Fail(io::ErrorKind::BrokenPipe)]);
 
     let outcome = run_until_done(&mut arbiter, &mut pending, &mut sink);
@@ -595,9 +597,9 @@ proptest! {
                 }
                 Op::Release(i) => {
                     if handles.is_empty() { continue; }
-                    let handle = handles[i % handles.len()];
-                    let current = arbiter.authorize(&handle).is_ok();
-                    let result = arbiter.release(&handle);
+                    let handle = &handles[i % handles.len()];
+                    let current = arbiter.authorize(handle).is_ok();
+                    let result = arbiter.release(handle);
                     prop_assert_eq!(result.is_ok(), current);
                     if current {
                         prop_assert_eq!(arbiter.state(), ControllerState::Unowned { epoch: before.epoch() });
@@ -607,7 +609,7 @@ proptest! {
                 }
                 Op::Submit(i, len) => {
                     if handles.is_empty() { continue; }
-                    let handle = handles[i % handles.len()];
+                    let handle = &handles[i % handles.len()];
                     let id = RequestId::new(pendings.len() as u64);
                     pendings.push((PendingInput::new(id, handle, vec![b'x'; len]).unwrap(), 0));
                 }
@@ -616,7 +618,7 @@ proptest! {
                     let n = pendings.len();
                     let (pending, written) = &mut pendings[i % n];
                     let mut sink = ScriptedSink::with([attempt]);
-                    let authorized_before = arbiter.authorize(&pending.handle()).is_ok();
+                    let authorized_before = arbiter.authorize(pending.key()).is_ok();
                     let finished_before = pending.outcome().is_some();
                     let step = arbiter.write_step(pending, &mut sink);
                     prop_assert_eq!(arbiter.state(), before, "a write step never changes ownership");
@@ -631,13 +633,13 @@ proptest! {
                             InputOutcome::Accepted { bytes, epoch, .. } => {
                                 prop_assert_eq!(bytes, pending.total());
                                 prop_assert_eq!(bytes, *written);
-                                prop_assert_eq!(epoch, pending.handle().epoch());
+                                prop_assert_eq!(epoch, pending.key().epoch());
                             }
                             InputOutcome::Incomplete { accepted, total, epoch, .. } => {
                                 prop_assert!(accepted < total);
                                 prop_assert_eq!(accepted, *written);
                                 prop_assert_eq!(total, pending.total());
-                                prop_assert_eq!(epoch, pending.handle().epoch());
+                                prop_assert_eq!(epoch, pending.key().epoch());
                             }
                         }
                     }

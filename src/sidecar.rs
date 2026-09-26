@@ -32,7 +32,7 @@ use crate::model::pty::{PtyRecording, RecordingState, RecordingStopReason};
 use crate::model::spec::{DependencyBinding, IoMode, LaunchSpec};
 use crate::model::state::{ExitReason, RunStatus, SidecarStep};
 use crate::platform::{Current, Platform};
-use crate::recorder::{Recorder, RecorderLimits, RecorderSummary, RecorderThread, StopReason};
+use crate::recorder::{Recorder, RecorderSummary, RecorderThread, StopReason};
 use crate::session::{self, LockGuard, SessionDir, SessionRoot};
 
 /// Type alias for the platform's ReadyWriter to avoid verbose turbofish.
@@ -119,9 +119,9 @@ impl ViewerQueue {
 /// Drain a viewer's queue into its connection until either closes.
 #[cfg(unix)]
 fn run_viewer_sender(queue: &ViewerQueue, conn: &Mutex<Box<dyn Write + Send>>) {
-    use crate::attach_proto;
+    use crate::attach_proto::{Frame, write_frame};
     while let Some(chunk) = queue.next() {
-        if attach_proto::write_msg(&mut *lock(conn), attach_proto::MSG_DATA, &chunk).is_err() {
+        if write_frame(&mut *lock(conn), &Frame::Data(chunk)).is_err() {
             queue.close();
             return;
         }
@@ -136,12 +136,11 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The sidecar's PTY input authority and live attach connections (Unix only;
-/// PTY sessions are unsupported elsewhere, so the type is uninhabited there).
+/// The sidecar's PTY input authority (Unix only; PTY sessions are unsupported
+/// elsewhere, so the type is uninhabited there).
 #[cfg(unix)]
 struct PtyInput {
     writer: crate::pty_input::InputWriter,
-    registry: ConnectionRegistry,
 }
 #[cfg(not(unix))]
 type PtyInput = std::convert::Infallible;
@@ -155,6 +154,8 @@ struct AttachSocketCleanup {
     socket: PathBuf,
     session_dir: PathBuf,
 }
+#[cfg(not(unix))]
+type AttachSocketCleanup = std::convert::Infallible;
 
 #[cfg(unix)]
 impl Drop for AttachSocketCleanup {
@@ -168,14 +169,13 @@ impl Drop for AttachSocketCleanup {
 
 /// A PTY run's private attach socket, bound and published before the child is
 /// spawned (Unix only; the type is uninhabited elsewhere). The lifecycle guard
-/// owns it after spawn and drops it, removing the socket, before it releases
-/// the session lock.
+/// owns it after spawn: starting the attach side moves the socket to the
+/// listener thread and keeps the cleanup, which removes the socket before the
+/// guard releases the session lock.
 #[cfg(unix)]
 struct AttachEndpoint {
-    /// Moved to the listener thread when it starts.
-    socket: Option<crate::attach_socket::BoundSocket>,
-    /// Held for its `Drop`.
-    _cleanup: AttachSocketCleanup,
+    socket: crate::attach_socket::BoundSocket,
+    cleanup: AttachSocketCleanup,
 }
 #[cfg(not(unix))]
 type AttachEndpoint = std::convert::Infallible;
@@ -689,11 +689,11 @@ impl LifecycleEvents {
         }
     }
 
-    /// Same session and run, freshly minted writer identity — for sidecar
-    /// threads that append concurrently with the lifecycle writer (the
-    /// attach listener, the control effects thread, the recorder's stop report).
+    /// Same session and run, freshly minted writer identity — for a PTY run's
+    /// effects thread, which appends concurrently with the lifecycle writer.
     /// The protocol is multi-writer by design: each writer keeps its own
     /// contiguous `seq` chain (spec §1).
+    #[cfg(unix)]
     fn with_fresh_writer(&self) -> Self {
         Self {
             session_dir: self.session_dir.clone(),
@@ -753,9 +753,9 @@ impl LifecycleEvents {
     /// through the same writer, so `seq` stays contiguous after the
     /// terminal transition. Best-effort by design (plan slice 3): no
     /// salvage, no meta warning — these are not terminal transitions.
-    fn append_fact(&mut self, kind: &str, data: serde_json::Value) {
-        let Ok(kind) = Kind::new(kind) else {
-            return;
+    fn append_fact(&mut self, fact: Fact, data: &impl serde::Serialize) {
+        let (Ok(kind), Ok(data)) = (Kind::new(fact.kind()), serde_json::to_value(data)) else {
+            return; // unreachable: every Fact kind is grammatical (tested)
         };
         let draft = EventDraft {
             id: None,
@@ -787,6 +787,29 @@ impl LifecycleEvents {
         };
         let event = events::stamp_orphan_event(draft);
         let _ = events::append_lost_found(tendr_root, &event);
+    }
+}
+
+/// The non-lifecycle facts the sidecar appends. Only PTY runs (Unix) record
+/// the last three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(unix), allow(dead_code))]
+enum Fact {
+    CallbackFinished,
+    RecordingStopped,
+    ControlChanged,
+    InputRevoked,
+}
+
+impl Fact {
+    /// The event kind.
+    fn kind(self) -> &'static str {
+        match self {
+            Self::CallbackFinished => "callback.finished",
+            Self::RecordingStopped => "recording.stopped",
+            Self::ControlChanged => "pty.control_changed",
+            Self::InputRevoked => "pty.input_revoked",
+        }
     }
 }
 
@@ -921,7 +944,8 @@ fn forward_pty_stdin(
             return;
         };
         let handle = claim_for_fifo(writer, errors);
-        let mut authorized = handle;
+        // Cleared once a takeover revokes the claim.
+        let mut authorized = handle.is_some();
         loop {
             let n = match reader.read(&mut buf) {
                 Ok(0) => break,
@@ -929,10 +953,15 @@ fn forward_pty_stdin(
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
                     lock(errors).push(format!("stdin read failed: {e}"));
+                    // Give the claim up with the frame: nothing more of it
+                    // can arrive, and a held claim would refuse every agent.
+                    if let Some(handle) = handle {
+                        writer.disconnect(handle);
+                    }
                     return;
                 }
             };
-            let Some(current) = authorized else {
+            let Some(current) = handle.as_ref().filter(|_| authorized) else {
                 continue; // rejected or revoked: drain and discard
             };
             match writer.write(current, buf[..n].to_vec()) {
@@ -940,9 +969,12 @@ fn forward_pty_stdin(
                 Some(InputOutcome::Incomplete {
                     reason: IncompleteReason::NotAuthorized(_),
                     ..
-                }) => authorized = None,
+                }) => authorized = false,
                 Some(InputOutcome::Incomplete { .. }) | None => {
                     lock(errors).push("stdin forwarding: child stdin closed".to_owned());
+                    if let Some(handle) = handle {
+                        writer.disconnect(handle);
+                    }
                     return;
                 }
             }
@@ -950,7 +982,7 @@ fn forward_pty_stdin(
         if let Some(handle) = handle {
             // Release only after this push's input is done, so the next push can
             // claim; a revoked handle releases nothing.
-            let _ = writer.end_of_input_and_wait(handle);
+            writer.end_of_input_and_wait(handle);
         }
     }
 }
@@ -1172,11 +1204,11 @@ fn run_inner(session_dir: &Path, ready: &mut Option<ReadyWriter>) -> anyhow::Res
     let attach = if meta.launch_spec().io_mode == IoMode::Pty {
         match crate::attach_socket::bind_for_session(session_dir, run_id) {
             Ok(bound) => Some(AttachEndpoint {
-                _cleanup: AttachSocketCleanup {
+                cleanup: AttachSocketCleanup {
                     socket: bound.path.clone(),
                     session_dir: session_dir.to_path_buf(),
                 },
-                socket: Some(bound),
+                socket: bound,
             }),
             Err(e) => {
                 meta.add_warning(format!("attach socket unavailable: {e}"));
@@ -1295,7 +1327,7 @@ fn run_on_exit_hooks(meta: &Meta, session_dir: &Path, lifecycle: &mut LifecycleE
         };
         // The durable per-callback fact (plan scope 5): emitted as each
         // callback finishes, same record shape as the batch file.
-        lifecycle.append_fact("callback.finished", record.clone());
+        lifecycle.append_fact(Fact::CallbackFinished, &record);
         callback_results.push(record);
     }
 
@@ -1528,18 +1560,14 @@ impl crate::pty_input::WritablePty for UnixPtyInput {
         self.writer.wait_writable(timeout)
     }
 
-    /// A size with a zero dimension is ignored: it cannot be recorded, and no
-    /// terminal program can draw into it.
-    fn resize(&self, rows: u16, cols: u16) {
-        let (Some(fd), Some(geometry)) =
-            (&self.resize, crate::recording::Geometry::new(rows, cols))
-        else {
+    fn resize(&self, size: crate::recording::Geometry) {
+        let Some(fd) = &self.resize else {
             return;
         };
-        let apply = || apply_pty_resize(fd, rows, cols);
+        let apply = || apply_pty_resize(fd, size);
         let _ = match &self.recorder {
             Some(recorder) => {
-                recorder.resize_applied(geometry, crate::recording::ResizeCause::User, apply)
+                recorder.resize_applied(size, crate::recording::ResizeCause::User, apply)
             }
             None => apply(),
         };
@@ -1622,51 +1650,120 @@ impl ConnectionRegistry {
 }
 
 /// Ends a PTY session's attach side when its run ends, before the terminal
-/// record is written: the control hooks stop recording (after `start --replace`
-/// the session paths belong to the next run), every connection is shut down
-/// (PR #68 review, finding 1), and the control effects already decided are
-/// recorded, so they precede the terminal event and meta write and nothing
-/// reaches the session paths after it (finding 3).
+/// record is written: every connection is shut down (PR #68 review, finding 1),
+/// and the run's side effects already decided are recorded, so they precede the
+/// terminal event and meta write. The effects thread then stops, so nothing
+/// reaches the session paths after the terminal record, when they may belong
+/// to a replacement run (finding 3; invalid-states review, findings 1 and 5).
 #[cfg(unix)]
 struct PtyTeardown {
-    ended: Arc<AtomicBool>,
     registry: ConnectionRegistry,
-    effects: ControlEffects,
+    effects: RunEffects,
 }
 
 #[cfg(unix)]
 impl PtyTeardown {
     fn run(&self) {
-        self.ended.store(true, Ordering::SeqCst);
         self.registry.close();
         self.effects.flush_and_stop();
     }
 }
+#[cfg(not(unix))]
+type PtyTeardown = std::convert::Infallible;
 
-/// A control side effect for the session's event log and `meta.json`.
+/// A change of who owns the PTY's input.
 #[cfg(unix)]
-enum ControlEffect {
-    /// Append the `kind` event with `data`; then, for an ownership change,
-    /// publish the new owner to the guard and patch it into `meta.json`.
-    Fact {
-        kind: &'static str,
-        data: serde_json::Value,
-        owner: Option<PtyControl>,
+#[derive(Debug, Clone, Copy)]
+enum ControlChange {
+    /// A human took control.
+    Human(crate::pty_input::Trigger),
+    /// The human released it; it falls back to the agent.
+    Released,
+}
+
+/// The `pty.control_changed` event's `trigger`.
+#[cfg(unix)]
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ChangeTrigger {
+    Attach,
+    Takeover,
+    Detach,
+}
+
+#[cfg(unix)]
+impl ControlChange {
+    fn owner(self) -> PtyControl {
+        match self {
+            Self::Human(_) => PtyControl::HumanControl,
+            Self::Released => PtyControl::AgentControl,
+        }
+    }
+
+    fn trigger(self) -> ChangeTrigger {
+        use crate::pty_input::Trigger;
+        match self {
+            Self::Human(Trigger::Attach) => ChangeTrigger::Attach,
+            Self::Human(Trigger::Takeover) => ChangeTrigger::Takeover,
+            Self::Released => ChangeTrigger::Detach,
+        }
+    }
+}
+
+/// A side effect of a PTY run, for the session's event log and `meta.json`.
+/// The run's effects thread ([`RunEffects`]) is the only thread that writes
+/// them, so the teardown's flush orders every one before the terminal record.
+#[cfg(unix)]
+enum RunEffect {
+    /// `pty.control_changed`, then the new owner published to the guard and
+    /// patched into `meta.json`.
+    ControlChanged(ControlChange),
+    /// `pty.input_revoked`: `accepted` of `total` bytes a superseded or
+    /// disconnected controller queued were written.
+    InputRevoked {
+        kind: crate::model::pty_control::ControllerKind,
+        accepted: usize,
+        total: usize,
     },
+    /// `recording.stopped`, then the stop patched into `meta.json`.
+    RecordingStopped(crate::recorder::Stopped),
     /// Everything sent earlier is recorded: acknowledge and stop.
     Flush(std::sync::mpsc::SyncSender<()>),
 }
 
-/// Records control side effects on their own thread, in the order the input
-/// writer decided them, so a slow or stalled state root never delays a
-/// takeover's acknowledgement or any PTY input step (PR #68 review, finding 3).
 #[cfg(unix)]
-struct ControlEffects {
-    tx: std::sync::mpsc::Sender<ControlEffect>,
+#[derive(serde::Serialize)]
+struct ControlChangedData {
+    control: PtyControl,
+    trigger: ChangeTrigger,
 }
 
 #[cfg(unix)]
-impl ControlEffects {
+#[derive(serde::Serialize)]
+struct InputRevokedData {
+    kind: crate::model::pty_control::ControllerKind,
+    accepted: usize,
+    total: usize,
+}
+
+#[cfg(unix)]
+#[derive(serde::Serialize)]
+struct RecordingStoppedData {
+    last_recorded_sequence: Option<u64>,
+    #[serde(flatten)]
+    reason: RecordingStopReason,
+}
+
+/// Records a PTY run's side effects on their own thread, in the order they
+/// were decided, so a slow or stalled state root never delays a takeover's
+/// acknowledgement, any PTY input step, or capture (PR #68 review, finding 3).
+#[cfg(unix)]
+struct RunEffects {
+    tx: std::sync::mpsc::Sender<RunEffect>,
+}
+
+#[cfg(unix)]
+impl RunEffects {
     /// Start the thread. `control` is the live owner the guard folds into its
     /// whole-meta writes; this thread updates it.
     fn spawn(
@@ -1676,23 +1773,58 @@ impl ControlEffects {
     ) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
+            // WAL order (spec §3.6): each fact is appended before any meta
+            // write can carry what it reports. The append itself is
+            // best-effort, not fsynced. Meta patches are under META_WRITE, so
+            // a guard write either precedes the patch or folds its state in.
             for effect in rx {
                 match effect {
-                    ControlEffect::Fact { kind, data, owner } => {
-                        // WAL order (spec §3.6): the fact is appended before any
-                        // meta write can carry the new owner. The append itself
-                        // is best-effort, not fsynced.
-                        facts.append_fact(kind, data);
-                        if let Some(owner) = owner {
-                            // Under META_WRITE, so a guard write either precedes
-                            // this (and the patch lands the new owner) or folds
-                            // the new owner in itself.
-                            let _serialized = lock(&META_WRITE);
-                            *lock(&control) = owner.clone();
-                            patch_meta_file(&session_dir, |meta| meta.set_pty_control(owner));
-                        }
+                    RunEffect::ControlChanged(change) => {
+                        let owner = change.owner();
+                        facts.append_fact(
+                            Fact::ControlChanged,
+                            &ControlChangedData {
+                                control: owner.clone(),
+                                trigger: change.trigger(),
+                            },
+                        );
+                        let _serialized = lock(&META_WRITE);
+                        *lock(&control) = owner.clone();
+                        patch_meta_file(&session_dir, |meta| meta.set_pty_control(owner));
                     }
-                    ControlEffect::Flush(done) => {
+                    RunEffect::InputRevoked {
+                        kind,
+                        accepted,
+                        total,
+                    } => facts.append_fact(
+                        Fact::InputRevoked,
+                        &InputRevokedData {
+                            kind,
+                            accepted,
+                            total,
+                        },
+                    ),
+                    RunEffect::RecordingStopped(stopped) => {
+                        facts.append_fact(
+                            Fact::RecordingStopped,
+                            &RecordingStoppedData {
+                                last_recorded_sequence: stopped
+                                    .last_recorded
+                                    .map(crate::recording::Sequence::get),
+                                reason: stop_reason(stopped.reason),
+                            },
+                        );
+                        let _serialized = lock(&META_WRITE);
+                        patch_meta_file(&session_dir, |meta| {
+                            if let Some(mut recording) =
+                                meta.pty().and_then(|p| p.recording.clone())
+                            {
+                                recording.state = stopped_state(stopped, None);
+                                meta.set_pty_recording(recording);
+                            }
+                        });
+                    }
+                    RunEffect::Flush(done) => {
                         let _ = done.send(());
                         return;
                     }
@@ -1702,21 +1834,20 @@ impl ControlEffects {
         Self { tx }
     }
 
-    fn sender(&self) -> std::sync::mpsc::Sender<ControlEffect> {
+    fn sender(&self) -> std::sync::mpsc::Sender<RunEffect> {
         self.tx.clone()
     }
 
     /// Wait until every effect sent so far is recorded, then stop: an effect
-    /// sent later queues behind the flush and is never recorded.
+    /// sent later queues behind the flush and is dropped with the channel,
+    /// never recorded.
     fn flush_and_stop(&self) {
         let (done, flushed) = std::sync::mpsc::sync_channel(1);
-        if self.tx.send(ControlEffect::Flush(done)).is_ok() {
+        if self.tx.send(RunEffect::Flush(done)).is_ok() {
             let _ = flushed.recv();
         }
     }
 }
-#[cfg(not(unix))]
-type PtyTeardown = std::convert::Infallible;
 
 /// Maximum simultaneous attach connections, including ones awaiting a hello.
 #[cfg(unix)]
@@ -1724,45 +1855,33 @@ const MAX_ATTACH_CONNECTIONS: usize = 8;
 
 /// Ownership side effects, decided on the input writer thread. Only the
 /// connection registry is touched there; the event log and `meta.json` are
-/// written by [`ControlEffects`].
+/// written by [`RunEffects`]. Nothing here checks whether the run has ended:
+/// an effect sent after the teardown's flush is never recorded.
 #[cfg(unix)]
 struct SidecarControlHooks {
-    effects: std::sync::mpsc::Sender<ControlEffect>,
+    effects: std::sync::mpsc::Sender<RunEffect>,
     registry: ConnectionRegistry,
     attach_sink: AttachSink,
-    /// Set when the run ends: from then on the hooks record nothing.
-    ended: Arc<AtomicBool>,
 }
 
 #[cfg(unix)]
 impl SidecarControlHooks {
-    /// Queue a fact for the effects thread unless the run has ended. Never
-    /// blocks: the queue is unbounded, and a stopped thread drops it.
-    fn record(&self, kind: &'static str, data: serde_json::Value, owner: Option<PtyControl>) {
-        if self.ended.load(Ordering::SeqCst) {
-            return;
-        }
-        let _ = self.effects.send(ControlEffect::Fact { kind, data, owner });
+    /// Queue an effect. Never blocks: the queue is unbounded, and once the
+    /// effects thread has stopped the send fails and the effect is dropped.
+    fn record(&self, effect: RunEffect) {
+        let _ = self.effects.send(effect);
     }
 }
 
 #[cfg(unix)]
 impl crate::pty_input::ControlHooks for SidecarControlHooks {
-    fn human_control(&mut self, trigger: &'static str) {
+    fn human_control(&mut self, trigger: crate::pty_input::Trigger) {
         // Minimal by design: who owns the PTY's input, nothing else.
-        self.record(
-            "pty.control_changed",
-            serde_json::json!({"control": "HumanControl", "trigger": trigger}),
-            Some(PtyControl::HumanControl),
-        );
+        self.record(RunEffect::ControlChanged(ControlChange::Human(trigger)));
     }
 
     fn human_released(&mut self) {
-        self.record(
-            "pty.control_changed",
-            serde_json::json!({"control": "AgentControl", "trigger": "detach"}),
-            Some(PtyControl::AgentControl),
-        );
+        self.record(RunEffect::ControlChanged(ControlChange::Released));
     }
 
     fn retire(
@@ -1804,11 +1923,11 @@ impl crate::pty_input::ControlHooks for SidecarControlHooks {
         accepted: usize,
         total: usize,
     ) {
-        self.record(
-            "pty.input_revoked",
-            serde_json::json!({"kind": format!("{kind:?}"), "accepted": accepted, "total": total}),
-            None,
-        );
+        self.record(RunEffect::InputRevoked {
+            kind,
+            accepted,
+            total,
+        });
     }
 }
 
@@ -1832,16 +1951,12 @@ fn retire_connection(
     control: &std::os::unix::net::UnixStream,
     sink: &AttachSink,
 ) {
-    use crate::attach_proto;
+    use crate::attach_proto::{Frame, write_frame};
 
     let _ = control.set_write_timeout(Some(std::time::Duration::from_millis(200)));
     for _ in 0..20 {
         if let Ok(mut conn) = conn.try_lock() {
-            let _ = attach_proto::write_msg(
-                &mut *conn,
-                attach_proto::MSG_RETIRED,
-                &epoch.get().to_be_bytes(),
-            );
+            let _ = write_frame(&mut *conn, &Frame::Retired(epoch));
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -1877,7 +1992,7 @@ fn handle_push_connection(
     writer: &crate::pty_input::InputWriter,
     registry: &ConnectionRegistry,
 ) {
-    use crate::attach_proto::{self, INPUT_CLOSED, INPUT_REVOKED, INPUT_WRITTEN};
+    use crate::attach_proto::{Frame, FrameError, Progress, PushOutcome, read_frame, write_frame};
     use crate::model::pty_control::{ControllerKind, IncompleteReason, InputOutcome};
 
     let holder = writer.next_holder();
@@ -1905,74 +2020,75 @@ fn handle_push_connection(
             return reject_connection(&mut stream, &e.to_string());
         }
     };
-    let gone = |stream: &std::os::unix::net::UnixStream| {
+    // The client vanished or broke the protocol: cancel its input.
+    let gone = |stream: &std::os::unix::net::UnixStream, handle| {
         registry.remove(holder);
         let _ = stream.shutdown(std::net::Shutdown::Both);
         writer.disconnect(handle);
     };
-    if attach_proto::write_msg(
-        &mut stream,
-        attach_proto::MSG_ACCEPTED,
-        &handle.epoch().get().to_be_bytes(),
-    )
-    .is_err()
-    {
-        return gone(&stream);
+    if write_frame(&mut stream, &Frame::Accepted(handle.epoch())).is_err() {
+        return gone(&stream, handle);
     }
 
-    let (mut accepted, mut received) = (0u64, 0u64);
-    let status = loop {
-        match attach_proto::read_msg(&mut stream) {
-            Ok((attach_proto::MSG_DATA, payload)) => {
-                received += payload.len() as u64;
-                let Some(outcome) = writer.submit(handle, payload) else {
+    // Bytes of the frames written so far: every byte of each, since a frame
+    // not written in full ends the push. The outcome is built from this and
+    // the frame that stopped it, so it can only report what happened.
+    let mut written = 0u64;
+    let outcome = loop {
+        match read_frame(&mut stream) {
+            Ok(Frame::Data(payload)) => {
+                let len = payload.len() as u64;
+                let Some(outcome) = writer.submit(&handle, payload) else {
                     continue; // an empty frame writes nothing
                 };
-                match await_push_write(&outcome, &stream, &revoked, writer, handle) {
-                    PushWrite::Done(InputOutcome::Accepted { bytes, .. }) => {
-                        accepted += bytes as u64;
-                    }
+                // The bytes of this frame that were not written.
+                let stopped = |accepted: u64| Progress {
+                    accepted: written + accepted,
+                    unwritten: len - accepted,
+                };
+                match await_push_write(&outcome, &stream, &revoked) {
+                    PushWrite::Done(InputOutcome::Accepted { .. }) => written += len,
                     PushWrite::Done(InputOutcome::Incomplete {
-                        accepted: partial,
-                        reason,
-                        ..
+                        accepted, reason, ..
                     }) => {
-                        accepted += partial as u64;
+                        let progress = stopped(accepted as u64);
                         break if matches!(reason, IncompleteReason::NotAuthorized(_)) {
-                            INPUT_REVOKED
+                            PushOutcome::Revoked(progress)
                         } else {
-                            INPUT_CLOSED
+                            PushOutcome::Closed(progress)
                         };
                     }
-                    PushWrite::WriterGone => break INPUT_CLOSED,
-                    PushWrite::ClientGone => return gone(&stream),
+                    PushWrite::WriterGone => break PushOutcome::Closed(stopped(0)),
+                    PushWrite::ClientGone => return gone(&stream, handle),
                 }
             }
-            Ok((attach_proto::MSG_DETACH, _)) => {
+            Ok(Frame::Detach) => {
                 // Every frame was written before the next was read, and any
                 // frame that was not stopped the loop: all of this push is
                 // written. A takeover that lands before the end marker is
                 // served supersedes nothing still to write, so the push is
-                // `written` either way; the end marker releases control if
-                // it is still held (PR #68 review, finding 4).
-                let _ = writer.end_of_input_and_wait(handle);
-                break INPUT_WRITTEN;
+                // `written` either way (PR #68 review, finding 4).
+                break PushOutcome::Written { bytes: written };
             }
-            Ok(_) => {}
-            Err(_) if revoked.load(Ordering::SeqCst) => break INPUT_REVOKED,
-            // The client vanished or broke the protocol: cancel its input.
-            Err(_) => return gone(&stream),
+            // Other frames, and malformed ones, are ignored.
+            Ok(_) | Err(FrameError::Malformed(_)) => {}
+            Err(FrameError::Io(_)) if revoked.load(Ordering::SeqCst) => {
+                break PushOutcome::Revoked(Progress {
+                    accepted: written,
+                    unwritten: 0,
+                });
+            }
+            Err(FrameError::Io(_)) => return gone(&stream, handle),
         }
     };
-    registry.remove(holder);
-    if status != INPUT_WRITTEN {
+    if let PushOutcome::Written { .. } = outcome {
+        // The end marker releases control if it is still held.
+        writer.end_of_input_and_wait(handle);
+    } else {
         writer.disconnect(handle); // release if still held; nothing else is queued
     }
-    let _ = attach_proto::write_msg(
-        &mut stream,
-        attach_proto::MSG_INPUT_DONE,
-        &attach_proto::input_done_payload(status, accepted, received),
-    );
+    registry.remove(holder);
+    let _ = write_frame(&mut stream, &Frame::InputDone(outcome));
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
@@ -1984,16 +2100,14 @@ enum PushWrite {
     ClientGone,
 }
 
-/// Wait for a push write's outcome, watching for the client to vanish. A
-/// vanished client's input is cancelled before returning, so the wait cannot
-/// outlast the PTY accepting nothing.
+/// Wait for a push write's outcome, watching for the client to vanish. On
+/// [`PushWrite::ClientGone`] the caller disconnects the handle, which cancels
+/// the write, so the wait cannot outlast the PTY accepting nothing.
 #[cfg(unix)]
 fn await_push_write(
     outcome: &std::sync::mpsc::Receiver<crate::model::pty_control::InputOutcome>,
     stream: &std::os::unix::net::UnixStream,
     revoked: &AtomicBool,
-    writer: &crate::pty_input::InputWriter,
-    handle: crate::model::pty_control::ControllerHandle,
 ) -> PushWrite {
     use std::sync::mpsc::RecvTimeoutError;
 
@@ -2007,8 +2121,6 @@ fn await_push_write(
                 if !revoked.load(Ordering::SeqCst)
                     && crate::attach_socket::peer_hung_up(stream) =>
             {
-                writer.disconnect(handle); // cancels this write
-                let _ = outcome.recv();
                 return PushWrite::ClientGone;
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -2073,9 +2185,9 @@ fn run_attach_listener(
 
 #[cfg(unix)]
 fn reject_connection(stream: &mut std::os::unix::net::UnixStream, reason: &str) {
-    use crate::attach_proto;
+    use crate::attach_proto::{Frame, write_frame};
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(200)));
-    let _ = attach_proto::write_msg(stream, attach_proto::MSG_REJECTED, reason.as_bytes());
+    let _ = write_frame(stream, &Frame::Rejected(reason.to_owned()));
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
@@ -2089,31 +2201,25 @@ fn handle_attach_connection(
     attach_sink: &AttachSink,
 ) {
     use crate::attach_proto::{
-        self, MODE_ATTACH, MODE_PUSH, MODE_TAKEOVER, MSG_HELLO, PROTOCOL_VERSION,
+        self, Frame, FrameError, Mode, ProtocolError, read_frame, write_frame,
     };
     use crate::model::pty_control::ControllerKind;
 
     // One overall deadline for the whole hello: a client trickling bytes cannot
     // hold a connection slot open by keeping each individual read short.
-    let hello = attach_proto::read_msg(&mut crate::attach_socket::DeadlineReader {
+    let hello = read_frame(&mut crate::attach_socket::DeadlineReader {
         stream: &stream,
         deadline: std::time::Instant::now() + attach_proto::HELLO_TIMEOUT,
     });
     let mode = match hello {
-        Ok((MSG_HELLO, p))
-            if p.len() == 2
-                && p[0] == PROTOCOL_VERSION
-                && matches!(p[1], MODE_ATTACH | MODE_TAKEOVER | MODE_PUSH) =>
-        {
-            p[1]
-        }
-        Ok((MSG_HELLO, _)) => {
-            return reject_connection(&mut stream, "unsupported attach protocol version or mode");
+        Ok(Frame::Hello(mode)) => mode,
+        Err(FrameError::Malformed(e @ ProtocolError::UnsupportedHello)) => {
+            return reject_connection(&mut stream, &e.to_string());
         }
         _ => return reject_connection(&mut stream, "attach requires a protocol hello"),
     };
     let _ = stream.set_read_timeout(None);
-    if mode == MODE_PUSH {
+    if mode == Mode::Push {
         return handle_push_connection(stream, writer, registry);
     }
 
@@ -2136,7 +2242,7 @@ fn handle_attach_connection(
     if !registered {
         return reject_connection(&mut stream, "session ended");
     }
-    let granted = if mode == MODE_TAKEOVER {
+    let granted = if mode == Mode::Takeover {
         writer.takeover(holder).map(|t| t.handle)
     } else {
         writer.claim(holder, ControllerKind::Human)
@@ -2150,11 +2256,7 @@ fn handle_attach_connection(
     };
 
     // Reply before installing the viewer, so tee output never precedes it.
-    let accepted = attach_proto::write_msg(
-        &mut *lock(&conn),
-        attach_proto::MSG_ACCEPTED,
-        &handle.epoch().get().to_be_bytes(),
-    );
+    let accepted = write_frame(&mut *lock(&conn), &Frame::Accepted(handle.epoch()));
     let queue = Arc::new(ViewerQueue::default());
     if accepted.is_ok() {
         let sender = {
@@ -2178,23 +2280,21 @@ fn handle_attach_connection(
         drop(sender); // detached: exits when the queue or connection closes
 
         loop {
-            match attach_proto::read_msg(&mut stream) {
-                Ok((attach_proto::MSG_DATA, payload)) => {
+            match read_frame(&mut stream) {
+                Ok(Frame::Data(payload)) => {
                     // A full input queue must not hide a client that has left.
-                    let queued = writer.write_nowait_unless(handle, payload, || {
+                    let queued = writer.write_nowait_unless(&handle, payload, || {
                         crate::attach_socket::peer_hung_up(&stream)
                     });
                     if !queued {
                         break;
                     }
                 }
-                Ok((attach_proto::MSG_RESIZE, payload)) => {
-                    if let Some((rows, cols)) = attach_proto::parse_resize(&payload) {
-                        writer.resize(handle, rows, cols);
-                    }
-                }
-                Ok((attach_proto::MSG_DETACH, _)) | Err(_) => break,
-                Ok(_) => {}
+                Ok(Frame::Resize(size)) => writer.resize(&handle, size),
+                Ok(Frame::Detach) | Err(FrameError::Io(_)) => break,
+                // Other frames, and malformed ones such as a resize with a
+                // zero dimension, are ignored.
+                Ok(_) | Err(FrameError::Malformed(_)) => {}
             }
         }
     }
@@ -2214,11 +2314,11 @@ fn handle_attach_connection(
 }
 
 #[cfg(unix)]
-fn apply_pty_resize(fd: &std::fs::File, rows: u16, cols: u16) -> io::Result<()> {
+fn apply_pty_resize(fd: &std::fs::File, size: crate::recording::Geometry) -> io::Result<()> {
     use std::os::unix::io::AsRawFd;
     let ws = libc::winsize {
-        ws_row: rows,
-        ws_col: cols,
+        ws_row: size.rows(),
+        ws_col: size.cols(),
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
@@ -2230,25 +2330,19 @@ fn apply_pty_resize(fd: &std::fs::File, rows: u16, cols: u16) -> io::Result<()> 
     Ok(())
 }
 
-/// Serializes the sidecar's `meta.json` writes once helper threads can patch it:
-/// the patches below (recording stops, and control changes from
-/// [`ControlEffects`]), and the lifecycle guard's writes, which fold in the
-/// live owner and the recording state they read under this lock.
+/// Serializes the sidecar's `meta.json` writes: the patches the effects thread
+/// makes ([`RunEffects`]: control changes and recording stops), and the
+/// lifecycle guard's writes, which fold in the live owner and the recording
+/// state they read under this lock.
 static META_WRITE: Mutex<()> = Mutex::new(());
 
 /// Best-effort: patch the session's `meta.json` through a typed `Meta`
-/// round-trip (read → `patch` → write). Keeps meta.json a valid typed `Meta` —
-/// consistent with how the sidecar serializes meta everywhere else — instead of
-/// hand-patching an untyped JSON value. Persistence is the same best-effort
-/// tmp+rename the attach path has always used (no fsync): a patch must not block
-/// the thread making it for long, and the durable lifecycle writes go through
-/// `write_meta_atomic` elsewhere.
-fn patch_meta_on_disk(session_dir: &Path, patch: impl FnOnce(&mut Meta)) {
-    let _serialized = lock(&META_WRITE);
-    patch_meta_file(session_dir, patch);
-}
-
-/// [`patch_meta_on_disk`] for a caller already holding [`META_WRITE`].
+/// round-trip (read → `patch` → write); the caller holds [`META_WRITE`]. Keeps meta.json
+/// a valid typed `Meta` — consistent with how the sidecar serializes meta
+/// everywhere else — instead of hand-patching an untyped JSON value.
+/// Persistence is best-effort tmp+rename (no fsync): the durable lifecycle
+/// writes go through `write_meta_atomic` elsewhere.
+#[cfg(unix)]
 fn patch_meta_file(session_dir: &Path, patch: impl FnOnce(&mut Meta)) {
     let meta_path = session_dir.join("meta.json");
     let Ok(content) = std::fs::read_to_string(&meta_path) else {
@@ -2286,13 +2380,16 @@ impl PtyRecordingRun {
 
 /// Start recording a PTY run: output and applied geometry, not input. The child
 /// starts at the platform's initial PTY size, under its `TERM` (recorded empty if
-/// unset or not recordable). A stop is appended as a `recording.stopped` event,
-/// then written to `meta.json`.
+/// unset or not recordable). A stop is queued on the run's effects channel,
+/// which appends it as a `recording.stopped` event and writes it to
+/// `meta.json`; the recorder never touches the session paths itself.
+#[cfg(unix)]
 fn start_pty_recording(
     session_dir: &Path,
     run_id: RunId,
     child_env: &std::collections::BTreeMap<String, String>,
-    mut facts: LifecycleEvents,
+    limits: crate::recorder::RecorderLimits,
+    effects: std::sync::mpsc::Sender<RunEffect>,
 ) -> PtyRecordingRun {
     use crate::recording::{Geometry, SegmentHeader, Sequence, TermName};
 
@@ -2321,31 +2418,18 @@ fn start_pty_recording(
     };
 
     let store = crate::recorder::DirectoryStore::new(session_dir.join(&dir));
-    let report_dir = session_dir.to_path_buf();
-    let thread = RecorderThread::start(header, store, recorder_limits(), move |stopped| {
-        let mut data = serde_json::json!({
-            "last_recorded_sequence": stopped.last_recorded.map(Sequence::get),
-            "reason": stopped.reason.as_str(),
-        });
-        if let StopReason::WriteFailed(kind) = stopped.reason {
-            data["error"] = serde_json::Value::String(format!("{kind:?}"));
-        }
-        facts.append_fact("recording.stopped", data);
-        let state = stopped_state(stopped, None);
-        patch_meta_on_disk(&report_dir, |meta| {
-            if let Some(mut recording) = meta.pty().and_then(|p| p.recording.clone()) {
-                recording.state = state;
-                meta.set_pty_recording(recording);
-            }
-        });
+    // Runs at the stop, with the recorder locked: only queue it.
+    let thread = RecorderThread::start(header, store, limits, move |stopped| {
+        let _ = effects.send(RunEffect::RecordingStopped(stopped));
     });
     PtyRecordingRun { thread, dir }
 }
 
 /// Recording limits. Debug builds accept `TENDR_TEST_RECORDING_MAX_BYTES` so
 /// tests can reach the size limit; release sidecars ignore it.
-fn recorder_limits() -> RecorderLimits {
-    let mut limits = RecorderLimits::default();
+#[cfg(unix)]
+fn recorder_limits() -> crate::recorder::RecorderLimits {
+    let mut limits = crate::recorder::RecorderLimits::default();
     if cfg!(debug_assertions) {
         if let Some(max) = std::env::var("TENDR_TEST_RECORDING_MAX_BYTES")
             .ok()
@@ -2357,23 +2441,26 @@ fn recorder_limits() -> RecorderLimits {
     limits
 }
 
+/// The recorder's stop reason as metadata and events carry it.
+fn stop_reason(reason: StopReason) -> RecordingStopReason {
+    match reason {
+        StopReason::SizeLimit => RecordingStopReason::SizeLimit,
+        StopReason::WriteFailed(kind) => RecordingStopReason::WriteFailed {
+            error: format!("{kind:?}"),
+        },
+        StopReason::BacklogFull => RecordingStopReason::BacklogFull,
+        StopReason::Stalled => RecordingStopReason::Stalled,
+    }
+}
+
 fn stopped_state(
     stopped: crate::recorder::Stopped,
     last_synced: Option<crate::recording::Sequence>,
 ) -> RecordingState {
-    let (reason, error) = match stopped.reason {
-        StopReason::SizeLimit => (RecordingStopReason::SizeLimit, None),
-        StopReason::WriteFailed(kind) => {
-            (RecordingStopReason::WriteFailed, Some(format!("{kind:?}")))
-        }
-        StopReason::BacklogFull => (RecordingStopReason::BacklogFull, None),
-        StopReason::Stalled => (RecordingStopReason::Stalled, None),
-    };
     RecordingState::Stopped {
         last_recorded_sequence: stopped.last_recorded.map(crate::recording::Sequence::get),
         last_synced_sequence: last_synced.map(crate::recording::Sequence::get),
-        reason,
-        error,
+        reason: stop_reason(stopped.reason),
     }
 }
 
@@ -2411,6 +2498,7 @@ mod tests {
     use crate::model::ids::{EpochTimestamp, Generation, ProcessIdentity, RunId, SessionName};
     use crate::model::pty::PtyControl;
     use crate::model::spec::LaunchSpec;
+    use crate::recorder::RecorderLimits;
     use std::num::NonZeroU32;
 
     #[test]
@@ -2458,7 +2546,7 @@ mod tests {
     /// teardown that ends them.
     fn hooks_for(dir: &Path) -> (SidecarControlHooks, Arc<Mutex<PtyControl>>, PtyTeardown) {
         let control = Arc::new(Mutex::new(PtyControl::AgentControl));
-        let effects = ControlEffects::spawn(
+        let effects = RunEffects::spawn(
             dir.to_path_buf(),
             LifecycleEvents::new(
                 dir,
@@ -2469,21 +2557,13 @@ mod tests {
             ),
             Arc::clone(&control),
         );
-        let (registry, ended) = (
-            ConnectionRegistry::default(),
-            Arc::new(AtomicBool::new(false)),
-        );
+        let registry = ConnectionRegistry::default();
         let hooks = SidecarControlHooks {
             effects: effects.sender(),
             registry: registry.clone(),
             attach_sink: Arc::new(Mutex::new(None)),
-            ended: Arc::clone(&ended),
         };
-        let teardown = PtyTeardown {
-            ended,
-            registry,
-            effects,
-        };
+        let teardown = PtyTeardown { registry, effects };
         (hooks, control, teardown)
     }
 
@@ -2522,7 +2602,7 @@ mod tests {
 
         let (done, returned) = std::sync::mpsc::channel();
         let writer_thread = std::thread::spawn(move || {
-            hooks.human_control("takeover");
+            hooks.human_control(crate::pty_input::Trigger::Takeover);
             let _ = done.send(());
             hooks
         });
@@ -2567,7 +2647,7 @@ mod tests {
         write_pty_meta(dir.path());
         let (mut hooks, _control, teardown) = hooks_for(dir.path());
 
-        hooks.human_control("attach");
+        hooks.human_control(crate::pty_input::Trigger::Attach);
         hooks.input_revoked(ControllerKind::Agent, 1, 2);
         teardown.run();
         // Recorded by the time the teardown returns, without polling.
@@ -2586,6 +2666,199 @@ mod tests {
         assert_eq!(on_disk.pty().unwrap().control, PtyControl::HumanControl);
     }
 
+    /// A PTY meta.json for run `run_id` whose recording is still `Recording`.
+    fn recording_meta(run_id: RunId) -> Meta {
+        let mut meta = Meta::new_starting(
+            SessionName::new("ptytest").unwrap(),
+            run_id,
+            Generation::first(),
+            LaunchSpec::new(vec!["bash".into()]).unwrap(),
+            ProcessIdentity {
+                pid: NonZeroU32::new(100).unwrap(),
+                start_time_ns: 1000,
+            },
+            EpochTimestamp::now(),
+        );
+        meta.set_pty(PtyMeta::new());
+        meta.set_pty_recording(PtyRecording {
+            dir: format!("recording/{run_id}"),
+            input_recorded: false,
+            state: RecordingState::Recording,
+        });
+        meta
+    }
+
+    fn read_meta(dir: &Path) -> Meta {
+        serde_json::from_str(&std::fs::read_to_string(dir.join("meta.json")).unwrap()).unwrap()
+    }
+
+    fn event_kinds(dir: &Path) -> Vec<String> {
+        crate::events::read_session_events(dir)
+            .unwrap()
+            .events
+            .iter()
+            .map(|e| e.kind.as_str().to_owned())
+            .collect()
+    }
+
+    /// A recording's stop report is written before the run's terminal record
+    /// or not at all, never after the run has ended (invalid-states review of
+    /// PR #68, finding 1). After the end the session paths may belong to a
+    /// replacement run, whose meta.json a late report would patch with this
+    /// run's stop.
+    ///
+    /// The recording stops at once (its directory cannot be created) while
+    /// meta.json is stalled, so the report cannot finish. The run then ends:
+    /// the recording is finished and the attach side torn down. If that
+    /// returns while the report is still pending, the replacement's meta is
+    /// what the report finds when the state root recovers. So the end must not
+    /// return until the report is written.
+    #[test]
+    fn a_stalled_recording_stop_report_never_lands_after_the_run_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_a = RunId::new();
+        let meta_a = recording_meta(run_a);
+        std::fs::write(dir.path().join("recording"), b"not a directory").unwrap();
+        stall_meta_json(dir.path());
+        let (hooks, _control, teardown) = hooks_for(dir.path());
+        let limits = RecorderLimits {
+            close_timeout: std::time::Duration::from_millis(50),
+            ..RecorderLimits::default()
+        };
+        let recording = start_pty_recording(
+            dir.path(),
+            run_a,
+            &std::collections::BTreeMap::new(),
+            limits,
+            hooks.effects.clone(),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while recording.thread.recorder().stopped().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "recording never stopped"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        // The run ends, as SupervisedRun::finish does before its terminal record.
+        let (ended_tx, ended) = std::sync::mpsc::channel();
+        let run_end = std::thread::spawn(move || {
+            let (state, _warning) = finished_recording(recording.thread.finish());
+            teardown.run();
+            let _ = ended_tx.send(());
+            state
+        });
+
+        // The run's end must wait for the report. A 50 ms close timeout
+        // against a 2 s window leaves a 40x margin, so a run end that returns
+        // early fails here rather than slipping past on a slow runner.
+        assert!(
+            ended
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .is_err(),
+            "the run ended while its recording's stop report was still pending"
+        );
+        // Let the state root recover with this run's own meta; the end completes.
+        unstall_meta_json(dir.path(), &meta_a);
+        ended
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the run ends once the state root recovers");
+        let final_state = run_end.join().unwrap();
+        assert!(matches!(final_state, RecordingState::Stopped { .. }));
+
+        // Recorded before the end returned, so before the terminal record.
+        let on_disk = read_meta(dir.path());
+        assert_eq!(on_disk.run_id(), run_a);
+        assert!(
+            matches!(
+                on_disk.pty().unwrap().recording.as_ref().unwrap().state,
+                RecordingState::Stopped { .. }
+            ),
+            "the stop is in meta.json before the run's end returns"
+        );
+        assert!(
+            event_kinds(dir.path()).contains(&"recording.stopped".to_owned()),
+            "the stop is in the event log before the run's end returns"
+        );
+        // The replacement run takes over the session paths.
+        let meta_b = recording_meta(RunId::new());
+        std::fs::write(
+            dir.path().join("meta.json"),
+            serde_json::to_string_pretty(&meta_b).unwrap(),
+        )
+        .unwrap();
+        let events_at_end = event_kinds(dir.path());
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(
+            serde_json::to_value(read_meta(dir.path())).unwrap(),
+            serde_json::to_value(&meta_b).unwrap(),
+            "run A's stop report patched the replacement run's meta.json"
+        );
+        assert_eq!(
+            event_kinds(dir.path()),
+            events_at_end,
+            "nothing after the end"
+        );
+    }
+
+    /// Every fact kind is grammatical, so `append_fact` never drops one for
+    /// its kind.
+    #[test]
+    fn every_fact_kind_is_grammatical() {
+        for fact in [
+            Fact::CallbackFinished,
+            Fact::RecordingStopped,
+            Fact::ControlChanged,
+            Fact::InputRevoked,
+        ] {
+            assert!(Kind::new(fact.kind()).is_ok(), "{fact:?}");
+        }
+    }
+
+    /// The typed effects keep the events' v1 data shapes.
+    #[test]
+    fn run_effects_keep_their_event_data() {
+        use crate::model::pty_control::ControllerKind;
+        use crate::pty_input::{ControlHooks, Trigger};
+
+        let dir = tempfile::tempdir().unwrap();
+        write_pty_meta(dir.path());
+        let (mut hooks, _control, teardown) = hooks_for(dir.path());
+        hooks.human_control(Trigger::Takeover);
+        hooks.human_released();
+        hooks.input_revoked(ControllerKind::Agent, 1, 2);
+        let _ = hooks
+            .effects
+            .send(RunEffect::RecordingStopped(crate::recorder::Stopped {
+                last_recorded: crate::recording::Sequence::new(4),
+                reason: StopReason::WriteFailed(io::ErrorKind::StorageFull),
+            }));
+        teardown.run();
+
+        let data: Vec<serde_json::Value> = crate::events::read_session_events(dir.path())
+            .unwrap()
+            .events
+            .iter()
+            .map(|e| serde_json::json!({"kind": e.kind.as_str(), "data": e.data}))
+            .collect();
+        assert_eq!(
+            data,
+            [
+                serde_json::json!({"kind": "pty.control_changed",
+                    "data": {"control": "HumanControl", "trigger": "takeover"}}),
+                serde_json::json!({"kind": "pty.control_changed",
+                    "data": {"control": "AgentControl", "trigger": "detach"}}),
+                serde_json::json!({"kind": "pty.input_revoked",
+                    "data": {"kind": "Agent", "accepted": 1, "total": 2}}),
+                serde_json::json!({"kind": "recording.stopped",
+                    "data": {"last_recorded_sequence": 4, "reason": "write_failed",
+                        "error": "StorageFull"}}),
+            ]
+        );
+    }
+
     /// A PTY that accepts everything and records it.
     #[derive(Clone, Default)]
     struct RecordingPty(Arc<Mutex<Vec<u8>>>);
@@ -2602,7 +2875,7 @@ mod tests {
             Ok(true)
         }
 
-        fn resize(&self, _rows: u16, _cols: u16) {}
+        fn resize(&self, _size: crate::recording::Geometry) {}
     }
 
     /// Hooks with no side effects: a takeover supersedes the push without
@@ -2610,7 +2883,7 @@ mod tests {
     struct InertHooks;
 
     impl crate::pty_input::ControlHooks for InertHooks {
-        fn human_control(&mut self, _trigger: &'static str) {}
+        fn human_control(&mut self, _trigger: crate::pty_input::Trigger) {}
         fn human_released(&mut self) {}
         fn retire(
             &mut self,
@@ -2633,7 +2906,7 @@ mod tests {
     /// reports `written` (PR #68 review, finding 4).
     #[test]
     fn a_push_taken_over_after_its_last_frame_reports_written() {
-        use crate::attach_proto::{self, INPUT_WRITTEN};
+        use crate::attach_proto::{Frame, PushOutcome, read_frame, write_frame};
         use std::os::unix::net::UnixStream;
 
         let pty = RecordingPty::default();
@@ -2644,10 +2917,12 @@ mod tests {
             let (writer, registry) = (writer.clone(), registry.clone());
             std::thread::spawn(move || handle_push_connection(server, &writer, &registry))
         };
-        let (reply, _) = attach_proto::read_msg(&mut client).unwrap();
-        assert_eq!(reply, attach_proto::MSG_ACCEPTED);
+        assert!(matches!(
+            read_frame(&mut client).unwrap(),
+            Frame::Accepted(_)
+        ));
 
-        attach_proto::write_msg(&mut client, attach_proto::MSG_DATA, b"abc").unwrap();
+        write_frame(&mut client, &Frame::Data(b"abc".to_vec())).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while lock(&pty.0).len() < 3 {
             assert!(
@@ -2659,13 +2934,11 @@ mod tests {
         // The frame is written, so its Accepted outcome is already on its way;
         // the takeover is served before the end marker below.
         writer.takeover(writer.next_holder()).unwrap();
-        attach_proto::write_msg(&mut client, attach_proto::MSG_DETACH, &[]).unwrap();
+        write_frame(&mut client, &Frame::Detach).unwrap();
 
-        let (kind, payload) = attach_proto::read_msg(&mut client).unwrap();
-        assert_eq!(kind, attach_proto::MSG_INPUT_DONE);
         assert_eq!(
-            attach_proto::parse_input_done(&payload),
-            Some((INPUT_WRITTEN, 3, 3)),
+            read_frame(&mut client).unwrap(),
+            Frame::InputDone(PushOutcome::Written { bytes: 3 }),
             "every byte was written, so the push must not report revoked"
         );
         handler.join().unwrap();
@@ -2702,7 +2975,7 @@ mod tests {
         assert_eq!(original.pty().unwrap().control, PtyControl::AgentControl);
 
         // attach
-        patch_meta_on_disk(dir.path(), |m| m.set_pty_control(PtyControl::HumanControl));
+        patch_meta_file(dir.path(), |m| m.set_pty_control(PtyControl::HumanControl));
         let after_attach: Meta =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("meta.json")).unwrap())
                 .expect("meta.json still deserializes as typed Meta after attach");
@@ -2717,7 +2990,7 @@ mod tests {
         );
 
         // detach
-        patch_meta_on_disk(dir.path(), |m| m.set_pty_control(PtyControl::AgentControl));
+        patch_meta_file(dir.path(), |m| m.set_pty_control(PtyControl::AgentControl));
         let after_detach: Meta =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("meta.json")).unwrap())
                 .unwrap();
