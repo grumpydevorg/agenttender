@@ -23,12 +23,20 @@
 //!   record with a bad checksum is always an error, never a truncated tail.
 //! - [`decode_recording`] decodes an ordered list of segments and enforces the
 //!   cross-segment rules.
+//! - [`dump`] writes a decoded recording as plain text, one line per record,
+//!   and flags the terminal queries and mode changes in its output. It is a
+//!   development aid (`cargo run --example dump-recording`), not a stable
+//!   format.
 
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 
 use thiserror::Error;
 
 use crate::model::ids::RunId;
+
+mod dump;
+
+pub use dump::dump;
 
 /// The format version this module reads and writes.
 pub const FORMAT_VERSION: u16 = 1;

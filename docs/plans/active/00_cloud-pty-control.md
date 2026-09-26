@@ -488,7 +488,7 @@ Basis: this plan document; branch `feat/pty-runtime-takeover` at `92512a0`; code
 | Takeover, retirement, revoked input, single writer, bounded viewers, private peer-verified sockets, exact recording | Done. |
 | Admission limits | **Simplified vs plan:** one pool `MAX_ATTACH_CONNECTIONS = 8` including pending hellos; no separate 4-slot pending pool, no reserved controller slot, no read-only viewer mode. |
 | Repaint nudge after reattach | **Not done** (codec supports `ResizeCause::Repaint`, nothing emits it). |
-| Query/repaint measurement | **Not done**; no tool to inspect a recording. |
+| Query/repaint measurement | **Not done.** The inspection tool exists: `examples/dump-recording.rs` (step 4) dumps a recording and flags DA1/DA2, DSR (5n, 6n), DECRQM, kitty keyboard, modifyOtherKeys, OSC 10/11, XTVERSION, alt-screen and bracketed-paste sequences. |
 | Nested `ssh -t` fixture | **Not done.** |
 | Paste fixture, Ctrl-] named test | **Done.** Unit test `ctrl_right_bracket_passes_through`; CLI tests `cli_paste_with_embedded_prefixes_arrives_intact`, `cli_prefix_held_across_a_read_boundary_then_detaches`. |
 | Exit-code table in `docs/guide.md` | **Not done;** attach refusals exit 1. |

@@ -117,7 +117,12 @@ Current PTY rules:
   is ignored. Sequencing never
   waits for storage; one recorder thread appends, rotates at 64 MiB, publishes
   segments atomically, and syncs at most a second apart and on close. Input is
-  not recorded
+  not recorded. `cargo run --example dump-recording -- <path>` prints a
+  recording (a segment file, a run's recording directory, or a session
+  directory) as text, one line per record with output bytes escaped, and flags
+  terminal queries and mode changes, including ones split across records. It
+  is a development tool over the library's `recording::dump`, not part of the
+  shipped `tendr` binary, and its layout is not a stable interface
 - recording stops explicitly at the last completed append when the run reaches
   1 GiB, storage fails, 16 MiB of output waits for storage, or storage is still
   stalled at close; an append completing after the stop is cut back off. The

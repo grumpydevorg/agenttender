@@ -45,7 +45,8 @@
 //!   queue (claim, takeover, release).
 //! - [`recorder`] — the sidecar's exact PTY recorder (sequencing, rotation,
 //!   explicit stop).
-//! - [`recording`] — the exact PTY recording codec (versioned binary segments).
+//! - [`recording`] — the exact PTY recording codec (versioned binary segments)
+//!   and a plain-text dump for inspecting recordings.
 //! - [`ssh`] — the remote transport wrapper and its command allowlist.
 //! - [`reconcile`] — reconciling recorded state against observed OS reality.
 //!
