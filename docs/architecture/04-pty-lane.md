@@ -54,7 +54,11 @@ Current PTY rules:
   `pty.input_revoked`; PTY `exec` frames still arrive over the stdin FIFO, whose
   forwarder is arbitrated the same way but cannot report an outcome: it waits
   behind another agent's push, and a human holder refuses it (the frame is
-  discarded and recorded as a run warning)
+  discarded and recorded as a run warning). A frame keeps the agent claim until
+  the child has read all of it, even after its writer has closed the FIFO:
+  `exec` closes it as soon as the frame is in the pipe, so a closed writer is
+  how every frame ends, not a sign it was abandoned. A child that never reads
+  again holds the input until a human uses `attach --takeover`
 - the attach socket is bound in `~/.tendr/sockets` (owner-only directory,
   `0600` socket, short run-derived name) and its breadcrumb published before the
   child is spawned; an unsafe directory, overlong path, or pre-existing path fails

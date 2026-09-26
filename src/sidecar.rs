@@ -900,6 +900,12 @@ fn setup_pty_stdin_forwarding(
 /// hand the still-connected push writer to the next accept. The legacy push CLI
 /// therefore cannot observe the rejection; revocation is recorded as a
 /// `pty.input_revoked` event and the rejection as a run warning.
+///
+/// Unlike an attach-socket push, a FIFO writer's hang-up is not watched for:
+/// `exec` closes the FIFO as soon as its frame is in the pipe, so hang-up is
+/// how a complete frame ends. A frame waiting on a full PTY keeps the claim
+/// until the child reads it, or a takeover revokes it (PR #68 review,
+/// finding 6).
 #[cfg(unix)]
 fn forward_pty_stdin(
     transport: <Current as Platform>::StdinTransport,

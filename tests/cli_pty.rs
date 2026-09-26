@@ -2254,3 +2254,80 @@ fn fifo_input_waits_behind_an_agent_push() {
         "the FIFO input waits for the push rather than interleaving"
     );
 }
+
+/// A FIFO writer (an `exec` frame) closes as soon as its bytes are in the pipe,
+/// so its hang-up is how a complete frame ends, not a sign it was abandoned.
+/// Bytes still waiting on a full PTY after the writer has gone must be
+/// delivered once the child reads again, and the agent claim then released
+/// (PR #68 review, finding 6: not changed, because cancelling on hang-up would
+/// drop them).
+#[test]
+fn fifo_input_is_delivered_after_its_writer_closes() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-fifo-gone");
+    let go = root.path().join("go");
+
+    // Consumes 1 KiB, reports READY, then stops reading until the go file
+    // exists, so the frame below fills the PTY and waits in the forwarder.
+    let script = "stty raw -echo; head -c 1024 >/dev/null; printf READY; \
+                  while [ ! -f \"$GO\" ]; do sleep 0.05; done; exec cat";
+    tendr(&root)
+        .args(["start", "pty-fifo-gone", "--pty", "--stdin"])
+        .arg("--env")
+        .arg(format!("GO={}", go.display()))
+        .args(["--", "sh", "-c", script])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-fifo-gone");
+
+    // More than the child consumes plus a PTY input buffer, but no more than
+    // one forwarder read, so the writer finishes and closes.
+    let mut frame = vec![b'a'; 6 * 1024];
+    frame.extend_from_slice(b"\nFIFO-TAIL\n");
+    let fifo = root
+        .path()
+        .join(".tendr/sessions/default/pty-fifo-gone/stdin.pipe");
+    let writer = std::thread::spawn(move || {
+        let mut f = std::fs::OpenOptions::new().write(true).open(fifo).unwrap();
+        f.write_all(&frame).unwrap();
+    });
+    wait_log_contains(&root, "pty-fifo-gone", "READY");
+    writer.join().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let log = wait_log_contains(&root, "pty-fifo-gone", "READY");
+    assert!(
+        !log.contains("FIFO-TAIL"),
+        "setup invariant: the frame must still be waiting on the PTY"
+    );
+    let early = tendr(&root)
+        .args(["push", "pty-fifo-gone"])
+        .write_stdin("EARLY\n")
+        .output()
+        .unwrap();
+    let early_err = String::from_utf8_lossy(&early.stderr);
+    assert!(
+        !early.status.success() && early_err.contains("(Agent)"),
+        "setup invariant: the waiting frame still holds the input: {early_err}"
+    );
+
+    std::fs::write(&go, b"").unwrap();
+    wait_log_contains(&root, "pty-fifo-gone", "FIFO-TAIL");
+
+    // Delivered in full, the frame no longer holds the input.
+    let mut push = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
+        .args(["push", "pty-fifo-gone"])
+        .env("HOME", root.path())
+        .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    push.stdin.take().unwrap().write_all(b"AFTER\n").unwrap();
+    let out = push.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "push after the frame: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    wait_log_contains(&root, "pty-fifo-gone", "AFTER");
+}
