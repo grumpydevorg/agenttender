@@ -41,7 +41,7 @@ fn main() -> ExitCode {
 fn run() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
     let (Some(path), None) = (args.next(), args.next()) else {
-        bail!("usage: dump-recording <segment file | recording directory>");
+        bail!("usage: dump-recording <segment file | run recording directory | session directory>");
     };
     let path = PathBuf::from(path);
     let mut out = BufWriter::new(io::stdout().lock());

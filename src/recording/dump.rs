@@ -49,11 +49,15 @@ const DEL: u8 = 0x7f;
 /// | Label | Bytes |
 /// |---|---|
 /// | `query:da1` | `ESC[c`, `ESC[0c` |
+/// | `query:da2` | `ESC[>c`, `ESC[>0c` |
 /// | `query:dsr-cpr` | `ESC[6n` |
+/// | `query:dsr-status` | `ESC[5n` |
+/// | `query:decrqm` | `ESC[?N$p`, `ESC[N$p` |
 /// | `query:kitty-keyboard` | `ESC[?u` |
 /// | `mode:kitty-keyboard-push` | `ESC[>u`, `ESC[>Nu` |
 /// | `mode:kitty-keyboard-pop` | `ESC[<u`, `ESC[<Nu` |
 /// | `mode:kitty-keyboard-set` | `ESC[=N;Mu` |
+/// | `mode:modify-other-keys=N` | `ESC[>4;Nm`; `=reset` for `ESC[>4m` and `ESC[>m`, `=off` for `ESC[>4n`, no suffix for a level above 3 |
 /// | `query:osc10`, `query:osc11` | `ESC]10;?`, `ESC]11;?` (also `ESC]10;?;?`), ended by BEL or `ESC\` |
 /// | `query:xtversion` | `ESC[>q`, `ESC[>0q` |
 /// | `mode:alt-screen-on`/`-off` | `ESC[?1049h` / `ESC[?1049l`, alone or among other private modes |
@@ -70,9 +74,9 @@ const DEL: u8 = 0x7f;
 /// annotation follows the record holding its final byte.
 ///
 /// Parsing follows the usual VT rules closely enough to avoid look-alikes:
-/// `ESC` restarts a sequence, CAN and SUB cancel one, other C0 controls inside
-/// a CSI are ignored, and a CSI with intermediate bytes (such as `ESC[ q`) is
-/// never a match. Only 7-bit introducers are recognised; the 8-bit C1 forms
+/// `ESC` restarts a sequence, CAN and SUB cancel one, other C0 controls after
+/// `ESC` or inside a CSI are ignored, and a CSI with intermediate bytes (such as
+/// `ESC[ q`) matches only as DECRQM (`$p`). Only 7-bit introducers are recognised; the 8-bit C1 forms
 /// (`0x9B`, `0x9D`) are ambiguous in UTF-8 output. At most 256 bytes of a
 /// sequence are kept: a longer one (an OSC 52 clipboard write, say) is
 /// consumed to its end but not classified.
@@ -209,7 +213,10 @@ impl fmt::Display for Escaped<'_> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Marker {
     Da1Query,
+    Da2Query,
     CursorPositionQuery,
+    StatusQuery,
+    ModeQuery,
     KittyKeyboardQuery,
     KittyKeyboardPush,
     KittyKeyboardPop,
@@ -219,13 +226,20 @@ enum Marker {
     XtversionQuery,
     AltScreen(bool),
     BracketedPaste(bool),
+    /// XTMODKEYS `modifyOtherKeys`: the level set, `None` for one above 3.
+    ModifyOtherKeys(Option<u8>),
+    ModifyOtherKeysReset,
+    ModifyOtherKeysOff,
 }
 
 impl Marker {
     fn label(self) -> &'static str {
         match self {
             Self::Da1Query => "query:da1",
+            Self::Da2Query => "query:da2",
             Self::CursorPositionQuery => "query:dsr-cpr",
+            Self::StatusQuery => "query:dsr-status",
+            Self::ModeQuery => "query:decrqm",
             Self::KittyKeyboardQuery => "query:kitty-keyboard",
             Self::KittyKeyboardPush => "mode:kitty-keyboard-push",
             Self::KittyKeyboardPop => "mode:kitty-keyboard-pop",
@@ -237,6 +251,13 @@ impl Marker {
             Self::AltScreen(false) => "mode:alt-screen-off",
             Self::BracketedPaste(true) => "mode:bracketed-paste-on",
             Self::BracketedPaste(false) => "mode:bracketed-paste-off",
+            Self::ModifyOtherKeys(Some(0)) => "mode:modify-other-keys=0",
+            Self::ModifyOtherKeys(Some(1)) => "mode:modify-other-keys=1",
+            Self::ModifyOtherKeys(Some(2)) => "mode:modify-other-keys=2",
+            Self::ModifyOtherKeys(Some(3)) => "mode:modify-other-keys=3",
+            Self::ModifyOtherKeys(_) => "mode:modify-other-keys",
+            Self::ModifyOtherKeysReset => "mode:modify-other-keys=reset",
+            Self::ModifyOtherKeysOff => "mode:modify-other-keys=off",
         }
     }
 }
@@ -308,6 +329,8 @@ impl Scanner {
                     self.state = State::Osc;
                 }
                 ESC => self.begin(sequence),
+                // Executed by the terminal without ending the sequence.
+                0x00..=0x17 | 0x19 | 0x1c..=0x1f => {}
                 _ => self.reset(),
             },
             State::Csi => match byte {
@@ -398,14 +421,40 @@ fn csi_markers(body: &[u8], mut found: impl FnMut(Marker)) {
     let Some((&final_byte, rest)) = body.split_last() else {
         return;
     };
-    // Parameter bytes are 0x30..=0x3F; an intermediate byte (0x20..=0x2F)
-    // makes a different function, and none of the flagged ones has one.
-    if rest.iter().any(|b| (0x20..=0x2f).contains(b)) {
+    // Parameter bytes (0x30..=0x3F) come first, then intermediate bytes
+    // (0x20..=0x2F), which make a different function.
+    let split = rest
+        .iter()
+        .position(|b| (0x20..=0x2f).contains(b))
+        .unwrap_or(rest.len());
+    let (params, intermediates) = rest.split_at(split);
+    if intermediates.iter().any(|b| !(0x20..=0x2f).contains(b)) {
         return;
     }
-    match (final_byte, rest) {
+    if (final_byte, intermediates) == (b'p', b"$") {
+        let mode = params.strip_prefix(b"?").unwrap_or(params);
+        if !mode.is_empty() && is_number(mode) {
+            found(Marker::ModeQuery);
+        }
+        return;
+    }
+    if !intermediates.is_empty() {
+        return;
+    }
+    match (final_byte, params) {
         (b'c', b"" | b"0") => found(Marker::Da1Query),
+        (b'c', b">" | b">0") => found(Marker::Da2Query),
         (b'n', b"6") => found(Marker::CursorPositionQuery),
+        (b'n', b"5") => found(Marker::StatusQuery),
+        (b'n', b">4") => found(Marker::ModifyOtherKeysOff),
+        (b'm', b">" | b">4" | b">4;") => found(Marker::ModifyOtherKeysReset),
+        (b'm', [b'>', b'4', b';', level @ ..]) if is_number(level) => {
+            let level = std::str::from_utf8(level)
+                .ok()
+                .and_then(|l| l.parse::<u8>().ok())
+                .filter(|&l| l <= 3);
+            found(Marker::ModifyOtherKeys(level));
+        }
         (b'u', b"?") => found(Marker::KittyKeyboardQuery),
         (b'u', [b'>', flags @ ..]) if is_number(flags) => found(Marker::KittyKeyboardPush),
         (b'u', [b'<', count @ ..]) if is_number(count) => found(Marker::KittyKeyboardPop),
@@ -502,6 +551,21 @@ mod tests {
         (b"\x1b[?1049l", "mode:alt-screen-off"),
         (b"\x1b[?2004h", "mode:bracketed-paste-on"),
         (b"\x1b[?2004l", "mode:bracketed-paste-off"),
+        (b"\x1b[>c", "query:da2"),
+        (b"\x1b[>0c", "query:da2"),
+        (b"\x1b[5n", "query:dsr-status"),
+        (b"\x1b[?1049$p", "query:decrqm"),
+        (b"\x1b[?2026$p", "query:decrqm"),
+        (b"\x1b[4$p", "query:decrqm"),
+        (b"\x1b[>4;0m", "mode:modify-other-keys=0"),
+        (b"\x1b[>4;1m", "mode:modify-other-keys=1"),
+        (b"\x1b[>4;2m", "mode:modify-other-keys=2"),
+        (b"\x1b[>4;3m", "mode:modify-other-keys=3"),
+        (b"\x1b[>4;7m", "mode:modify-other-keys"),
+        (b"\x1b[>4m", "mode:modify-other-keys=reset"),
+        (b"\x1b[>4;m", "mode:modify-other-keys=reset"),
+        (b"\x1b[>m", "mode:modify-other-keys=reset"),
+        (b"\x1b[>4n", "mode:modify-other-keys=off"),
     ];
 
     #[test]
@@ -533,11 +597,13 @@ mod tests {
     fn similar_bytes_are_not_flagged() {
         let lookalikes: &[&[u8]] = &[
             b"[c [6n [?u ]11;? plain text",
-            b"\x1b[>c",                        // DA2
+            b"\x1b[>1;10;0c",                  // DA2 reply
+            b"\x1b[>1c",                       // not a DA2 request
             b"\x1b[=c",                        // DA3
             b"\x1b[1c",                        // not a DA1 request
             b"\x1b[?6n",                       // DECXCPR
-            b"\x1b[5n",                        // operating status
+            b"\x1b[?5n",                       // DEC private, not DSR 5
+            b"\x1b[0n",                        // "terminal OK" reply
             b"\x1b[16n",                       // not 6
             b"\x1b[u",                         // restore cursor (SCORC)
             b"\x1b[?1u",                       // not the bare query
@@ -549,7 +615,19 @@ mod tests {
             b"\x1b[?104h",                     // other private mode
             b"\x1b[?10490h",                   // other private mode
             b"\x1b[?2004r",                    // restore, not set
-            b"\x1b[?1049$p",                   // DECRQM request, not a change
+            b"\x1b[?1049$y",                   // DECRPM reply
+            b"\x1b[?$p",                       // DECRQM without a mode
+            b"\x1b[?1049;1$p",                 // DECRQM takes one mode
+            b"\x1b[$1p",                       // parameter after intermediate
+            b"\x1b[!p",                        // DECSTR
+            b"\x1b[1\"p",                      // DECSCL
+            b"\x1b[4m",                        // underline
+            b"\x1b[?4m",                       // not XTMODKEYS
+            b"\x1b[>1;2m",                     // modifyCursorKeys
+            b"\x1b[>14;2m",                    // other resource
+            b"\x1b[>4;2;1m",                   // too many parameters
+            b"\x1b[>4;2 m",                    // intermediate byte
+            b"\x1b[>1n",                       // disables another resource
             b"\x1b]11;rgb:0000/0000/0000\x07", // sets the colour
             b"\x1b]110\x07",                   // resets it
             b"\x1b]12;?\x07",                  // cursor colour
@@ -561,6 +639,12 @@ mod tests {
         for bytes in lookalikes {
             assert_eq!(labels(bytes), Vec::<&str>::new(), "{bytes:?}");
         }
+    }
+
+    #[test]
+    fn c0_controls_after_escape_do_not_end_it() {
+        assert_eq!(labels(b"\x1b\r[6n"), ["query:dsr-cpr"]);
+        assert_eq!(labels(b"\x1b\x18[6n"), Vec::<&str>::new());
     }
 
     #[test]
