@@ -96,6 +96,40 @@ pub fn tendr(root: &TempDir) -> Command {
     cmd
 }
 
+/// Force-kills a session when dropped, whether the test passed or panicked.
+///
+/// A test that stops its session only on its last line leaks a live sidecar
+/// whenever an earlier assertion panics. The `TempDir` is then removed while
+/// unwinding, and nothing can reach the orphan (#87). Create the guard right
+/// after `start`, and after the `TempDir`: locals drop in reverse order, so the
+/// sidecar is stopped before its state directory disappears.
+#[allow(dead_code)]
+pub struct SessionGuard<'a> {
+    root: &'a TempDir,
+    name: String,
+}
+
+#[allow(dead_code)]
+impl<'a> SessionGuard<'a> {
+    pub fn new(root: &'a TempDir, name: &str) -> Self {
+        Self {
+            root,
+            name: name.to_owned(),
+        }
+    }
+}
+
+impl Drop for SessionGuard<'_> {
+    fn drop(&mut self) {
+        // The result is ignored: the session may already be terminal, and a
+        // panic here while unwinding would abort the whole test binary.
+        let _ = tendr(self.root)
+            .args(["kill", "--force", &self.name])
+            .timeout(CMD_DEADLINE)
+            .output();
+    }
+}
+
 /// Path to the `test_callback` fixture binary (built by cargo as a sibling of the test binary).
 #[allow(dead_code)]
 pub fn test_callback_bin() -> String {
