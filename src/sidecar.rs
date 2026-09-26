@@ -2361,19 +2361,18 @@ fn stopped_state(
     stopped: crate::recorder::Stopped,
     last_synced: Option<crate::recording::Sequence>,
 ) -> RecordingState {
-    let (reason, error) = match stopped.reason {
-        StopReason::SizeLimit => (RecordingStopReason::SizeLimit, None),
-        StopReason::WriteFailed(kind) => {
-            (RecordingStopReason::WriteFailed, Some(format!("{kind:?}")))
-        }
-        StopReason::BacklogFull => (RecordingStopReason::BacklogFull, None),
-        StopReason::Stalled => (RecordingStopReason::Stalled, None),
+    let reason = match stopped.reason {
+        StopReason::SizeLimit => RecordingStopReason::SizeLimit,
+        StopReason::WriteFailed(kind) => RecordingStopReason::WriteFailed {
+            error: format!("{kind:?}"),
+        },
+        StopReason::BacklogFull => RecordingStopReason::BacklogFull,
+        StopReason::Stalled => RecordingStopReason::Stalled,
     };
     RecordingState::Stopped {
         last_recorded_sequence: stopped.last_recorded.map(crate::recording::Sequence::get),
         last_synced_sequence: last_synced.map(crate::recording::Sequence::get),
         reason,
-        error,
     }
 }
 
