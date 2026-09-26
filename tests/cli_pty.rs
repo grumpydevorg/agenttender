@@ -2666,3 +2666,437 @@ fn fifo_input_is_delivered_after_its_writer_closes() {
     assert!(bytes[..written].iter().all(|&b| b == b'a'));
     assert_eq!(&bytes[written..], b"AFTER\n");
 }
+
+// Exit codes of `attach` and PTY `push` (plan slice 1, step 7): 80 protocol,
+// 81 control conflict, 84 runtime/transport or a partial write, 85 identity.
+// The helpers and tests below are one block.
+
+/// A `tendr push` that holds the session's terminal: its stdin stays open, so
+/// it keeps control until [`HeldPush::finish`] closes it.
+struct HeldPush {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+}
+
+impl HeldPush {
+    /// Start a push into `session` and wait until its first line has reached
+    /// the terminal, so it holds control from then on.
+    fn start(root: &TempDir, session: &str) -> Self {
+        let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("tendr"))
+            .args(["push", session])
+            .env("HOME", root.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"PUSH-HOLDS\n").unwrap();
+        stdin.flush().unwrap();
+        wait_log_contains(root, session, "PUSH-HOLDS");
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "setup invariant: the push must still hold the terminal"
+        );
+        Self {
+            child,
+            stdin: Some(stdin),
+        }
+    }
+
+    /// Send `bytes`, close stdin, and return how the push ended.
+    fn finish(mut self, bytes: &[u8]) -> std::process::Output {
+        let mut stdin = self.stdin.take().unwrap();
+        // A push already ended by the session may have stopped reading.
+        let _ = stdin.write_all(bytes);
+        drop(stdin);
+        self.child.wait_with_output().unwrap()
+    }
+}
+
+/// When a [`fake_sidecar`] replies.
+#[derive(Clone, Copy)]
+enum FakeReply {
+    /// After reading the hello, as a sidecar answering it does.
+    AfterHello,
+    /// On accepting, then closing without reading anything, as the real
+    /// sidecar refuses a peer of another user or a connection over its limit.
+    BeforeHello,
+}
+
+/// Point `session`'s breadcrumb at a fake sidecar listening in `root`, which
+/// answers each connection with `reply`, raw frame bytes, as a sidecar speaking
+/// another protocol would. The real sidecar keeps running.
+fn fake_sidecar(root: &TempDir, session: &str, label: &str, when: FakeReply, reply: Vec<u8>) {
+    let sock = root.path().join(format!("{label}.sock"));
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().map_while(Result::ok) {
+            match when {
+                FakeReply::AfterHello => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+                    if read_msg(&mut stream).is_ok() {
+                        let _ = stream.write_all(&reply);
+                    }
+                }
+                FakeReply::BeforeHello => {
+                    let _ = stream.write_all(&reply);
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
+            }
+        }
+    });
+    point_breadcrumb_at(root, session, &sock);
+}
+
+fn point_breadcrumb_at(root: &TempDir, session: &str, sock: &std::path::Path) {
+    let dir = root
+        .path()
+        .join(format!(".tendr/sessions/default/{session}"));
+    let tmp = dir.join("a.sock.path.test");
+    std::fs::write(&tmp, sock.to_str().unwrap()).unwrap();
+    std::fs::rename(&tmp, dir.join("a.sock.path")).unwrap();
+}
+
+/// One frame's bytes.
+fn frame_bytes(msg_type: u8, payload: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    tendr::attach_proto::write_msg(&mut bytes, msg_type, payload).unwrap();
+    bytes
+}
+
+fn push_output(root: &TempDir, session: &str, bytes: &[u8]) -> std::process::Output {
+    tendr(root)
+        .args(["push", session])
+        .write_stdin(bytes.to_vec())
+        .timeout(Duration::from_secs(20))
+        .output()
+        .expect("push returns")
+}
+
+/// Assert `output` exited with `code`, showing its stderr if not.
+fn assert_exit(output: &std::process::Output, code: i32, what: &str) {
+    assert_eq!(
+        output.status.code(),
+        Some(code),
+        "{what}; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// The CLI's own check refuses a plain attach while a human holds the
+/// terminal: a controller conflict.
+#[test]
+fn cli_attach_refused_while_human_holds_exits_81() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x81-human");
+    let sock_path = start_cat(&root, "pty-x81-human");
+    let _human = attach_as_human(&sock_path);
+    wait_for_pty_control(&root, "pty-x81-human", "HumanControl");
+
+    let output = tendr(&root)
+        .args(["attach", "pty-x81-human"])
+        .output()
+        .unwrap();
+    assert_exit(&output, 81, "attach while a human holds the terminal");
+}
+
+/// The sidecar refuses a plain attach while a push holds the terminal (the
+/// CLI's own check passes: `meta.json` says `AgentControl`); its refusal's
+/// class, not its text, gives the code.
+#[test]
+fn cli_attach_refused_by_the_sidecar_exits_81() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x81-side");
+    start_cat(&root, "pty-x81-side");
+    let held = HeldPush::start(&root, "pty-x81-side");
+
+    let wrapped = WrappedAttach::spawn(&root, "x81-side", &["pty-x81-side"]);
+    assert_eq!(
+        wrapped.wait_exit(Duration::from_secs(20)),
+        81,
+        "attach refused by the sidecar; cli output: {}",
+        wrapped.cli.output()
+    );
+    wrapped.assert_terminal_restored();
+
+    let pushed = held.finish(b"PUSH-ENDS\n");
+    assert_exit(&pushed, 0, "the holding push completes");
+}
+
+/// An attach retired by another client's `--takeover` lost control, so it
+/// exits 81, not 0: a script can tell it from a detach.
+#[test]
+fn cli_attach_retired_by_a_takeover_exits_81() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x81-retired");
+    let sock_path = start_cat(&root, "pty-x81-retired");
+
+    let mut wrapped = WrappedAttach::spawn(&root, "x81-retired", &["pty-x81-retired"]);
+    wrapped
+        .cli
+        .type_until_logged(&root, "pty-x81-retired", "before-takeover\n");
+    let (_other, (msg_type, _)) = hello(&sock_path, Mode::Takeover);
+    assert_eq!(msg_type, MSG_ACCEPTED);
+
+    assert_eq!(wrapped.wait_exit(Duration::from_secs(10)), 81);
+    wrapped.assert_terminal_restored();
+    wrapped.wait_output_contains("took over");
+}
+
+/// A sidecar that does not speak this protocol: an unreleased v1 sidecar's
+/// free-text refusal (its first byte is no known class), and a reply of a
+/// message type this version does not know.
+#[test]
+fn cli_attach_to_an_older_sidecar_exits_80() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x80-attach");
+    start_cat(&root, "pty-x80-attach");
+
+    for (label, reply) in [
+        ("old", frame_bytes(MSG_REJECTED, b"busy")),
+        ("new", frame_bytes(0x7f, b"hello from the future")),
+    ] {
+        fake_sidecar(&root, "pty-x80-attach", label, FakeReply::AfterHello, reply);
+        let wrapped = WrappedAttach::spawn(&root, &format!("x80-{label}"), &["pty-x80-attach"]);
+        assert_eq!(
+            wrapped.wait_exit(Duration::from_secs(20)),
+            80,
+            "{label} sidecar; cli output: {}",
+            wrapped.cli.output()
+        );
+        wrapped.assert_terminal_restored();
+    }
+}
+
+#[test]
+fn cli_push_to_an_older_sidecar_exits_80() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x80-push");
+    start_cat(&root, "pty-x80-push");
+
+    for (label, reply) in [
+        ("old", frame_bytes(MSG_REJECTED, b"busy")),
+        ("new", frame_bytes(0x7f, b"hello from the future")),
+    ] {
+        fake_sidecar(&root, "pty-x80-push", label, FakeReply::AfterHello, reply);
+        let output = push_output(&root, "pty-x80-push", b"never-written\n");
+        assert_exit(&output, 80, &format!("push to a {label} sidecar"));
+    }
+}
+
+#[test]
+fn cli_push_refused_while_human_holds_exits_81() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x81-push-human");
+    let sock_path = start_cat(&root, "pty-x81-push-human");
+    let _human = attach_as_human(&sock_path);
+    wait_for_pty_control(&root, "pty-x81-push-human", "HumanControl");
+
+    let output = push_output(&root, "pty-x81-push-human", b"refused\n");
+    assert_exit(&output, 81, "push while a human holds the terminal");
+}
+
+/// The sidecar refuses a push while another holds the terminal.
+#[test]
+fn cli_push_refused_while_another_push_holds_exits_81() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x81-push-push");
+    start_cat(&root, "pty-x81-push-push");
+    let held = HeldPush::start(&root, "pty-x81-push-push");
+
+    let output = push_output(&root, "pty-x81-push-push", b"SECOND-PUSH\n");
+    assert_exit(&output, 81, "a second push while one holds the terminal");
+
+    let pushed = held.finish(b"PUSH-ENDS\n");
+    assert_exit(&pushed, 0, "the holding push completes");
+    let log = wait_log_contains(&root, "pty-x81-push-push", "PUSH-ENDS");
+    assert!(!log.contains("SECOND-PUSH"), "refused bytes were written");
+}
+
+/// A push revoked by a takeover with bytes still to send ends with bytes
+/// unwritten: a partial write. Its later bytes are sent only after the
+/// takeover, so this holds whatever the terminal buffers.
+#[test]
+fn cli_push_revoked_by_takeover_exits_84() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x84-revoked");
+    let sock_path = start_cat(&root, "pty-x84-revoked");
+    let held = HeldPush::start(&root, "pty-x84-revoked");
+
+    let (_human, (msg_type, _)) = hello(&sock_path, Mode::Takeover);
+    assert_eq!(msg_type, MSG_ACCEPTED);
+    let pushed = held.finish(b"AFTER-TAKEOVER\n");
+    assert_exit(&pushed, 84, "a push revoked with bytes unwritten");
+    assert!(
+        String::from_utf8_lossy(&pushed.stderr).contains("revoked"),
+        "the failure says the push was revoked"
+    );
+}
+
+/// A breadcrumb naming a socket nobody listens on: a transport failure.
+#[test]
+fn cli_push_to_a_socket_with_no_listener_exits_84() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x84-dead");
+    start_cat(&root, "pty-x84-dead");
+    let dead = root.path().join("dead.sock");
+    drop(std::os::unix::net::UnixListener::bind(&dead).unwrap());
+    point_breadcrumb_at(&root, "pty-x84-dead", &dead);
+
+    let output = push_output(&root, "pty-x84-dead", b"nowhere\n");
+    assert_exit(&output, 84, "push to a socket with no listener");
+}
+
+/// The sidecar's peer check cannot fail for a test run by one user, so a fake
+/// sidecar sends the refusal it would send, in the same order: on accepting,
+/// before reading the hello, then closing. The client-side check's mapping is
+/// unit-tested in `pty_exit`, and the hello that cannot be written because the
+/// refusal closed the connection first in `commands::attach`.
+#[test]
+fn cli_attach_and_push_refused_for_peer_identity_exit_85() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x85");
+    start_cat(&root, "pty-x85");
+    let mut refusal = Vec::new();
+    tendr::attach_proto::write_frame(
+        &mut refusal,
+        &tendr::attach_proto::Frame::Rejected {
+            class: tendr::attach_proto::RejectClass::Identity,
+            reason: "peer identity rejected".to_owned(),
+        },
+    )
+    .unwrap();
+    fake_sidecar(
+        &root,
+        "pty-x85",
+        "identity",
+        FakeReply::BeforeHello,
+        refusal,
+    );
+
+    // The refusal can close the connection before or after the hello is
+    // written; either way the push exits 85.
+    for _ in 0..20 {
+        let output = push_output(&root, "pty-x85", b"refused\n");
+        assert_exit(&output, 85, "push refused for peer identity");
+    }
+    let wrapped = WrappedAttach::spawn(&root, "x85", &["pty-x85"]);
+    assert_eq!(
+        wrapped.wait_exit(Duration::from_secs(20)),
+        85,
+        "attach refused for peer identity; cli output: {}",
+        wrapped.cli.output()
+    );
+}
+
+/// A session whose run has ended is a stale run for `attach`: the CLI's own
+/// check exits 81, as the sidecar's "session ended" refusal does when the run
+/// ends as the attach connects.
+#[test]
+fn cli_attach_to_a_finished_session_exits_81() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x81-ended");
+    tendr(&root)
+        .args(["start", "pty-x81-ended", "--pty", "--", "true"])
+        .output()
+        .unwrap();
+    harness::wait_terminal(&root, "pty-x81-ended");
+
+    let output = tendr(&root)
+        .args(["attach", "pty-x81-ended"])
+        .output()
+        .unwrap();
+    assert_exit(&output, 81, "attach to a finished session");
+}
+
+/// A pipe session can never be attached, so a finished one is refused as not
+/// PTY-enabled (1), not as a stale run.
+#[test]
+fn cli_attach_to_a_finished_pipe_session_exits_1() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pipe-attach-ended");
+    tendr(&root)
+        .args(["start", "pipe-attach-ended", "--", "true"])
+        .output()
+        .unwrap();
+    harness::wait_terminal(&root, "pipe-attach-ended");
+
+    let output = tendr(&root)
+        .args(["attach", "pipe-attach-ended"])
+        .output()
+        .unwrap();
+    assert_exit(&output, 1, "attach to a finished pipe session");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not PTY-enabled"),
+        "a pipe session is refused as not PTY-enabled: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// The same for a push to a PTY session; a pipe session keeps exit 1.
+#[test]
+fn cli_push_to_a_finished_session_exits_81_for_a_pty_and_1_for_a_pipe() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _pty = harness::SessionGuard::new(&root, "pty-x81-push-ended");
+    let _pipe = harness::SessionGuard::new(&root, "pipe-push-ended");
+    tendr(&root)
+        .args([
+            "start",
+            "pty-x81-push-ended",
+            "--pty",
+            "--stdin",
+            "--",
+            "true",
+        ])
+        .output()
+        .unwrap();
+    tendr(&root)
+        .args(["start", "pipe-push-ended", "--stdin", "--", "true"])
+        .output()
+        .unwrap();
+    harness::wait_terminal(&root, "pty-x81-push-ended");
+    harness::wait_terminal(&root, "pipe-push-ended");
+
+    let output = push_output(&root, "pty-x81-push-ended", b"too late\n");
+    assert_exit(&output, 81, "push to a finished PTY session");
+    let output = push_output(&root, "pipe-push-ended", b"too late\n");
+    assert_exit(&output, 1, "push to a finished pipe session");
+}
+
+/// A push to a session started without `--stdin` can never succeed, so that
+/// is what it reports, even while a human holds the terminal.
+#[test]
+fn cli_push_without_stdin_exits_1_even_while_a_human_holds_the_terminal() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-x1-nostdin");
+    tendr(&root)
+        .args(["start", "pty-x1-nostdin", "--pty", "--", "cat"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-x1-nostdin");
+    let sock_path = wait_for_attach_socket(&root, "pty-x1-nostdin");
+    let _human = attach_as_human(&sock_path);
+    wait_for_pty_control(&root, "pty-x1-nostdin", "HumanControl");
+
+    let output = push_output(&root, "pty-x1-nostdin", b"nowhere\n");
+    assert_exit(&output, 1, "push to a session without --stdin");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not started with --stdin"),
+        "the refusal names the missing --stdin"
+    );
+}
