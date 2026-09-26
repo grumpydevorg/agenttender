@@ -20,7 +20,12 @@ fn tendr_with_stdin(root: &TempDir, args: &[&str], input: &[u8]) -> std::process
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn tendr");
-    child.stdin.take().unwrap().write_all(input).unwrap();
+    // A command expected to fail can exit before reading its stdin, so a broken
+    // pipe here is a legitimate outcome; callers assert on the exit status.
+    match child.stdin.take().unwrap().write_all(input) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        other => other.unwrap(),
+    }
     child.wait_with_output().unwrap()
 }
 
