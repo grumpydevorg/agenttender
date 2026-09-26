@@ -11,8 +11,11 @@
 //! or sync failure, a full backlog, or storage still stalled at close stops it
 //! at the last completed append: [`Stopped`] carries that sequence and the
 //! reason, an append that completes after the stop is cut off again, and the
-//! stop callback runs once on a separate thread, so a stalled disk cannot hold
-//! up capture. The recorded process and its viewers are unaffected. Wire format:
+//! stop callback runs once, at the stop, so it has run by the time
+//! [`RecorderThread::finish`] returns. The callback only hands the stop on
+//! (the sidecar queues it for its effects thread), so a stalled disk cannot
+//! hold up capture. The recorded process and its viewers are unaffected. Wire
+//! format:
 //! `docs/plans/specs/pty-recording-format.md`.
 
 use std::collections::VecDeque;
@@ -258,10 +261,12 @@ struct Shared {
     state: Mutex<State>,
     /// Wakes the writer: a record, a stop, or close.
     work: Condvar,
-    /// Wakes waiters on the outcome: a stop, the writer finishing, or the stop
-    /// report completing.
+    /// Wakes waiters on the outcome: a stop, or the writer finishing.
     settled: Condvar,
 }
+
+/// Told of the stop, once. See [`RecorderThread::start`].
+type StopReport = Box<dyn FnOnce(Stopped) + Send>;
 
 struct State {
     /// The sequence the next record takes; `None` once exhausted.
@@ -274,8 +279,9 @@ struct State {
     synced: Option<Sequence>,
     segments: u32,
     stopped: Option<Stopped>,
+    /// Taken by the stop that reports.
+    on_stop: Option<StopReport>,
     writer_done: bool,
-    reported: bool,
 }
 
 /// Backlog cost of a resize record, which carries no payload bytes.
@@ -295,18 +301,22 @@ impl Shared {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// End the recording at the last completed append. Queued records are
-    /// discarded; the first stop wins.
+    /// End the recording at the last completed append and report it. Queued
+    /// records are discarded; the first stop wins.
     fn stop(&self, state: &mut State, reason: StopReason) {
         if state.stopped.is_some() {
             return;
         }
-        state.stopped = Some(Stopped {
+        let stopped = Stopped {
             last_recorded: state.appended,
             reason,
-        });
+        };
+        state.stopped = Some(stopped);
         state.backlog.clear();
         state.backlog_bytes = 0;
+        if let Some(report) = state.on_stop.take() {
+            report(stopped);
+        }
         self.work.notify_all();
         self.settled.notify_all();
     }
@@ -344,8 +354,14 @@ pub struct RecorderThread {
 }
 
 impl RecorderThread {
-    /// Start recording under `header`, which must describe segment 0. `on_stop`
-    /// runs once, on its own thread, if recording stops early.
+    /// Start recording under `header`, which must describe segment 0.
+    ///
+    /// `on_stop` runs once if recording stops early, at the stop: on the
+    /// producer, the storage writer or [`RecorderThread::finish`], whichever
+    /// stops it, with the recorder locked. So it must return promptly, must
+    /// not touch storage that may stall, and must not call back into the
+    /// recorder; the sidecar's only queues the stop. Once `finish` returns it
+    /// has run, if it ever will.
     pub fn start<S: SegmentStore>(
         header: SegmentHeader,
         store: S,
@@ -364,8 +380,8 @@ impl RecorderThread {
                 synced: None,
                 segments: 0,
                 stopped: None,
+                on_stop: Some(Box::new(on_stop)),
                 writer_done: false,
-                reported: false,
             }),
             work: Condvar::new(),
             settled: Condvar::new(),
@@ -388,26 +404,6 @@ impl RecorderThread {
             writer.settled.notify_all();
         });
 
-        // Reporting a stop may touch the same storage that stalled, so it never
-        // runs on a producer or on the writer.
-        let reporter = Arc::clone(&shared);
-        std::thread::spawn(move || {
-            let mut state = reporter.lock();
-            while state.stopped.is_none() && !state.writer_done {
-                state = reporter
-                    .settled
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-            let stopped = state.stopped;
-            drop(state);
-            if let Some(stopped) = stopped {
-                on_stop(stopped);
-            }
-            reporter.lock().reported = true;
-            reporter.settled.notify_all();
-        });
-
         Self {
             recorder: Recorder { shared },
         }
@@ -421,7 +417,7 @@ impl RecorderThread {
     /// Accept nothing further, append what is queued, sync, and return how the
     /// recording ended. Storage still busy after
     /// [`RecorderLimits::close_timeout`] stops the recording as
-    /// [`StopReason::Stalled`]; a stop report gets the same allowance.
+    /// [`StopReason::Stalled`]. Any stop has been reported when this returns.
     #[must_use]
     pub fn finish(self) -> RecorderSummary {
         let shared = &self.recorder.shared;
@@ -435,8 +431,6 @@ impl RecorderThread {
         if !state.writer_done {
             shared.stop(&mut state, StopReason::Stalled);
         }
-        let deadline = Instant::now() + timeout;
-        state = wait_until(shared, state, deadline, |s| s.reported);
 
         RecorderSummary {
             last_recorded: state.appended,
@@ -1109,6 +1103,32 @@ mod tests {
                 reason: StopReason::Stalled
             })
         );
+        open(&gate);
+    }
+
+    /// The stop report has run by the time `finish` returns, even for a stop
+    /// that `finish` itself declares: nothing reports a stop later.
+    #[test]
+    fn every_stop_is_reported_before_finish_returns() {
+        let gate = Gate::default();
+        let store = MemoryStore {
+            gate: Some(Arc::clone(&gate)),
+            ..MemoryStore::default()
+        };
+        let limits = RecorderLimits {
+            close_timeout: Duration::from_millis(100),
+            ..RecorderLimits::default()
+        };
+        let stops = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&stops);
+        let thread = RecorderThread::start(header(), store, limits, move |stop| {
+            seen.lock().unwrap().push(stop);
+        });
+        thread.recorder().output(b"never lands");
+
+        let summary = thread.finish();
+        let stop = summary.stopped.expect("stalled at close");
+        assert_eq!(*stops.lock().unwrap(), vec![stop]);
         open(&gate);
     }
 

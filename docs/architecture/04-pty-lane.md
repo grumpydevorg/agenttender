@@ -32,12 +32,15 @@ Current PTY rules:
 - one sidecar input writer owns the run's `InputArbiter` and the PTY input; every
   write is authorized against the current controller epoch on that thread, and
   control requests are served before queued input. That thread only decides
-  ownership changes and revocations; their `pty.control_changed` and
-  `pty.input_revoked` events and the `pty.control` patch to `meta.json` are
-  written in order by a separate thread, so a slow state root never delays a
-  takeover's acknowledgement or any input step. When the run ends, the
-  effects already decided are written before the terminal record and nothing
-  after it
+  ownership changes and revocations. The run's side effects on the session
+  paths (`pty.control_changed`, `pty.input_revoked` and `recording.stopped`
+  events, and the `pty.control` and `pty.recording` patches to `meta.json`)
+  travel as typed effects on one channel to one effects thread, which writes
+  them in order, so a slow state root never delays a takeover's
+  acknowledgement, any input step, or capture. When the run ends, a flush on
+  that channel writes every effect already decided before the terminal record;
+  the thread then stops, and anything sent later is dropped, so nothing
+  reaches the session paths after the run releases its lock
 - `push` connects to the attach socket in push mode (`Mode::Push`), claims control
   as an agent (refused if anyone holds it, so concurrent pushes never
   interleave), streams frames written one at a time, and ends with
@@ -105,10 +108,11 @@ Current PTY rules:
 - recording stops explicitly at the last completed append when the run reaches
   1 GiB, storage fails, 16 MiB of output waits for storage, or storage is still
   stalled at close; an append completing after the stop is cut back off. The
-  stop is reported off the capture and storage paths as `recording.stopped` and
-  in `meta.json` (`pty.recording.state: Stopped`, with the last recorded
-  sequence), the run ends with a warning, and the child and viewers keep
-  running
+  recorder only queues the stop on the run's effects channel, at the moment it
+  stops, so it is written off the capture and storage paths as
+  `recording.stopped` and in `meta.json` (`pty.recording.state: Stopped`, with
+  the last recorded sequence) before the run's terminal record, never after it.
+  The run ends with a warning, and the child and viewers keep running
 
 PTY-specific I/O shape:
 

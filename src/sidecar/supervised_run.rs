@@ -34,12 +34,13 @@ use super::{
     AttachEndpoint, AttachSink, LifecycleEvents, META_WRITE, PtyInput, PtyRecordingRun,
     PtyTeardown, ReadyWriter, capture_stream, capture_stream_with_tee, collect_warnings,
     deliver_ready, finished_recording, lock, run_on_exit_hooks, setup_kill_watcher,
-    setup_pty_stdin_forwarding, setup_stdin_forwarding, setup_timeout, start_pty_recording,
-    stopped_state, test_abort_point, test_fault, test_unlock_gate,
+    setup_pty_stdin_forwarding, setup_stdin_forwarding, setup_timeout, stopped_state,
+    test_abort_point, test_fault, test_unlock_gate,
 };
 #[cfg(unix)]
 use super::{
-    ConnectionRegistry, ControlEffects, SidecarControlHooks, UnixPtyInput, run_attach_listener,
+    ConnectionRegistry, RunEffects, SidecarControlHooks, UnixPtyInput, recorder_limits,
+    run_attach_listener, start_pty_recording,
 };
 use crate::model::ids::{EpochTimestamp, ProcessIdentity};
 use crate::model::meta::Meta;
@@ -237,12 +238,6 @@ impl RunCore {
         let pty_input = if is_pty {
             self.step = SidecarStep::AttachBind;
             self.attach_sink = Some(Arc::new(Mutex::new(None)));
-            self.recording = Some(start_pty_recording(
-                &dir,
-                self.meta.run_id(),
-                &self.meta.launch_spec().env,
-                self.lifecycle.with_fresh_writer(),
-            ));
             match self.start_pty_input() {
                 Ok(input) => Some(input),
                 Err(e) => return Err(self.fail(SidecarStep::AttachBind, e)),
@@ -304,9 +299,10 @@ impl RunCore {
         Ok(())
     }
 
-    /// Start a PTY session's single input writer (which owns the PTY's write
-    /// half and records applied sizes) and the attach listener on the socket
-    /// bound before spawn.
+    /// Start a PTY session's effects thread, its recorder (whose stop report
+    /// goes through that thread), its single input writer (which owns the
+    /// PTY's write half and records applied sizes) and the attach listener on
+    /// the socket bound before spawn.
     #[cfg(unix)]
     fn start_pty_input(&mut self) -> io::Result<PtyInput> {
         test_fault(SidecarStep::AttachBind.as_str())?;
@@ -328,20 +324,24 @@ impl RunCore {
         let registry = ConnectionRegistry::default();
         let control = Arc::new(Mutex::new(PtyControl::AgentControl));
         self.pty_control = Some(Arc::clone(&control));
-        let ended = Arc::new(AtomicBool::new(false));
-        let effects = ControlEffects::spawn(
+        let effects = RunEffects::spawn(
             self.session_dir().to_path_buf(),
             self.lifecycle.with_fresh_writer(),
             control,
         );
+        self.recording = Some(start_pty_recording(
+            self.session.path(),
+            self.meta.run_id(),
+            &self.meta.launch_spec().env,
+            recorder_limits(),
+            effects.sender(),
+        ));
         let hooks = SidecarControlHooks {
             effects: effects.sender(),
             registry: registry.clone(),
             attach_sink: Arc::clone(&sink),
-            ended: Arc::clone(&ended),
         };
         self.pty_teardown = Some(PtyTeardown {
-            ended,
             registry: registry.clone(),
             effects,
         });

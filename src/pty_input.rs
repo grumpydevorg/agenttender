@@ -51,11 +51,20 @@ pub trait WritablePty: PtyInputSink + Send + 'static {
     fn resize(&self, size: Geometry);
 }
 
+/// How a human took control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// A plain attach, while nobody held control.
+    Attach,
+    /// A takeover, retiring any current controller.
+    Takeover,
+}
+
 /// Side effects of ownership changes, run on the writer thread. Implementations
 /// must return promptly; anything that can block belongs on another thread.
 pub trait ControlHooks: Send + 'static {
-    /// A human took control (`trigger` is `"attach"` or `"takeover"`).
-    fn human_control(&mut self, trigger: &'static str);
+    /// A human took control.
+    fn human_control(&mut self, trigger: Trigger);
     /// No human holds control any more.
     fn human_released(&mut self);
     /// `holder` was superseded by a takeover at `epoch` and must be retired.
@@ -509,14 +518,14 @@ fn apply_control<P: WritablePty, H: ControlHooks>(
                 .as_ref()
                 .is_ok_and(|handle| handle.kind() == ControllerKind::Human)
             {
-                hooks.human_control("attach");
+                hooks.human_control(Trigger::Attach);
             }
             let _ = reply.send(result);
         }
         Control::Takeover { holder, reply } => {
             let result = arbiter.takeover(holder);
             if let Ok(takeover) = &result {
-                hooks.human_control("takeover");
+                hooks.human_control(Trigger::Takeover);
                 if let Some((retired, kind)) = takeover.retired {
                     hooks.retire(retired, kind, takeover.handle.epoch());
                 }
@@ -598,11 +607,11 @@ mod tests {
     }
 
     impl ControlHooks for Recorded {
-        fn human_control(&mut self, trigger: &'static str) {
+        fn human_control(&mut self, trigger: Trigger) {
             self.0
                 .lock()
                 .unwrap()
-                .push(format!("human_control:{trigger}"));
+                .push(format!("human_control:{trigger:?}"));
         }
 
         fn human_released(&mut self) {

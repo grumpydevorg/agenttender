@@ -119,8 +119,9 @@ impl RequestId {
     }
 }
 
-/// Who holds input ownership.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Who holds input ownership. Serialized by variant name (`"Human"`,
+/// `"Agent"`), as `pty.input_revoked` events carry it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum ControllerKind {
     Human,
     Agent,
