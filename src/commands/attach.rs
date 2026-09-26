@@ -118,8 +118,11 @@ mod unix_relay {
     /// Beyond this, further keystrokes are dropped (and reported) rather than
     /// buffered without bound; the escape is still recognized.
     const OUTBOX_DATA_LIMIT: usize = 1 << 20;
-    /// How often the keyboard and terminal size are checked.
+    /// How long the main thread waits on the keyboard before it checks again
+    /// whether the session has closed.
     const POLL: Duration = Duration::from_millis(100);
+    /// How often the terminal size is checked.
+    const SIZE_POLL: Duration = Duration::from_millis(100);
     /// How long a detach waits for the detach message to be sent.
     const DETACH_GRACE: Duration = Duration::from_millis(200);
 
@@ -142,6 +145,8 @@ mod unix_relay {
             outbox.push_control(Frame::Resize(size));
         }
 
+        let size_poll = size_poll_interval();
+        let mut size_due = Instant::now() + size_poll;
         let mut parser = EscapeParser::new(escape);
         let mut stdin = std::io::stdin().lock();
         let mut buf = [0u8; 4096];
@@ -150,14 +155,18 @@ mod unix_relay {
             if closed.load(Ordering::SeqCst) {
                 break Ending::SessionClosed;
             }
-            let now = terminal_size();
-            if now.is_some() && now != size {
-                size = now;
-                if let Some(size) = now {
-                    outbox.push_control(Frame::Resize(size));
+            if Instant::now() >= size_due {
+                size_due = Instant::now() + size_poll;
+                let now = terminal_size();
+                if now.is_some() && now != size {
+                    size = now;
+                    if let Some(size) = now {
+                        outbox.push_control(Frame::Resize(size));
+                    }
                 }
             }
-            if !stdin_readable(POLL) {
+            let timeout = size_due.saturating_duration_since(Instant::now()).min(POLL);
+            if !stdin_readable(timeout) {
                 continue;
             }
             let n = match stdin.read(&mut buf) {
@@ -379,6 +388,22 @@ mod unix_relay {
         let mut fds = [PollFd::new(&stdin, PollFlags::IN)];
         let timespec = poll_timespec(timeout);
         matches!(poll(&mut fds, Some(&timespec)), Ok(n) if n > 0)
+    }
+
+    /// How often the terminal size is checked. Debug builds accept
+    /// `TENDR_TEST_ATTACH_SIZE_POLL_MS` so tests can tell a size change
+    /// forwarded on SIGWINCH from one found by this poll; release builds ignore
+    /// it.
+    fn size_poll_interval() -> Duration {
+        if cfg!(debug_assertions) {
+            if let Some(ms) = std::env::var("TENDR_TEST_ATTACH_SIZE_POLL_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+            {
+                return Duration::from_millis(ms);
+            }
+        }
+        SIZE_POLL
     }
 
     /// The poll timeout for `timeout`, whole seconds included (saturating for a
