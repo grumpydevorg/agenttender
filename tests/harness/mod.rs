@@ -49,9 +49,9 @@ impl DeadlineAssertExt for Command {
 }
 
 /// Like [`assert_within_deadline`] but with an explicit deadline (used by the
-/// deadline's own regression test). If the invocation returns at or beyond
-/// `deadline`, this panics with an explicit message naming the command and the
-/// deadline. `assert_cmd` normally enforces that bound by killing an overrun,
+/// deadline's own regression test). If the invocation returns within 1 ms of
+/// `deadline` or later, this panics with an explicit message naming the
+/// command and the deadline. `assert_cmd` normally enforces that bound by killing an overrun,
 /// but the diagnostic intentionally states only the wall-clock fact we can
 /// observe rather than inferring how the process ended.
 #[allow(dead_code)]
@@ -60,9 +60,12 @@ pub fn assert_within(cmd: &mut Command, deadline: Duration) -> Assert {
     let start = Instant::now();
     let outcome = cmd.timeout(deadline).output();
     let elapsed = start.elapsed();
-    if elapsed >= deadline {
+    // assert_cmd enforces the deadline through wait-timeout, whose poll()
+    // truncates the remaining time to whole milliseconds: a killed overrun
+    // can return up to 1 ms before `deadline`. Round the same way.
+    if elapsed + Duration::from_millis(1) > deadline {
         panic!(
-            "HARNESS TIMEOUT: command exceeded the {:.1}s harness deadline; the invocation \
+            "HARNESS TIMEOUT: command reached the {:.1}s harness deadline; the invocation \
              returned after {:.1}s.\n  command: {desc}\n  This is the harness hang-detector \
              firing — on a loaded runner it may mean the process was starved, not a product failure. \
              Raise harness::CMD_DEADLINE only after ruling out a real hang.",
