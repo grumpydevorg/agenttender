@@ -339,8 +339,18 @@ pub struct QuiescentTerminal {
 /// condition handshake acquires the lock instead of relying on a timing gap.
 #[allow(dead_code)]
 pub fn wait_terminal_quiescent(root: &TempDir, session_name: &str) -> QuiescentTerminal {
+    wait_terminal_quiescent_ns(root, "default", session_name)
+}
+
+/// [`wait_terminal_quiescent`] for a session in `namespace`.
+#[allow(dead_code)]
+pub fn wait_terminal_quiescent_ns(
+    root: &TempDir,
+    namespace: &str,
+    session_name: &str,
+) -> QuiescentTerminal {
     let session_root = SessionRoot::new(root.path().join(".tendr/sessions"));
-    let namespace = Namespace::new("default").expect("default namespace is valid");
+    let namespace = Namespace::new(namespace).expect("test namespace is valid");
     let session_name = SessionName::new(session_name).expect("test session name is valid");
 
     poll_until(Duration::from_secs(10), Duration::from_millis(10), || {
