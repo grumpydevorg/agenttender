@@ -8,7 +8,7 @@ use tendr::model::ids::RunId;
 use tendr::recording::{
     Corruption, DecodeErrorKind, EncodeError, Geometry, MAX_PAYLOAD, Record, RecordKind,
     ResizeCause, SegmentEncoder, SegmentEnd, SegmentHeader, Sequence, TermName, TermNameError,
-    Violation, decode_recording, decode_segment,
+    Violation, decode_recording, decode_segment, dump,
 };
 
 // ---------------------------------------------------------------------------
@@ -293,6 +293,110 @@ fn encoding_the_documented_records_reproduces_the_golden_fixture() {
     let bytes = encode_segment(&mut encoder, &fixture_records());
     assert_eq!(bytes, fixture_bytes());
     assert_eq!(encoder.header_bytes().len(), BOUNDARIES[0]);
+}
+
+// ---------------------------------------------------------------------------
+// Dump (development aid; `cargo run --example dump-recording`)
+// ---------------------------------------------------------------------------
+
+fn dump_text(segments: &[&[u8]]) -> String {
+    let decoded = decode_recording(segments.iter().copied()).unwrap();
+    let mut out = Vec::new();
+    dump(&decoded, &mut out).unwrap();
+    String::from_utf8(out).expect("the dump is text")
+}
+
+#[test]
+fn dump_of_the_golden_fixture_is_stable() {
+    let expected = r#"format 1
+run 0190f1b2-3c4d-7e5f-8a6b-7c8d9e0fa1b2
+segments 1 (first index 0, first sequence 1)
+origin_unix_ns 1789000000000000000
+geometry rows=24 cols=80
+term xterm-ghostty
+input not recorded
+#1 1.000ms output len=4 "hi\x1b["
+#2 1.500ms output len=5 "31m\xff\xfe"
+#3 2.000ms resize rows=30 cols=100 user
+#4 2.000ms resize rows=29 cols=100 repaint correlation=1
+end clean
+"#;
+    assert_eq!(dump_text(&[&fixture_bytes()]), expected);
+}
+
+#[test]
+fn dump_reports_an_incomplete_final_record() {
+    let bytes = fixture_bytes();
+    let text = dump_text(&[&bytes[..BOUNDARIES[4] - 1]]);
+    assert!(
+        text.ends_with(
+            "#3 2.000ms resize rows=30 cols=100 user\n\
+             end truncated at segment 0 offset 178 (incomplete final record excluded)\n"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn dump_flags_queries_across_records_and_segments() {
+    let header = SegmentHeader {
+        input_recorded: true,
+        ..fixture_header()
+    };
+    let mut first = SegmentEncoder::new(header).unwrap();
+    let segment0 = encode_segment(
+        &mut first,
+        &[
+            output(1, 1_000_000, b"ok\r\n\x1b"),
+            Record {
+                sequence: seq(2),
+                elapsed_ns: 2_000_000,
+                kind: RecordKind::Resize {
+                    geometry: geo(30, 100),
+                    cause: ResizeCause::User,
+                },
+            },
+        ],
+    );
+    let mut second = first.next_segment().unwrap();
+    let mut segment1 = encode_segment(
+        &mut second,
+        &[
+            output(3, 3_000_000, b"[6n"),
+            Record {
+                sequence: seq(4),
+                elapsed_ns: 4_500_000,
+                kind: RecordKind::Input(b"\x1b[1;1R".to_vec()),
+            },
+            output(5, 5_000_000, b"\x1b[?1049h\x1b[?2004h\\"),
+            output(6, 6_000_000, b"\x1b]11;?"),
+        ],
+    );
+    let tail = segment1.len();
+    segment1.extend(&second.encode(&output(7, 7_000_000, b"\x07")).unwrap()[..10]);
+
+    let expected = format!(
+        r#"format 1
+run 0190f1b2-3c4d-7e5f-8a6b-7c8d9e0fa1b2
+segments 2 (first index 0, first sequence 1)
+origin_unix_ns 1789000000000000000
+geometry rows=24 cols=80
+term xterm-ghostty
+input recorded
+#1 1.000ms output len=5 "ok\r\n\x1b"
+#2 2.000ms resize rows=30 cols=100 user
+#3 3.000ms output len=3 "[6n"
+  ^ query:dsr-cpr "\x1b[6n" from #1
+#4 4.500ms input len=6 "\x1b[1;1R"
+#5 5.000ms output len=17 "\x1b[?1049h\x1b[?2004h\\"
+  ^ mode:alt-screen-on "\x1b[?1049h"
+  ^ mode:bracketed-paste-on "\x1b[?2004h"
+#6 6.000ms output len=6 "\x1b]11;?"
+unfinished escape sequence from #6: "\x1b]11;?"
+end truncated at segment 1 offset {tail} (incomplete final record excluded)
+"#
+    );
+    assert_eq!(dump_text(&[&segment0, &segment1]), expected);
 }
 
 // ---------------------------------------------------------------------------
