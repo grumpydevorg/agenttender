@@ -381,14 +381,20 @@ mod unix_relay {
     }
 
     fn stdin_readable(timeout: Duration) -> bool {
-        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        use rustix::event::{PollFd, PollFlags, poll};
         let stdin = std::io::stdin();
         let mut fds = [PollFd::new(&stdin, PollFlags::IN)];
-        let timespec = Timespec {
-            tv_sec: 0,
-            tv_nsec: i64::from(timeout.subsec_nanos()),
-        };
+        let timespec = poll_timespec(timeout);
         matches!(poll(&mut fds, Some(&timespec)), Ok(n) if n > 0)
+    }
+
+    /// The poll timeout for `timeout`, whole seconds included (saturating for a
+    /// duration too long to represent).
+    fn poll_timespec(timeout: Duration) -> rustix::event::Timespec {
+        rustix::event::Timespec::try_from(timeout).unwrap_or(rustix::event::Timespec {
+            tv_sec: i64::MAX,
+            tv_nsec: 999_999_999,
+        })
     }
 
     fn terminal_size() -> Option<(u16, u16)> {
@@ -401,6 +407,19 @@ mod unix_relay {
             Some((ws.ws_row, ws.ws_col))
         } else {
             None
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn poll_timespec_carries_whole_seconds() {
+            let ts = poll_timespec(Duration::from_millis(1500));
+            assert_eq!((ts.tv_sec, ts.tv_nsec), (1, 500_000_000));
+            let ts = poll_timespec(Duration::from_millis(100));
+            assert_eq!((ts.tv_sec, ts.tv_nsec), (0, 100_000_000));
         }
     }
 }
