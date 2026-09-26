@@ -70,7 +70,9 @@ Current PTY rules:
   not know is a malformed frame, so a client never guesses at a refusal. The
   set of classes is therefore part of the protocol version: the hello carries
   the client's version, a sidecar sends only the classes that version knows,
-  and a new class requires bumping `PROTOCOL_VERSION`. The
+  and a new class requires bumping `PROTOCOL_VERSION`. A refusal sent before
+  the hello is read (another user's peer, no free slot) may use only classes
+  every supported version knows. The
   `attach` and PTY `push` clients exit with the class's code (80, 81, 84, 85)
   and give their own failures codes from the same range
   ([guide](../guide.md#exit-codes), `tendr::pty_exit`): the CLI's own

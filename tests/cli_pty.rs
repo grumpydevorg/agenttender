@@ -3021,6 +3021,31 @@ fn cli_attach_to_a_finished_session_exits_81() {
     assert_exit(&output, 81, "attach to a finished session");
 }
 
+/// A pipe session can never be attached, so a finished one is refused as not
+/// PTY-enabled (1), not as a stale run.
+#[test]
+fn cli_attach_to_a_finished_pipe_session_exits_1() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pipe-attach-ended");
+    tendr(&root)
+        .args(["start", "pipe-attach-ended", "--", "true"])
+        .output()
+        .unwrap();
+    harness::wait_terminal(&root, "pipe-attach-ended");
+
+    let output = tendr(&root)
+        .args(["attach", "pipe-attach-ended"])
+        .output()
+        .unwrap();
+    assert_exit(&output, 1, "attach to a finished pipe session");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not PTY-enabled"),
+        "a pipe session is refused as not PTY-enabled: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// The same for a push to a PTY session; a pipe session keeps exit 1.
 #[test]
 fn cli_push_to_a_finished_session_exits_81_for_a_pty_and_1_for_a_pipe() {

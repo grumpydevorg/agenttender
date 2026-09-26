@@ -68,7 +68,9 @@ impl TryFrom<u8> for Mode {
 ///
 /// Decoding is strict, so the set is part of the protocol version: a sidecar
 /// sends only the classes of the version the client's hello names, and adding
-/// a class means bumping [`PROTOCOL_VERSION`].
+/// a class means bumping [`PROTOCOL_VERSION`]. A refusal sent before the hello
+/// is read (a peer of another user, no free connection slot) may use only
+/// classes every supported version knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RejectClass {

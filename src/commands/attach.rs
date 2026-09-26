@@ -21,16 +21,17 @@ pub fn cmd_attach(
 
     let meta = session::read_meta(&session)?;
 
-    // A run that has ended is a stale run (81), as the sidecar reports when it
-    // ends while the attach connects. Only PTY sessions can be attached, so
-    // this is the PTY meaning whatever the session.
-    if !matches!(meta.status(), RunStatus::Running { .. }) {
-        return Err(PtyExitCode::Control.error(anyhow::anyhow!("session is not running")));
-    }
-
+    // First what can never succeed: a session without a PTY cannot be attached
+    // whatever its state (1).
     let pty = meta
         .pty()
         .ok_or_else(|| anyhow::anyhow!("session is not PTY-enabled"))?;
+
+    // A PTY run that has ended is a stale run (81), as the sidecar reports when
+    // it ends while the attach connects.
+    if !matches!(meta.status(), RunStatus::Running { .. }) {
+        return Err(PtyExitCode::Control.error(anyhow::anyhow!("session is not running")));
+    }
 
     // Informational pre-check for a clear message; the sidecar is the authority.
     if !takeover && pty.control == PtyControl::HumanControl {
@@ -114,12 +115,22 @@ fn hello(stream: &mut std::os::unix::net::UnixStream, mode: Mode) -> anyhow::Res
     let transport = |e: std::io::Error| {
         PtyExitCode::Runtime.error(anyhow::anyhow!("{what} handshake failed: {e}"))
     };
-    let sent = stream
-        .set_read_timeout(Some(HELLO_REPLY_TIMEOUT))
-        .and_then(|()| attach_proto::write_frame(stream, &Frame::Hello(mode)));
+    // macOS refuses SO_RCVTIMEO (EINVAL) on a socket whose peer has already
+    // shut down: exactly the refusal-before-hello case. Then read without
+    // blocking, so a buffered refusal is still seen and a live peer that never
+    // got a hello cannot hold the read forever.
+    let timeout = stream.set_read_timeout(Some(HELLO_REPLY_TIMEOUT));
+    let unbounded = timeout.is_err();
+    if unbounded {
+        stream.set_nonblocking(true).map_err(transport)?;
+    }
+    let sent = timeout.and_then(|()| attach_proto::write_frame(stream, &Frame::Hello(mode)));
     // After a failed write the peer has closed its end, so this read returns
-    // at once whether or not the timeout was set.
+    // at once; otherwise it is bounded by the reply timeout.
     let reply = attach_proto::read_frame(stream);
+    if unbounded {
+        let _ = stream.set_nonblocking(false);
+    }
     if let Err(e) = sent {
         if matches!(reply, Err(FrameError::Io(_))) {
             return Err(transport(e));
