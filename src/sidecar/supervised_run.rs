@@ -38,7 +38,9 @@ use super::{
     stopped_state, test_abort_point, test_fault, test_unlock_gate,
 };
 #[cfg(unix)]
-use super::{ConnectionRegistry, SidecarControlHooks, UnixPtyInput, run_attach_listener};
+use super::{
+    ConnectionRegistry, ControlEffects, SidecarControlHooks, UnixPtyInput, run_attach_listener,
+};
 use crate::model::ids::{EpochTimestamp, ProcessIdentity};
 use crate::model::meta::Meta;
 use crate::model::pty::{PtyControl, PtyMeta, PtyRecording, RecordingState};
@@ -101,8 +103,8 @@ struct RunCore {
     /// A PTY session's exact recording of output and applied geometry, until
     /// it is finished into meta.
     recording: Option<PtyRecordingRun>,
-    /// A PTY session's live input owner, set by the control hooks on the input
-    /// writer thread. `meta` never tracks it, so every write folds it in.
+    /// A PTY session's input owner, set by the control effects thread once the
+    /// change is logged. `meta` never tracks it, so every write folds it in.
     pty_control: Option<Arc<Mutex<PtyControl>>>,
     /// Ends a PTY session's attach side with the run.
     pty_teardown: Option<PtyTeardown>,
@@ -327,18 +329,22 @@ impl RunCore {
         let control = Arc::new(Mutex::new(PtyControl::AgentControl));
         self.pty_control = Some(Arc::clone(&control));
         let ended = Arc::new(AtomicBool::new(false));
-        self.pty_teardown = Some(PtyTeardown {
-            ended: Arc::clone(&ended),
-            registry: registry.clone(),
-        });
+        let effects = ControlEffects::spawn(
+            self.session_dir().to_path_buf(),
+            self.lifecycle.with_fresh_writer(),
+            control,
+        );
         let hooks = SidecarControlHooks {
-            session_dir: self.session_dir().to_path_buf(),
-            facts: self.lifecycle.with_fresh_writer(),
+            effects: effects.sender(),
             registry: registry.clone(),
             attach_sink: Arc::clone(&sink),
-            control,
-            ended,
+            ended: Arc::clone(&ended),
         };
+        self.pty_teardown = Some(PtyTeardown {
+            ended,
+            registry: registry.clone(),
+            effects,
+        });
         let input = PtyInput {
             writer: crate::pty_input::InputWriter::spawn(
                 self.meta.run_id(),

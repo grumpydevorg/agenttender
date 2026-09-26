@@ -31,7 +31,13 @@ Current PTY rules:
   whose descriptions are nonblocking with poll-aware read and write halves
 - one sidecar input writer owns the run's `InputArbiter` and the PTY input; every
   write is authorized against the current controller epoch on that thread, and
-  control requests are served before queued input
+  control requests are served before queued input. That thread only decides
+  ownership changes and revocations; their `pty.control_changed` and
+  `pty.input_revoked` events and the `pty.control` patch to `meta.json` are
+  written in order by a separate thread, so a slow state root never delays a
+  takeover's acknowledgement or any input step. When the run ends, the
+  effects already decided are written before the terminal record and nothing
+  after it
 - `push` connects to the attach socket in push mode (`MODE_PUSH`), claims control
   as an agent (refused if anyone holds it, so concurrent pushes never
   interleave), streams frames written one at a time, and ends with

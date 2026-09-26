@@ -691,7 +691,7 @@ impl LifecycleEvents {
 
     /// Same session and run, freshly minted writer identity — for sidecar
     /// threads that append concurrently with the lifecycle writer (the
-    /// attach listener, the input writer's hooks, the recorder's stop report).
+    /// attach listener, the control effects thread, the recorder's stop report).
     /// The protocol is multi-writer by design: each writer keeps its own
     /// contiguous `seq` chain (spec §1).
     fn with_fresh_writer(&self) -> Self {
@@ -1616,13 +1616,16 @@ impl ConnectionRegistry {
 }
 
 /// Ends a PTY session's attach side when its run ends, before the terminal
-/// record is written: the control hooks stop touching disk (after
-/// `start --replace` the session paths belong to the next run), and every
-/// connection is shut down (PR #68 review, finding 1).
+/// record is written: the control hooks stop recording (after `start --replace`
+/// the session paths belong to the next run), every connection is shut down
+/// (PR #68 review, finding 1), and the control effects already decided are
+/// recorded, so they precede the terminal event and meta write and nothing
+/// reaches the session paths after it (finding 3).
 #[cfg(unix)]
 struct PtyTeardown {
     ended: Arc<AtomicBool>,
     registry: ConnectionRegistry,
+    effects: ControlEffects,
 }
 
 #[cfg(unix)]
@@ -1630,6 +1633,80 @@ impl PtyTeardown {
     fn run(&self) {
         self.ended.store(true, Ordering::SeqCst);
         self.registry.close();
+        self.effects.flush_and_stop();
+    }
+}
+
+/// A control side effect for the session's event log and `meta.json`.
+#[cfg(unix)]
+enum ControlEffect {
+    /// Append the `kind` event with `data`; then, for an ownership change,
+    /// publish the new owner to the guard and patch it into `meta.json`.
+    Fact {
+        kind: &'static str,
+        data: serde_json::Value,
+        owner: Option<PtyControl>,
+    },
+    /// Everything sent earlier is recorded: acknowledge and stop.
+    Flush(std::sync::mpsc::SyncSender<()>),
+}
+
+/// Records control side effects on their own thread, in the order the input
+/// writer decided them, so a slow or stalled state root never delays a
+/// takeover's acknowledgement or any PTY input step (PR #68 review, finding 3).
+#[cfg(unix)]
+struct ControlEffects {
+    tx: std::sync::mpsc::Sender<ControlEffect>,
+}
+
+#[cfg(unix)]
+impl ControlEffects {
+    /// Start the thread. `control` is the live owner the guard folds into its
+    /// whole-meta writes; this thread updates it.
+    fn spawn(
+        session_dir: PathBuf,
+        mut facts: LifecycleEvents,
+        control: Arc<Mutex<PtyControl>>,
+    ) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for effect in rx {
+                match effect {
+                    ControlEffect::Fact { kind, data, owner } => {
+                        // WAL order (spec §3.6): the fact is appended before any
+                        // meta write can carry the new owner. The append itself
+                        // is best-effort, not fsynced.
+                        facts.append_fact(kind, data);
+                        if let Some(owner) = owner {
+                            // Under META_WRITE, so a guard write either precedes
+                            // this (and the patch lands the new owner) or folds
+                            // the new owner in itself.
+                            let _serialized = lock(&META_WRITE);
+                            *lock(&control) = owner.clone();
+                            patch_meta_file(&session_dir, |meta| meta.set_pty_control(owner));
+                        }
+                    }
+                    ControlEffect::Flush(done) => {
+                        let _ = done.send(());
+                        return;
+                    }
+                }
+            }
+        });
+        Self { tx }
+    }
+
+    fn sender(&self) -> std::sync::mpsc::Sender<ControlEffect> {
+        self.tx.clone()
+    }
+
+    /// Wait until every effect sent so far is recorded, then stop: an effect
+    /// sent later queues behind the flush and is never recorded.
+    fn flush_and_stop(&self) {
+        let (done, flushed) = std::sync::mpsc::sync_channel(1);
+        if self.tx.send(ControlEffect::Flush(done)).is_ok() {
+            let _ = flushed.recv();
+        }
     }
 }
 #[cfg(not(unix))]
@@ -1639,55 +1716,47 @@ type PtyTeardown = std::convert::Infallible;
 #[cfg(unix)]
 const MAX_ATTACH_CONNECTIONS: usize = 8;
 
-/// Ownership side effects, run on the input writer thread.
+/// Ownership side effects, decided on the input writer thread. Only the
+/// connection registry is touched there; the event log and `meta.json` are
+/// written by [`ControlEffects`].
 #[cfg(unix)]
 struct SidecarControlHooks {
-    session_dir: PathBuf,
-    facts: LifecycleEvents,
+    effects: std::sync::mpsc::Sender<ControlEffect>,
     registry: ConnectionRegistry,
     attach_sink: AttachSink,
-    /// The live owner, read by the guard's whole-meta writes.
-    control: Arc<Mutex<PtyControl>>,
     /// Set when the run ends: from then on the hooks record nothing.
     ended: Arc<AtomicBool>,
 }
 
 #[cfg(unix)]
 impl SidecarControlHooks {
-    /// Publish the new owner to the guard before patching `meta.json`: a guard
-    /// write that already read the old owner holds [`META_WRITE`], so this
-    /// patch lands after it and the file ends on the new owner either way.
-    fn set_control(&self, control: PtyControl) {
-        *lock(&self.control) = control.clone();
-        set_pty_control_on_disk(&self.session_dir, control);
+    /// Queue a fact for the effects thread unless the run has ended. Never
+    /// blocks: the queue is unbounded, and a stopped thread drops it.
+    fn record(&self, kind: &'static str, data: serde_json::Value, owner: Option<PtyControl>) {
+        if self.ended.load(Ordering::SeqCst) {
+            return;
+        }
+        let _ = self.effects.send(ControlEffect::Fact { kind, data, owner });
     }
 }
 
 #[cfg(unix)]
 impl crate::pty_input::ControlHooks for SidecarControlHooks {
     fn human_control(&mut self, trigger: &'static str) {
-        if self.ended.load(Ordering::SeqCst) {
-            return;
-        }
-        // WAL-ordered control fact before the meta flip (spec §3.6); the
-        // append itself is best-effort, not fsynced. Minimal by design: who
-        // owns the PTY's input, nothing else.
-        self.facts.append_fact(
+        // Minimal by design: who owns the PTY's input, nothing else.
+        self.record(
             "pty.control_changed",
             serde_json::json!({"control": "HumanControl", "trigger": trigger}),
+            Some(PtyControl::HumanControl),
         );
-        self.set_control(PtyControl::HumanControl);
     }
 
     fn human_released(&mut self) {
-        if self.ended.load(Ordering::SeqCst) {
-            return;
-        }
-        self.facts.append_fact(
+        self.record(
             "pty.control_changed",
             serde_json::json!({"control": "AgentControl", "trigger": "detach"}),
+            Some(PtyControl::AgentControl),
         );
-        self.set_control(PtyControl::AgentControl);
     }
 
     fn retire(
@@ -1729,12 +1798,10 @@ impl crate::pty_input::ControlHooks for SidecarControlHooks {
         accepted: usize,
         total: usize,
     ) {
-        if self.ended.load(Ordering::SeqCst) {
-            return;
-        }
-        self.facts.append_fact(
+        self.record(
             "pty.input_revoked",
             serde_json::json!({"kind": format!("{kind:?}"), "accepted": accepted, "total": total}),
+            None,
         );
     }
 }
@@ -2149,15 +2216,10 @@ fn apply_pty_resize(fd: &std::fs::File, rows: u16, cols: u16) -> io::Result<()> 
 }
 
 /// Serializes the sidecar's `meta.json` writes once helper threads can patch it:
-/// the patches below, and the lifecycle guard's writes, which fold in the
-/// recording state they read under this lock.
+/// the patches below (recording stops, and control changes from
+/// [`ControlEffects`]), and the lifecycle guard's writes, which fold in the
+/// live owner and the recording state they read under this lock.
 static META_WRITE: Mutex<()> = Mutex::new(());
-
-/// Best-effort: flip the PTY control state in the session's `meta.json`.
-#[cfg(unix)]
-fn set_pty_control_on_disk(session_dir: &Path, control: PtyControl) {
-    patch_meta_on_disk(session_dir, |meta| meta.set_pty_control(control));
-}
 
 /// Best-effort: patch the session's `meta.json` through a typed `Meta`
 /// round-trip (read → `patch` → write). Keeps meta.json a valid typed `Meta` —
@@ -2168,6 +2230,11 @@ fn set_pty_control_on_disk(session_dir: &Path, control: PtyControl) {
 /// `write_meta_atomic` elsewhere.
 fn patch_meta_on_disk(session_dir: &Path, patch: impl FnOnce(&mut Meta)) {
     let _serialized = lock(&META_WRITE);
+    patch_meta_file(session_dir, patch);
+}
+
+/// [`patch_meta_on_disk`] for a caller already holding [`META_WRITE`].
+fn patch_meta_file(session_dir: &Path, patch: impl FnOnce(&mut Meta)) {
     let meta_path = session_dir.join("meta.json");
     let Ok(content) = std::fs::read_to_string(&meta_path) else {
         return;
@@ -2351,20 +2418,9 @@ mod tests {
                 control: old_conn,
             },
         ));
-        let mut hooks = SidecarControlHooks {
-            session_dir: dir.path().to_path_buf(),
-            facts: LifecycleEvents::new(
-                dir.path(),
-                &Namespace::new("default").unwrap(),
-                &SessionName::new("retire").unwrap(),
-                RunId::new(),
-                Generation::first(),
-            ),
-            registry: registry.clone(),
-            attach_sink: Arc::clone(&sink),
-            control: Arc::new(Mutex::new(PtyControl::AgentControl)),
-            ended: Arc::new(AtomicBool::new(false)),
-        };
+        let (mut hooks, _control, _teardown) = hooks_for(dir.path());
+        hooks.registry = registry.clone();
+        hooks.attach_sink = Arc::clone(&sink);
 
         hooks.retire(old, ControllerKind::Human, ControllerEpoch::new(2));
 
@@ -2381,6 +2437,138 @@ mod tests {
         );
         assert!(!installed, "a retired connection installed its viewer");
         assert!(lock(&sink).is_none());
+    }
+
+    /// Control hooks for a session at `dir`, the owner they publish, and the
+    /// teardown that ends them.
+    fn hooks_for(dir: &Path) -> (SidecarControlHooks, Arc<Mutex<PtyControl>>, PtyTeardown) {
+        let control = Arc::new(Mutex::new(PtyControl::AgentControl));
+        let effects = ControlEffects::spawn(
+            dir.to_path_buf(),
+            LifecycleEvents::new(
+                dir,
+                &Namespace::new("default").unwrap(),
+                &SessionName::new("effects").unwrap(),
+                RunId::new(),
+                Generation::first(),
+            ),
+            Arc::clone(&control),
+        );
+        let (registry, ended) = (
+            ConnectionRegistry::default(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let hooks = SidecarControlHooks {
+            effects: effects.sender(),
+            registry: registry.clone(),
+            attach_sink: Arc::new(Mutex::new(None)),
+            ended: Arc::clone(&ended),
+        };
+        let teardown = PtyTeardown {
+            ended,
+            registry,
+            effects,
+        };
+        (hooks, control, teardown)
+    }
+
+    /// Make `dir/meta.json` a FIFO: reading it blocks until a writer opens it,
+    /// standing in for a stalled state root.
+    fn stall_meta_json(dir: &Path) {
+        use std::os::unix::ffi::OsStrExt;
+        let path = dir.join("meta.json");
+        let _ = std::fs::remove_file(&path);
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `c` is a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    }
+
+    /// Feed the stalled `meta.json` FIFO one valid meta, unblocking its reader.
+    fn unstall_meta_json(dir: &Path, meta: &Meta) {
+        let mut fifo = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("meta.json"))
+            .unwrap();
+        fifo.write_all(serde_json::to_string_pretty(meta).unwrap().as_bytes())
+            .unwrap();
+    }
+
+    /// A takeover is acknowledged as soon as the owner is updated in memory: the
+    /// control hooks, which run on the input writer thread, must not wait for
+    /// the event log or `meta.json` (PR #68 review, finding 3).
+    #[test]
+    fn control_hooks_do_not_wait_for_a_stalled_meta_json() {
+        use crate::pty_input::ControlHooks;
+
+        let dir = tempfile::tempdir().unwrap();
+        let meta = write_pty_meta(dir.path());
+        stall_meta_json(dir.path());
+        let (mut hooks, control, teardown) = hooks_for(dir.path());
+
+        let (done, returned) = std::sync::mpsc::channel();
+        let writer_thread = std::thread::spawn(move || {
+            hooks.human_control("takeover");
+            let _ = done.send(());
+            hooks
+        });
+        let prompt = returned
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .is_ok();
+        // Unblock whoever reads meta.json, so neither outcome hangs the test.
+        unstall_meta_json(dir.path(), &meta);
+        let _hooks = writer_thread.join().unwrap();
+        assert!(prompt, "human_control waited for meta.json");
+
+        // The change is still recorded, in order, once the state root recovers.
+        teardown.run();
+        assert_eq!(*lock(&control), PtyControl::HumanControl);
+        let on_disk: Meta =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("meta.json")).unwrap())
+                .unwrap();
+        assert_eq!(on_disk.pty().unwrap().control, PtyControl::HumanControl);
+        assert_eq!(control_facts(dir.path()), ["pty.control_changed"]);
+    }
+
+    /// The control and revocation facts in `dir`'s event log, in order.
+    fn control_facts(dir: &Path) -> Vec<String> {
+        crate::events::read_session_events(dir)
+            .unwrap()
+            .events
+            .iter()
+            .map(|e| e.kind.as_str().to_owned())
+            .filter(|k| k.starts_with("pty."))
+            .collect()
+    }
+
+    /// A run's end records every control effect already decided, before the
+    /// terminal record, and nothing decided after it (PR #68 review, findings 1
+    /// and 3): the session paths may belong to a replacement run by then.
+    #[test]
+    fn a_run_end_records_queued_control_effects_and_nothing_later() {
+        use crate::model::pty_control::ControllerKind;
+        use crate::pty_input::ControlHooks;
+
+        let dir = tempfile::tempdir().unwrap();
+        write_pty_meta(dir.path());
+        let (mut hooks, _control, teardown) = hooks_for(dir.path());
+
+        hooks.human_control("attach");
+        hooks.input_revoked(ControllerKind::Agent, 1, 2);
+        teardown.run();
+        // Recorded by the time the teardown returns, without polling.
+        assert_eq!(
+            control_facts(dir.path()),
+            ["pty.control_changed", "pty.input_revoked"]
+        );
+
+        hooks.human_released();
+        hooks.input_revoked(ControllerKind::Human, 0, 1);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(control_facts(dir.path()).len(), 2, "nothing after the end");
+        let on_disk: Meta =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("meta.json")).unwrap())
+                .unwrap();
+        assert_eq!(on_disk.pty().unwrap().control, PtyControl::HumanControl);
     }
 
     /// A PTY that accepts everything and records it.
@@ -2499,7 +2687,7 @@ mod tests {
         assert_eq!(original.pty().unwrap().control, PtyControl::AgentControl);
 
         // attach
-        set_pty_control_on_disk(dir.path(), PtyControl::HumanControl);
+        patch_meta_on_disk(dir.path(), |m| m.set_pty_control(PtyControl::HumanControl));
         let after_attach: Meta =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("meta.json")).unwrap())
                 .expect("meta.json still deserializes as typed Meta after attach");
@@ -2514,7 +2702,7 @@ mod tests {
         );
 
         // detach
-        set_pty_control_on_disk(dir.path(), PtyControl::AgentControl);
+        patch_meta_on_disk(dir.path(), |m| m.set_pty_control(PtyControl::AgentControl));
         let after_detach: Meta =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("meta.json")).unwrap())
                 .unwrap();
