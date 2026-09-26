@@ -459,6 +459,40 @@ Limits:
 - Run agents in herdr panes, not under Tendr: `tendr start --pty -- omp`
   works, but herdr cannot see that agent's state.
 
+## Exit codes
+
+Exit codes are command-scoped: the same number can mean different things to
+different commands, and older codes keep their historical meanings. Every
+command exits 0 on success and 1 on an error without a code of its own below
+(session not found, session not running, an I/O error, …).
+
+| Command | Code | Meaning |
+|---|---|---|
+| any | 2 | Usage error from argument parsing |
+| any, with `--host` | 2 | Invalid destination, or a local-only command (printed with an `ssh` fallback) |
+| any, with `--host` | the remote's | The remote `tendr`'s exit code; 255 is `ssh` failing to connect |
+| `start` | 2, 5 | The child failed to spawn; the sidecar failed |
+| `run` | the child's | The child's own code, or 2 spawn failed, 3 sidecar lost, 4 dependency failed, 5 sidecar failed, 124 timed out, 137 killed |
+| `wait` | 1 | `--timeout` passed before the sessions ended |
+| `wait` | 2, 3, 4, 5 | Spawn failed, sidecar lost, dependency failed, sidecar failed |
+| `wait` | 42, 124, 137 | The child exited non-zero; a dependency timed out; killed while waiting on a dependency. With several sessions, the most severe code wins; a session killed or timed out on request is success |
+| `exec` | the command's | The command's own exit code; 124 if `--timeout` passed; 2 for a malformed `--frame-from-stdin` frame |
+| `events` | 44, 65 | `--from-cursor` names history that is gone; `--strict` found unparseable lines |
+| `emit` | 2, 5, 6 | Invalid `--parent`; corrupt session; invalid kind or source |
+| `wrap` | the child's | The wrapped command's code; 6 for an `--event` with a reserved prefix |
+| `query` | DuckDB's | DuckDB's exit code |
+| `guide`, `skill install` | 2 | Unknown topic; refusing to overwrite a modified skill file |
+| `attach`, `push` to a PTY session | 80 | Protocol: the session answered the hello outside this attach protocol, or not within 10 s (an older or newer `tendr`) |
+| `attach`, `push` to a PTY session | 81 | Control conflict: another client holds the terminal (a plain `attach` while a human is attached, or a `push` while anyone is), the attach was taken over by another client's `--takeover`, or the run ended as it connected |
+| `attach`, `push` to a PTY session | 82 | Reserved: operation deadline exceeded |
+| `attach`, `push` to a PTY session | 83 | Reserved: missing or incompatible screen extension |
+| `attach`, `push` to a PTY session | 84 | Runtime or transport: the attach socket is missing or unreachable, the connection fails, or a push ended revoked or stopped with bytes unwritten (stderr gives the byte counts) |
+| `attach`, `push` to a PTY session | 85 | Identity: the socket's listener, or the connecting client, is another user |
+
+A push whose every byte reached the terminal exits 0, even if a takeover lands
+just after. An `attach` ended by SIGHUP, SIGTERM or SIGINT exits 1. A `push` to
+a pipe session keeps exit 1 for its failures.
+
 ## See also
 
 - [Architecture](architecture/README.md) · [Design principles](design-principles.md) · [Roadmap](ROADMAP.md)

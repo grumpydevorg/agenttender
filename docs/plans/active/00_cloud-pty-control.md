@@ -490,7 +490,7 @@ Basis: this plan document; branch `feat/pty-runtime-takeover` at `92512a0`; code
 | Repaint nudge after reattach | **Not done** (codec supports `ResizeCause::Repaint`, nothing emits it). |
 | Query/repaint measurement | **Not done.** The inspection tool exists: `examples/dump-recording.rs` (step 4) dumps a recording and flags DA1/DA2, DSR (5n, 6n), DECRQM, kitty keyboard, modifyOtherKeys, OSC 10/11, XTVERSION, alt-screen and bracketed-paste sequences. |
 | Nested `ssh -t` fixture, paste fixture, Ctrl-] named test | **Not done.** |
-| Exit-code table in `docs/guide.md` | **Not done;** attach refusals exit 1. |
+| Exit-code table in `docs/guide.md` | **Done (step 7):** command-scoped table in the guide ("Exit codes"); `attach` and PTY `push` exit 80/81/84/85 (82 and 83 reserved), and `MSG_REJECTED` carries a `RejectClass` byte. A client retired by `--takeover` exits 81. Tests: `cli_attach_refused_while_human_holds_exits_81`, `cli_attach_refused_by_the_sidecar_exits_81`, `cli_attach_retired_by_a_takeover_exits_81`, `cli_attach_to_an_older_sidecar_exits_80`, `cli_push_to_an_older_sidecar_exits_80`, `cli_push_refused_while_human_holds_exits_81`, `cli_push_refused_while_another_push_holds_exits_81`, `cli_push_revoked_by_takeover_exits_84`, `cli_push_to_a_socket_with_no_listener_exits_84`, `cli_attach_and_push_refused_for_peer_identity_exit_85`. |
 | Recording policy (`--record-input`, recording off) | Deferred by the PR. |
 
 ### Ordered steps (one PR each)

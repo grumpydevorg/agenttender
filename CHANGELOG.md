@@ -28,6 +28,16 @@
 - **`tendr push` to a PTY session is acknowledged.** It exits non-zero, with
   byte counts, when it is refused or its bytes are not all written; a second
   concurrent push is refused instead of interleaving. Pipe sessions are unchanged.
+- **`tendr attach` and `tendr push` to a PTY session exit 80–85 instead of 1
+  when refused or cut off.** 80: the session speaks another attach protocol
+  version. 81: another client holds the terminal, or took it over; a
+  `tendr attach` retired by another client's `--takeover` now exits 81, not 0.
+  84: the attach socket is missing or unreachable, or a push ended with bytes
+  unwritten. 85: the socket's listener or client is another user. 82 and 83 are
+  reserved. Other failures, and an attach ended by a signal, still exit 1;
+  `docs/guide.md` has the command-scoped table. The sidecar's refusal frame now
+  carries a class byte ahead of its reason, so clients read the reason for a
+  refusal from the class instead of its text.
 - **In `tendr attach`, `Ctrl-\` is an escape prefix:** `Ctrl-\ d` detaches and
   `Ctrl-\ Ctrl-\` sends one. `--escape none` turns it off.
 - **PTY children start at 24×80** instead of 0×0, and a resize with a zero
