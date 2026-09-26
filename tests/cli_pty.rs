@@ -2636,17 +2636,35 @@ impl HeldPush {
     }
 }
 
+/// When a [`fake_sidecar`] replies.
+#[derive(Clone, Copy)]
+enum FakeReply {
+    /// After reading the hello, as a sidecar answering it does.
+    AfterHello,
+    /// On accepting, then closing without reading anything, as the real
+    /// sidecar refuses a peer of another user or a connection over its limit.
+    BeforeHello,
+}
+
 /// Point `session`'s breadcrumb at a fake sidecar listening in `root`, which
-/// reads each connection's hello and answers with `reply`, raw frame bytes, as
-/// a sidecar speaking another protocol would. The real sidecar keeps running.
-fn fake_sidecar(root: &TempDir, session: &str, label: &str, reply: Vec<u8>) {
+/// answers each connection with `reply`, raw frame bytes, as a sidecar speaking
+/// another protocol would. The real sidecar keeps running.
+fn fake_sidecar(root: &TempDir, session: &str, label: &str, when: FakeReply, reply: Vec<u8>) {
     let sock = root.path().join(format!("{label}.sock"));
     let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
     std::thread::spawn(move || {
         for mut stream in listener.incoming().map_while(Result::ok) {
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-            if read_msg(&mut stream).is_ok() {
-                let _ = stream.write_all(&reply);
+            match when {
+                FakeReply::AfterHello => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+                    if read_msg(&mut stream).is_ok() {
+                        let _ = stream.write_all(&reply);
+                    }
+                }
+                FakeReply::BeforeHello => {
+                    let _ = stream.write_all(&reply);
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
             }
         }
     });
@@ -2765,7 +2783,7 @@ fn cli_attach_to_an_older_sidecar_exits_80() {
         ("old", frame_bytes(MSG_REJECTED, b"busy")),
         ("new", frame_bytes(0x7f, b"hello from the future")),
     ] {
-        fake_sidecar(&root, "pty-x80-attach", label, reply);
+        fake_sidecar(&root, "pty-x80-attach", label, FakeReply::AfterHello, reply);
         let wrapped = WrappedAttach::spawn(&root, &format!("x80-{label}"), &["pty-x80-attach"]);
         assert_eq!(
             wrapped.wait_exit(Duration::from_secs(20)),
@@ -2788,7 +2806,7 @@ fn cli_push_to_an_older_sidecar_exits_80() {
         ("old", frame_bytes(MSG_REJECTED, b"busy")),
         ("new", frame_bytes(0x7f, b"hello from the future")),
     ] {
-        fake_sidecar(&root, "pty-x80-push", label, reply);
+        fake_sidecar(&root, "pty-x80-push", label, FakeReply::AfterHello, reply);
         let output = push_output(&root, "pty-x80-push", b"never-written\n");
         assert_exit(&output, 80, &format!("push to a {label} sidecar"));
     }
@@ -2862,8 +2880,10 @@ fn cli_push_to_a_socket_with_no_listener_exits_84() {
 }
 
 /// The sidecar's peer check cannot fail for a test run by one user, so a fake
-/// sidecar sends the refusal it would send; the client-side check's mapping is
-/// unit-tested in `pty_exit`.
+/// sidecar sends the refusal it would send, in the same order: on accepting,
+/// before reading the hello, then closing. The client-side check's mapping is
+/// unit-tested in `pty_exit`, and the hello that cannot be written because the
+/// refusal closed the connection first in `commands::attach`.
 #[test]
 fn cli_attach_and_push_refused_for_peer_identity_exit_85() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -2879,10 +2899,20 @@ fn cli_attach_and_push_refused_for_peer_identity_exit_85() {
         },
     )
     .unwrap();
-    fake_sidecar(&root, "pty-x85", "identity", refusal);
+    fake_sidecar(
+        &root,
+        "pty-x85",
+        "identity",
+        FakeReply::BeforeHello,
+        refusal,
+    );
 
-    let output = push_output(&root, "pty-x85", b"refused\n");
-    assert_exit(&output, 85, "push refused for peer identity");
+    // The refusal can close the connection before or after the hello is
+    // written; either way the push exits 85.
+    for _ in 0..20 {
+        let output = push_output(&root, "pty-x85", b"refused\n");
+        assert_exit(&output, 85, "push refused for peer identity");
+    }
     let wrapped = WrappedAttach::spawn(&root, "x85", &["pty-x85"]);
     assert_eq!(
         wrapped.wait_exit(Duration::from_secs(20)),

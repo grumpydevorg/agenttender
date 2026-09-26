@@ -94,19 +94,39 @@ pub(super) fn connect(
         ))
     })?;
 
+    hello(&mut stream, mode)?;
+    Ok(stream)
+}
+
+/// Send the v1 hello in `mode` and require the sidecar's acceptance.
+///
+/// The sidecar refuses a peer of another user, or a connection beyond its
+/// limit, before reading the hello, and closes the connection. If that lands
+/// first, the hello cannot be written, but the refusal is still waiting to be
+/// read: it, not the failed write, decides the outcome. The write's error is
+/// reported only when no frame can be read.
+#[cfg(unix)]
+fn hello(stream: &mut std::os::unix::net::UnixStream, mode: Mode) -> anyhow::Result<()> {
     let what = verb(mode);
     let transport = |e: std::io::Error| {
         PtyExitCode::Runtime.error(anyhow::anyhow!("{what} handshake failed: {e}"))
     };
-    stream
+    let sent = stream
         .set_read_timeout(Some(HELLO_REPLY_TIMEOUT))
-        .map_err(transport)?;
-    attach_proto::write_frame(&mut stream, &Frame::Hello(mode)).map_err(transport)?;
-    hello_reply(attach_proto::read_frame(&mut stream), what)?;
+        .and_then(|()| attach_proto::write_frame(stream, &Frame::Hello(mode)));
+    // After a failed write the peer has closed its end, so this read returns
+    // at once whether or not the timeout was set.
+    let reply = attach_proto::read_frame(stream);
+    if let Err(e) = sent {
+        if matches!(reply, Err(FrameError::Io(_))) {
+            return Err(transport(e));
+        }
+    }
+    hello_reply(reply, what)?;
     // From here an attach waits for output, and a push as long as the terminal
     // applies backpressure.
     stream.set_read_timeout(None).map_err(transport)?;
-    Ok(stream)
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -858,9 +878,11 @@ mod unix_relay {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::hello_reply;
-    use std::io;
+    use super::{hello, hello_reply};
+    use std::io::{self, Write};
+    use std::os::unix::net::UnixStream;
     use tendr::attach_proto::{Frame, FrameError, ProtocolError, RejectClass};
+    use tendr::attach_proto::{Mode, write_frame};
     use tendr::model::pty_control::ControllerEpoch;
     use tendr::pty_exit::exit_code;
 
@@ -903,5 +925,46 @@ mod tests {
         for kind in [io::ErrorKind::UnexpectedEof, io::ErrorKind::ConnectionReset] {
             assert_eq!(code(Err(FrameError::Io(kind.into()))), Some(84), "{kind:?}");
         }
+    }
+
+    /// A sidecar whose end of the connection is already closed, after it wrote
+    /// `sent` (nothing, or a frame), as the real one does when it refuses a
+    /// connection before reading its hello.
+    fn closed_peer(sent: Option<Frame>) -> UnixStream {
+        let (client, mut sidecar) = UnixStream::pair().unwrap();
+        if let Some(frame) = sent {
+            write_frame(&mut sidecar, &frame).unwrap();
+        }
+        drop(sidecar);
+        // Precondition: the hello cannot be written, so these tests exercise
+        // the refusal that arrived before the hello.
+        assert!(client.try_clone().unwrap().write_all(&[0]).is_err());
+        client
+    }
+
+    /// The sidecar refuses an identity mismatch or a full listener before
+    /// reading the hello; the refusal is still read and gives the code, even
+    /// though the hello could not be written.
+    #[test]
+    fn a_refusal_sent_before_the_hello_is_read_keeps_its_code() {
+        for (class, expected) in [(RejectClass::Identity, 85), (RejectClass::Runtime, 84)] {
+            let mut client = closed_peer(Some(Frame::Rejected {
+                class,
+                reason: "refused first".to_owned(),
+            }));
+            let err = hello(&mut client, Mode::Push).unwrap_err();
+            assert_eq!(exit_code(&err), expected, "{class:?}: {err:#}");
+            assert!(format!("{err:#}").contains("refused first"), "{err:#}");
+        }
+    }
+
+    /// With no frame to read, the failed write is the error: a transport
+    /// failure.
+    #[test]
+    fn a_hello_that_cannot_be_written_and_gets_no_reply_exits_84() {
+        let mut client = closed_peer(None);
+        let err = hello(&mut client, Mode::Attach).unwrap_err();
+        assert_eq!(exit_code(&err), 84, "{err:#}");
+        assert!(format!("{err:#}").contains("handshake failed"), "{err:#}");
     }
 }
