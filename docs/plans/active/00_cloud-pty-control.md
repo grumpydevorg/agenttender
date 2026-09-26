@@ -13,7 +13,7 @@ links:
 
 ## Outcome and status
 
-**In progress (2026-09-26).** Slice 1 steps 1–3 are built: the contracts (#67, merged) and the sidecar input authority with attach takeover, bounded viewers and exact recording (draft PR #68). What slice 1 still needs is listed under "Slice 1 after PR #68" below. The first usable workflow is Ghostty on the laptop
+**In progress (2026-09-26).** Slice 1 steps 1–3 are built: the contracts (#67, merged) and the sidecar input authority with attach takeover, bounded viewers and exact recording (#68, merged). Of the "Slice 1 after PR #68" list below, steps 1, 2, 3, 4 and 7 are merged (#105, #104, #108, #103 and #107 respectively), plus the extended-key escape (#109). What remains is step 5 (VM query/repaint measurement), step 6 (repaint nudge, which depends on step 5), step 8 (nested `ssh -t` fixtures), step 9 (remote acceptance) and step 10 (this hygiene pass). The first usable workflow is Ghostty on the laptop
 → SSH → Tendr on an exe.dev Linux VM → Claude Code in a Tendr-owned PTY.
 A person can reconnect after losing the network, take input ownership immediately,
 resize and detach. An agent can drive that same PTY. Output is recorded exactly
@@ -229,10 +229,11 @@ PTY chunk into that lifecycle stream or inventing another run model.
 
 Defaults for this workflow:
 
-- Output/geometry recording on; explicit recording-off mode remains available.
-  Input bytes off unless `--record-input` is requested at launch. Store the policy
-  in run metadata. Do not store text/paste payloads in diagnostics or audit events
-  when input recording is off. Echoed input can still appear in output recordings.
+- Output/geometry recording on. An explicit recording-off mode and `--record-input`
+  are slice-2 work alongside retention; until then input bytes are never recorded.
+  Store the policy in run metadata. Do not store text/paste payloads in diagnostics
+  or audit events when input recording is off. Echoed input can still appear in
+  output recordings.
 - Private session/recording directories (`0700`) and files (`0600`) on Unix.
   No claim of reliable automatic secret redaction. Recordings share the run's
   local-user trust boundary; they are not a multi-user security sandbox.
@@ -316,18 +317,25 @@ rebuild discards all write-back effects. Test these rules before enabling replie
 Implement controller transitions, one PTY writer, exact output recording with
 limits, verified private sockets, shared-FD-aware I/O, bounded viewer delivery,
 initial dimensions, and the query/repaint measurement. Harden attach with explicit
-takeover, retirement of the old connection, ongoing SIGWINCH resize forwarding,
-EOF/cancellation handling, and a best-effort repaint nudge.
+takeover, retirement of the old connection, ongoing resize forwarding (a
+`TIOCGWINSZ` poll, woken early by SIGWINCH), EOF handling and signal-driven
+cancellation (SIGHUP/SIGTERM/SIGINT), and a best-effort repaint nudge.
 
-Use a configurable two-key escape, default **Ctrl-\\ then d**, with
-**Ctrl-\\ then Ctrl-\\** forwarding one literal prefix. Other prefix combinations
-forward unchanged; `--escape none` disables interpretation for transparent input.
+Use a two-key escape with a fixed prefix, **Ctrl-\\ then d**, which `--escape none`
+turns off. **Ctrl-\\ then Ctrl-\\** forwards one literal prefix; other prefix
+combinations forward unchanged. The prefix and `d` are recognised in the legacy
+byte encoding, the kitty keyboard protocol and xterm `modifyOtherKeys` (#109).
 Document the prefix buffering behavior and exercise it across read boundaries.
 Ctrl-] alone passes through to Claude. Do not require Enter to detach: it may
 submit an unfinished prompt. Do not use newline-tilde-dot as the default either:
 the outer `ssh -t` client consumes it as its own disconnect escape. Test the actual
 nested SSH path, literal keys, paste, and cancellation as well as a local PTY.
 A repaint does not restore history and must not masquerade as a screen snapshot.
+
+A fixed prefix with an on/off switch avoids the complexity of a configurable
+prefix before there is a measured need for one; `--escape` already takes a value
+(`ctrl-backslash` or `none`), so a configurable prefix can be added later without
+a flag-shape change (decided 2026-09-26).
 
 Acceptance is remote: launch via Tendr on a Linux VM, attach from Ghostty over
 `ssh -t`, leave the old connection half-open, attach again with takeover, and
@@ -439,7 +447,7 @@ requires the current controller handle. Ghostty window layout stays client polic
 | 1 | A surviving run remains attachable after logout and aging cleanup | Persistent socket root by default; verified lifetime for overrides; directory lock where supported | Real last-session logout/relogin, lingering on/off, overlong path, isolated age-cleanup while idle | Process-killing login policy and unmounted home/state roots require a separate supported launch/storage configuration |
 | 1 | Nonblocking input does not terminate output capture | Shared mode setup and readiness-aware read/write loops | Idle then output, EAGAIN/EINTR injection, full input buffer plus output, hangup drain on Linux/macOS | PTY close errors differ by platform |
 | 1 | Reconnect does not accumulate stale clients | Old connection retirement and reserved bounded admission | 32 idle half-open takeovers with full viewer slots; descriptor/task accounting | No dependency on SSH front-end idle timeout |
-| 1 | Detach preserves ordinary Claude input | Two-key parser, literal-prefix and disabled modes | Ctrl-], partial prefix, literal prefix, paste, kitty/modifyOtherKeys encodings and nested SSH fixtures | Chosen prefix is documented/configurable, not universally unused |
+| 1 | Detach preserves ordinary Claude input | Two-key parser, literal-prefix and disabled modes | Ctrl-], partial prefix, literal prefix, paste, kitty/modifyOtherKeys encodings and nested SSH fixtures | Chosen prefix is documented, not universally unused |
 | 1 | Viewers cannot block capture/control | Byte-bounded queues, cancellation, independent control path | Stalled reader plus sustained child output and concurrent takeover | Storage failure becomes explicit recording loss |
 | 1 | Recorded bytes are exact and geometry is ordered | Byte codec, single sequencer, atomic segment metadata | Split UTF-8/VT property tests, resize ordering, crash-tail fixtures | Appended vs synced boundary is reported |
 | 1 | Query handling supports the measured Claude workflow | Measured capability/reply policy | Real pinned Claude on target, attached/detached comparison | No claim of general detached terminal support |
@@ -478,7 +486,7 @@ to implement the core protocol.
 
 ## Slice 1 after PR #68 — remaining work (2026-09-26)
 
-Basis: this plan document; branch `feat/pty-runtime-takeover` at `92512a0`; code in `src/attach_escape.rs`, `src/commands/attach.rs`, `src/attach_proto.rs`, `src/attach_socket.rs`, `src/sidecar.rs`, `src/pty_input.rs`, `src/recording.rs`, `src/main.rs`, `src/ssh.rs`, `tests/cli_pty.rs`. "Verified" = code or test read; "inferred" is marked as such.
+Basis: this plan document; PR #68's branch `feat/pty-runtime-takeover`, now merged at `5b63f59`, with later rows updated by each step PR as it landed; code in `src/attach_escape.rs`, `src/commands/attach.rs`, `src/attach_proto.rs`, `src/attach_socket.rs`, `src/sidecar.rs`, `src/pty_input.rs`, `src/recording.rs`, `src/main.rs`, `src/ssh.rs`, `tests/cli_pty.rs`. "Verified" = code or test read; "inferred" is marked as such.
 
 ### What PR #68 already covers (verified)
 
@@ -496,20 +504,20 @@ Basis: this plan document; branch `feat/pty-runtime-takeover` at `92512a0`; code
 | Nested `ssh -t` fixture | **Not done.** |
 | Paste fixture, Ctrl-] named test | **Done.** Unit test `ctrl_right_bracket_passes_through`; CLI tests `cli_paste_with_embedded_prefixes_arrives_intact`, `cli_prefix_held_across_a_read_boundary_then_detaches`. |
 | Exit-code table in `docs/guide.md` | **Done (step 7):** command-scoped table in the guide ("Exit codes"); `attach` and PTY `push` exit 80/81/84/85 (82 and 83 reserved), and `MSG_REJECTED` carries a `RejectClass` byte. A client retired by `--takeover` exits 81. Tests: `cli_attach_refused_while_human_holds_exits_81`, `cli_attach_refused_by_the_sidecar_exits_81`, `cli_attach_retired_by_a_takeover_exits_81`, `cli_attach_to_an_older_sidecar_exits_80`, `cli_push_to_an_older_sidecar_exits_80`, `cli_push_refused_while_human_holds_exits_81`, `cli_push_refused_while_another_push_holds_exits_81`, `cli_push_revoked_by_takeover_exits_84`, `cli_push_to_a_socket_with_no_listener_exits_84`, `cli_attach_and_push_refused_for_peer_identity_exit_85`, `cli_attach_to_a_finished_session_exits_81`, `cli_attach_to_a_finished_pipe_session_exits_1`, `cli_push_to_a_finished_session_exits_81_for_a_pty_and_1_for_a_pipe`, `cli_push_without_stdin_exits_1_even_while_a_human_holds_the_terminal`. |
-| Recording policy (`--record-input`, recording off) | Deferred by the PR. |
+| Recording policy (`--record-input`, recording off) | Moved to slice 2 (with retention). |
 
 ### Ordered steps (one PR each)
 
-1. **Signal-driven cancellation and SIGWINCH in the attach client** (local). Self-pipe in the `poll()` set; SIGWINCH forwards size at once; SIGHUP/SIGTERM/SIGINT → `Ending::Signalled`: send `MSG_DETACH`, restore terminal, exit non-zero. Tests: `cli_sigterm_restores_the_terminal_and_releases_control`, `cli_sighup_detaches_cleanly`.
-2. **Escape fixtures the invariant table names, plus doc gap** (local). Tests: `ctrl_right_bracket_passes_through`, `cli_prefix_held_across_a_read_boundary_then_detaches`, `cli_paste_with_embedded_prefixes_arrives_intact`. Decide "configurable" vs "fixed prefix, on/off" for slice 1.
-3. **Reconnect accounting** (local). One pool of 8 including pending hellos is the slice-1 design (decided 2026-09-26); the sole viewer is the controller, so no viewer set can refuse a takeover before slice 3. Accepted trade-off: eight connections that never send a hello still refuse a takeover with `too many attach connections` (`src/sidecar.rs:2168`) for up to `HELLO_TIMEOUT` = 5 s; the socket is owner-only and peer-verified, so this can only be self-inflicted. A separate pending-hello pool arrives with slice 3's viewers. Test: `thirty_two_half_open_takeovers_do_not_grow_connections_or_threads`.
-4. **Recording dump tool** (local, `examples/dump-recording.rs`, not shipped). Test: `dump_of_the_golden_fixture_is_stable`.
+1. **Signal-driven cancellation and SIGWINCH in the attach client** (local). Self-pipe in the `poll()` set; SIGWINCH forwards size at once; SIGHUP/SIGTERM/SIGINT → `Ending::Signalled`: send `MSG_DETACH`, restore terminal, exit non-zero. Tests: `cli_sigterm_restores_the_terminal_and_releases_control`, `cli_sighup_detaches_cleanly`. **Done (#105).**
+2. **Escape fixtures the invariant table names, plus doc gap** (local). Tests: `ctrl_right_bracket_passes_through`, `cli_prefix_held_across_a_read_boundary_then_detaches`, `cli_paste_with_embedded_prefixes_arrives_intact`. Fixed prefix, on/off (decided 2026-09-26). **Done (#104).**
+3. **Reconnect accounting** (local). One pool of 8 including pending hellos is the slice-1 design (decided 2026-09-26); the sole viewer is the controller, so no viewer set can refuse a takeover before slice 3. Accepted trade-off: eight connections that never send a hello still refuse a takeover with `too many attach connections` (`src/sidecar.rs:2168`) for up to `HELLO_TIMEOUT` = 5 s; the socket is owner-only and peer-verified, so this can only be self-inflicted. A separate pending-hello pool arrives with slice 3's viewers. Test: `thirty_two_half_open_takeovers_do_not_grow_connections_or_threads`. **Done (#108).**
+4. **Recording dump tool** (local, `examples/dump-recording.rs`, not shipped). Test: `dump_of_the_golden_fixture_is_stable`. **Done (#103).**
 5. **Query and repaint measurement on the VM** (VM, docs only). Detached vs attached Claude; same-size reattach redraw; same-size resize vs `kill -WINCH` vs rows−1/restore; `Ctrl-\ d` and `Ctrl-]` through Ghostty → `ssh -t`; exe.dev half-open timing. Output: a "Measurement" subsection plus the decision for step 6. If Claude stalls detached, that is a slice-1 blocker.
 6. **Best-effort repaint nudge after (re)attach** (local, design fixed by step 5). New `MSG_REPAINT`; recorded as `ResizeCause::Repaint { correlation }`. Tests: `reattach_at_the_same_size_records_a_tagged_repaint_pair`, `reattach_at_a_new_size_records_only_a_user_resize`, `a_repaint_is_authorized_like_input`.
-7. **Exit-code table and PTY attach/push codes** (local). Adopt 80/81/84/85 for attach and PTY push now; CHANGELOG the push code change. Tests: `cli_attach_refused_while_human_holds_exits_81`, `cli_push_revoked_by_takeover_exits_84`, `cli_attach_to_an_older_sidecar_exits_80`.
+7. **Exit-code table and PTY attach/push codes** (local). Adopt 80/81/84/85 for attach and PTY push now; CHANGELOG the push code change. Tests: `cli_attach_refused_while_human_holds_exits_81`, `cli_push_revoked_by_takeover_exits_84`, `cli_attach_to_an_older_sidecar_exits_80`. **Done (#107).**
 8. **Nested `ssh -t` fixtures, opt-in** (sshd; `TENDR_TEST_SSH_HOST`). `tests/cli_attach_ssh.rs`: detach on `Ctrl-\ d`, `Ctrl-]` passthrough, paste with prefixes, terminal restore, takeover over a stopped first client.
 9. **Remote acceptance on the Linux VM.** Same Claude pid throughout; attach from Ghostty; half-open two ways plus takeover; agent → human → agent; blocked child input and stalled viewer during takeover (time it); 32 idle half-open reconnects with fd/task/admission counts equal before and after; logout/relogin; cross-user rejection; dump the whole recording.
-10. **Plan and PR hygiene.** The plan header still says "Planned, not implemented", with unticked boxes. PR #68 body naming (fixed 2026-09-26). The plan says "SIGWINCH" and "configurable escape" but the code differs; "eight read-only viewers" described a mode that doesn't exist before slice 3 (fixed by the reconnect-accounting PR, 2026-09-26: the viewer contract paragraph now says slice 1 has only the controller as viewer); "recording-off mode remains available" is deferred.
+10. **Plan and PR hygiene.** Each step PR flips its own rows in the table above as it lands. This 2026-09-26 hygiene pass brings the rest of the plan into line: the status header now names the merged steps, "SIGWINCH resize forwarding" reads as the poll-plus-SIGWINCH design it actually is, the escape is recorded as a fixed prefix with an on/off switch rather than configurable, the one-pool-of-8 admission design and the recording policy's move to slice 2 are both stated where they're discussed, and PR #68 is marked merged throughout. **Done (this PR).**
 
 Gates for every step: `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked --all-targets --no-fail-fast`, `cargo test --locked --doc`, `cargo +1.85.0 check --locked --all-targets`, `cargo doc --no-deps` with `-D warnings`. Red-first for each new test. Never mark a VM row passed from local tests.
 
@@ -543,5 +551,5 @@ live sockets. The [pam_systemd logout contract](https://github.com/systemd/syste
 documents runtime-directory removal, and the [tmpfiles aging contract](https://github.com/systemd/systemd/blob/main/man/tmpfiles.d.xml)
 documents directory-lock exclusion. These upstream contracts inform the tests;
 the exe.dev/NixOS/other deployed host policies have not been validated here.
-Actual Claude/Ghostty handling of the configurable detach prefix remains a
+Actual Claude/Ghostty handling of the detach prefix remains a
 slice-1 measurement, alongside the repaint/query tests.
