@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use tendr::model::ids::Namespace;
+use tendr::model::ids::{Namespace, SessionName};
 use tendr::model::state::{ExitReason, RunStatus};
 use tendr::session::{self, SessionRoot};
 
@@ -15,30 +15,72 @@ pub fn cmd_prune(
     dry_run: bool,
 ) -> anyhow::Result<()> {
     if older_than.is_none() && !all {
-        anyhow::bail!("either --older-than or --all is required");
+        anyhow::bail!("session names, --older-than or --all is required");
     }
 
     let root = SessionRoot::default_path()?;
     let sessions = session::list(&root, namespace)?;
+    let threshold_secs = older_than.map(|d| d.as_secs());
+    prune_sessions(&root, &sessions, threshold_secs, namespace, dry_run)?;
+    Ok(())
+}
 
+/// Prune the named sessions in `namespace`. Each one goes through the same checks
+/// as `--all`, so a live session is never deleted. A name that doesn't exist is
+/// reported as `not_found` and fails the command, so a typo isn't a silent no-op.
+pub fn cmd_prune_named(
+    names: &[String],
+    namespace: &Namespace,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let root = SessionRoot::default_path()?;
+    let mut sessions: Vec<(Namespace, SessionName)> = Vec::new();
+    for name in names {
+        let name = SessionName::new(name)?;
+        if !sessions.iter().any(|(_, seen)| seen == &name) {
+            sessions.push((namespace.clone(), name));
+        }
+    }
+
+    let not_found = prune_sessions(&root, &sessions, None, Some(namespace), dry_run)?;
+    if !not_found.is_empty() {
+        anyhow::bail!(
+            "no such session in namespace {}: {}",
+            namespace.as_str(),
+            not_found.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// Apply prune's checks to each session, delete the eligible ones (unless
+/// `dry_run`), print one NDJSON line per session and a summary line, and return
+/// the names that did not exist.
+fn prune_sessions(
+    root: &SessionRoot,
+    sessions: &[(Namespace, SessionName)],
+    threshold_secs: Option<u64>,
+    namespace: Option<&Namespace>,
+    dry_run: bool,
+) -> anyhow::Result<Vec<String>> {
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    let threshold_secs = older_than.map(|d| d.as_secs());
-
     let mut deleted: u64 = 0;
     let mut skipped: u64 = 0;
     let mut failed: u64 = 0;
     let mut bytes_reclaimed: u64 = 0;
+    let mut not_found: Vec<String> = Vec::new();
 
-    for (ns, name) in &sessions {
-        let session_dir = match session::open_raw(&root, ns, name) {
+    for (ns, name) in sessions {
+        let session_dir = match session::open_raw(root, ns, name) {
             Ok(dir) => dir,
             Err(_) => {
                 emit_skip(ns, name, "not_found", None);
                 skipped += 1;
+                not_found.push(name.as_str().to_owned());
                 continue;
             }
         };
@@ -140,7 +182,7 @@ pub fn cmd_prune(
     };
     println!("{}", serde_json::to_string(&summary).unwrap());
 
-    Ok(())
+    Ok(not_found)
 }
 
 fn emit_skip(
