@@ -177,10 +177,12 @@ knowing:
 - **`tendr attach <name>`** connects your terminal to the live session for
   hands-on interaction. Press **`Ctrl-\` then `d`** to detach; the session keeps
   running. `Ctrl-\` twice sends one `Ctrl-\`, and `Ctrl-\` followed by any other
-  key sends both. `--escape none` turns the escape off so every key reaches the
-  session. Window resizes follow you, and your terminal settings are restored
-  however the attach ends. It is refused while another client holds the
-  terminal.
+  key sends both. A trailing `Ctrl-\` is held until the next key decides it,
+  `Ctrl-]` and every other key pass through unchanged, and `Enter ~ .` is the
+  outer `ssh`'s own escape, not tendr's. `--escape none` turns the escape off
+  so every key reaches the session. Window resizes follow you, and your
+  terminal settings are restored however the attach ends. It is refused while
+  another client holds the terminal.
 - **`tendr attach <name> --takeover`** takes the terminal anyway: the previous
   client is disconnected and any input it (or an in-flight `push`) had queued is
   dropped, never written. Use it to reconnect after a dropped SSH session.
