@@ -577,7 +577,10 @@ impl RunCore {
         }
         Current::remove_stdin_transport(dir);
         if let Some(teardown) = self.pty_teardown.take() {
+            #[cfg(unix)]
             teardown.run();
+            #[cfg(not(unix))]
+            match teardown {}
         }
         self.attach.take();
     }
