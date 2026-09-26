@@ -3,6 +3,7 @@ use tendr::model::pty::PtyControl;
 use tendr::model::spec::StdinMode;
 use tendr::model::state::RunStatus;
 use tendr::platform::{Current, Platform};
+use tendr::pty_exit::PtyExitCode;
 use tendr::session::{self, SessionRoot};
 
 pub fn cmd_push(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
@@ -14,20 +15,30 @@ pub fn cmd_push(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
 
     let meta = session::read_meta(&session)?;
 
-    // Push requires Running state explicitly
+    // First what can never succeed, whatever the session is doing.
+    if meta.launch_spec().stdin_mode != StdinMode::Pipe {
+        anyhow::bail!("session was not started with --stdin");
+    }
+
+    // Push requires Running state explicitly. For a PTY session an ended run
+    // is a stale run (81), as the sidecar reports when it ends while the push
+    // connects; a pipe session keeps exit 1.
     if !matches!(meta.status(), RunStatus::Running { .. }) {
-        anyhow::bail!("session is not running");
+        let not_running = anyhow::anyhow!("session is not running");
+        return Err(if meta.pty().is_some() {
+            PtyExitCode::Control.error(not_running)
+        } else {
+            not_running
+        });
     }
 
     // Reject push while a human is attached to a PTY session
     if let Some(pty) = meta.pty() {
         if pty.control == PtyControl::HumanControl {
-            anyhow::bail!("session is under human control");
+            return Err(
+                PtyExitCode::Control.error(anyhow::anyhow!("session is under human control"))
+            );
         }
-    }
-
-    if meta.launch_spec().stdin_mode != StdinMode::Pipe {
-        anyhow::bail!("session was not started with --stdin");
     }
 
     // PTY sessions take pushes over the attach socket, which reports exactly
@@ -64,35 +75,14 @@ pub fn cmd_push(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
 ///
 /// Succeeds only if every byte of stdin was written to the terminal
 /// ([`push_outcome`]). A push refused because another client holds the
-/// terminal, or revoked by a takeover part-way, fails with how many bytes were
-/// written.
+/// terminal fails with exit 81; one revoked by a takeover or stopped by the
+/// session part-way fails with exit 84 and how many bytes were written.
 #[cfg(unix)]
 fn push_over_attach_socket(session_dir: &std::path::Path) -> anyhow::Result<()> {
     use std::io::Read;
-    use std::os::unix::net::UnixStream;
     use tendr::attach_proto::{self, Frame, FrameError, Mode, read_frame, write_frame};
 
-    let sock_path = attach_proto::read_sock_path(session_dir)
-        .ok_or_else(|| anyhow::anyhow!("attach socket not found"))?;
-    let mut stream = UnixStream::connect(&sock_path)?;
-    tendr::attach_socket::verify_peer(&stream)
-        .map_err(|e| anyhow::anyhow!("refusing attach socket {}: {e}", sock_path.display()))?;
-
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
-    write_frame(&mut stream, &Frame::Hello(Mode::Push))?;
-    match read_frame(&mut stream) {
-        Ok(Frame::Accepted(_)) => {}
-        Ok(Frame::Rejected(reason)) => anyhow::bail!("push refused: {reason}"),
-        Ok(other) => anyhow::bail!("unexpected push reply {other:?}"),
-        Err(FrameError::Unknown(msg_type)) => anyhow::bail!(
-            "the session replied with attach message type {msg_type}, which this tendr does not know; it may be newer"
-        ),
-        Err(e) => anyhow::bail!(
-            "the session did not accept the push ({e}); it may predate acknowledged push"
-        ),
-    }
-    // A push waits as long as the terminal applies backpressure.
-    stream.set_read_timeout(None)?;
+    let mut stream = super::attach::connect(session_dir, Mode::Push)?;
 
     let mut stdin = std::io::stdin().lock();
     let mut buf = vec![0u8; attach_proto::MAX_FRAME_PAYLOAD];
@@ -120,12 +110,16 @@ fn push_over_attach_socket(session_dir: &std::path::Path) -> anyhow::Result<()> 
         match read_frame(&mut stream) {
             Ok(Frame::InputDone(outcome)) => return push_outcome(outcome, sent, all_sent),
             Err(FrameError::Malformed(e)) => {
-                anyhow::bail!("malformed push outcome from the session: {e}")
+                return Err(PtyExitCode::Protocol.error(anyhow::anyhow!(
+                    "malformed push outcome from the session: {e}"
+                )));
             }
             Ok(_) | Err(FrameError::Unknown(_)) => {}
-            Err(FrameError::Io(e)) => anyhow::bail!(
-                "the session closed the push without reporting an outcome after {sent} bytes ({e})"
-            ),
+            Err(FrameError::Io(e)) => {
+                return Err(PtyExitCode::Runtime.error(anyhow::anyhow!(
+                    "the session closed the push without reporting an outcome after {sent} bytes ({e})"
+                )));
+            }
         }
     }
 }
@@ -135,7 +129,8 @@ fn push_over_attach_socket(session_dir: &std::path::Path) -> anyhow::Result<()> 
 ///
 /// Success means every byte was written. A push stopped after its last byte was
 /// written (a takeover while its end marker was still on its way) wrote them
-/// all, so it succeeds whatever the outcome (PR #68 review, finding 4).
+/// all, so it succeeds whatever the outcome (PR #68 review, finding 4). One
+/// stopped with bytes unwritten is a partial write: exit 84, revoked or closed.
 #[cfg(unix)]
 fn push_outcome(
     outcome: tendr::attach_proto::PushOutcome,
@@ -150,14 +145,14 @@ fn push_outcome(
         PushOutcome::Revoked(p) | PushOutcome::Closed(p) if every_byte_written(p.accepted) => {
             Ok(())
         }
-        PushOutcome::Revoked(p) => anyhow::bail!(
+        PushOutcome::Revoked(p) => Err(PtyExitCode::Runtime.error(anyhow::anyhow!(
             "push revoked after {} of {sent} bytes: another client took control of the terminal",
             p.accepted
-        ),
-        PushOutcome::Closed(p) => anyhow::bail!(
+        ))),
+        PushOutcome::Closed(p) => Err(PtyExitCode::Runtime.error(anyhow::anyhow!(
             "push stopped after {} of {sent} bytes: the session stopped accepting input",
             p.accepted
-        ),
+        ))),
     }
 }
 
@@ -183,11 +178,15 @@ mod tests {
         assert!(push_outcome(PushOutcome::Closed(stopped(10, 10)), 10, true).is_ok());
     }
 
+    /// A partial write exits 84 whether it was revoked or closed.
     #[test]
-    fn a_push_with_bytes_unwritten_fails() {
-        assert!(push_outcome(PushOutcome::Revoked(stopped(4, 10)), 10, true).is_err());
-        assert!(push_outcome(PushOutcome::Closed(stopped(4, 10)), 10, true).is_err());
+    fn a_push_with_bytes_unwritten_fails_with_exit_84() {
+        let code = |outcome, all_sent| {
+            tendr::pty_exit::exit_code(&push_outcome(outcome, 10, all_sent).unwrap_err())
+        };
+        assert_eq!(code(PushOutcome::Revoked(stopped(4, 10)), true), 84);
+        assert_eq!(code(PushOutcome::Closed(stopped(4, 10)), true), 84);
         // Stdin was not sent to its end: bytes the session never saw are unwritten.
-        assert!(push_outcome(PushOutcome::Revoked(stopped(10, 10)), 10, false).is_err());
+        assert_eq!(code(PushOutcome::Revoked(stopped(10, 10)), false), 84);
     }
 }

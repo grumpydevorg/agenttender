@@ -2,6 +2,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::model::pty_control::ControllerEpoch;
+use crate::pty_exit::PtyExitCode;
 use crate::recording::Geometry;
 
 /// Message types for the attach protocol.
@@ -17,8 +18,9 @@ pub const MSG_DETACH: u8 = 0x03;
 pub const MSG_HELLO: u8 = 0x04;
 /// Sidecar → client: control granted. Payload: the controller epoch (u64 BE).
 pub const MSG_ACCEPTED: u8 = 0x05;
-/// Sidecar → client: control refused. Payload: UTF-8 reason. The sidecar then
-/// closes the connection.
+/// Sidecar → client: control refused. Payload: `[class u8][reason UTF-8]`,
+/// where the class is a [`RejectClass`] and the reason is for people. The
+/// sidecar then closes the connection.
 pub const MSG_REJECTED: u8 = 0x06;
 /// Sidecar → client: another client took over. Payload: the new epoch (u64 BE).
 /// The sidecar then shuts the connection down.
@@ -56,6 +58,57 @@ impl TryFrom<u8> for Mode {
             2 => Ok(Self::Takeover),
             3 => Ok(Self::Push),
             _ => Err(ProtocolError::UnsupportedHello),
+        }
+    }
+}
+
+/// Why the sidecar refused a connection ([`MSG_REJECTED`]), so a client can act
+/// on a refusal without parsing its reason. The discriminant is the wire byte;
+/// a byte this version does not know does not decode.
+///
+/// Decoding is strict, so the set is part of the protocol version: a sidecar
+/// sends only the classes of the version the client's hello names, and adding
+/// a class means bumping [`PROTOCOL_VERSION`]. A refusal sent before the hello
+/// is read (a peer of another user, no free connection slot) may use only
+/// classes every supported version knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RejectClass {
+    /// The hello was missing, or named a version or mode this sidecar does not
+    /// speak.
+    Protocol = 1,
+    /// Someone else holds the terminal, or the run has ended.
+    Control = 2,
+    /// The sidecar cannot serve the connection: its input writer stopped, or
+    /// every connection slot is in use.
+    Runtime = 3,
+    /// The connecting process is not the run owner's.
+    Identity = 4,
+}
+
+impl RejectClass {
+    /// Every class, in wire order.
+    pub const ALL: [Self; 4] = [Self::Protocol, Self::Control, Self::Runtime, Self::Identity];
+}
+
+impl TryFrom<u8> for RejectClass {
+    type Error = ProtocolError;
+
+    fn try_from(byte: u8) -> Result<Self, ProtocolError> {
+        Self::ALL
+            .into_iter()
+            .find(|class| *class as u8 == byte)
+            .ok_or(ProtocolError::UnknownRejectClass(byte))
+    }
+}
+
+impl From<RejectClass> for PtyExitCode {
+    fn from(class: RejectClass) -> Self {
+        match class {
+            RejectClass::Protocol => Self::Protocol,
+            RejectClass::Control => Self::Control,
+            RejectClass::Runtime => Self::Runtime,
+            RejectClass::Identity => Self::Identity,
         }
     }
 }
@@ -150,8 +203,8 @@ pub enum Frame {
     Detach,
     /// Sidecar → client: control granted at this epoch.
     Accepted(ControllerEpoch),
-    /// Sidecar → client: control refused, with the reason.
-    Rejected(String),
+    /// Sidecar → client: control refused, with why.
+    Rejected { class: RejectClass, reason: String },
     /// Sidecar → client: another client took over at this epoch.
     Retired(ControllerEpoch),
     /// Sidecar → push client: the push's outcome.
@@ -167,6 +220,8 @@ pub enum ProtocolError {
     UnsupportedHello,
     #[error("malformed {0} frame")]
     Malformed(&'static str),
+    #[error("unknown attach refusal class {0}")]
+    UnknownRejectClass(u8),
     #[error("unknown push outcome status {0}")]
     UnknownOutcome(u8),
     #[error("push outcome reports {accepted} bytes written of {received} received")]
@@ -197,7 +252,13 @@ impl Frame {
                 _ => return Err(ProtocolError::UnsupportedHello),
             },
             MSG_ACCEPTED => Self::Accepted(epoch("accepted")?),
-            MSG_REJECTED => Self::Rejected(String::from_utf8_lossy(&payload).into_owned()),
+            MSG_REJECTED => match payload.split_first() {
+                Some((class, reason)) => Self::Rejected {
+                    class: RejectClass::try_from(*class)?,
+                    reason: String::from_utf8_lossy(reason).into_owned(),
+                },
+                None => return Err(ProtocolError::Malformed("rejected")),
+            },
             MSG_RETIRED => Self::Retired(epoch("retired")?),
             MSG_INPUT_DONE => Self::InputDone(PushOutcome::decode(&payload)?),
             other => return Err(ProtocolError::UnknownType(other)),
@@ -217,7 +278,12 @@ pub fn write_frame(w: &mut impl Write, frame: &Frame) -> io::Result<()> {
         Frame::Resize(size) => write_msg(w, MSG_RESIZE, &resize_payload(*size)),
         Frame::Detach => write_msg(w, MSG_DETACH, &[]),
         Frame::Accepted(epoch) => write_msg(w, MSG_ACCEPTED, &epoch.get().to_be_bytes()),
-        Frame::Rejected(reason) => write_msg(w, MSG_REJECTED, reason.as_bytes()),
+        Frame::Rejected { class, reason } => {
+            let mut payload = Vec::with_capacity(1 + reason.len());
+            payload.push(*class as u8);
+            payload.extend_from_slice(reason.as_bytes());
+            write_msg(w, MSG_REJECTED, &payload)
+        }
         Frame::Retired(epoch) => write_msg(w, MSG_RETIRED, &epoch.get().to_be_bytes()),
         Frame::InputDone(outcome) => write_msg(w, MSG_INPUT_DONE, &outcome.encode()),
     }
@@ -362,7 +428,10 @@ mod tests {
             Frame::Resize(Geometry::new(24, 80).unwrap()),
             Frame::Detach,
             Frame::Accepted(ControllerEpoch::new(7)),
-            Frame::Rejected("busy".to_owned()),
+            Frame::Rejected {
+                class: RejectClass::Control,
+                reason: "busy".to_owned(),
+            },
             Frame::Retired(ControllerEpoch::new(8)),
             Frame::InputDone(PushOutcome::Written { bytes: 9 }),
             Frame::InputDone(PushOutcome::Revoked(progress)),
@@ -436,6 +505,78 @@ mod tests {
             Frame::decode(MSG_INPUT_DONE, vec![0; 16]),
             Err(ProtocolError::Malformed("input done"))
         );
+    }
+
+    #[test]
+    fn every_reject_class_round_trips() {
+        for class in RejectClass::ALL {
+            let frame = Frame::Rejected {
+                class,
+                reason: format!("{class:?}"),
+            };
+            assert_eq!(round_trip(&frame), frame);
+        }
+    }
+
+    /// A refusal is `[class u8][reason UTF-8]`; the reason may be empty.
+    #[test]
+    fn a_refusal_keeps_its_wire_format() {
+        let mut bytes = Vec::new();
+        let refusal = Frame::Rejected {
+            class: RejectClass::Identity,
+            reason: "peer".to_owned(),
+        };
+        write_frame(&mut bytes, &refusal).unwrap();
+        assert_eq!(bytes, frame(MSG_REJECTED, 5, b"\x04peer"));
+        for (byte, class) in [
+            (1, RejectClass::Protocol),
+            (2, RejectClass::Control),
+            (3, RejectClass::Runtime),
+            (4, RejectClass::Identity),
+        ] {
+            assert_eq!(
+                Frame::decode(MSG_REJECTED, vec![byte]),
+                Ok(Frame::Rejected {
+                    class,
+                    reason: String::new()
+                })
+            );
+        }
+    }
+
+    /// A class this version does not know is a malformed frame, never a
+    /// guess: that includes the free-text refusal an unreleased v1 sidecar
+    /// sent, whose first byte is the reason's.
+    #[test]
+    fn a_refusal_without_a_known_class_does_not_decode() {
+        for class in [0u8, 5, 0xff, b'b'] {
+            assert_eq!(
+                Frame::decode(MSG_REJECTED, vec![class, b'x']),
+                Err(ProtocolError::UnknownRejectClass(class)),
+                "{class}"
+            );
+        }
+        assert_eq!(
+            Frame::decode(MSG_REJECTED, Vec::new()),
+            Err(ProtocolError::Malformed("rejected"))
+        );
+        let mut bytes = Vec::new();
+        write_msg(&mut bytes, MSG_REJECTED, b"busy").unwrap();
+        assert!(matches!(
+            read_frame(&mut bytes.as_slice()),
+            Err(FrameError::Malformed(ProtocolError::UnknownRejectClass(
+                b'b'
+            )))
+        ));
+    }
+
+    #[test]
+    fn each_reject_class_maps_to_its_exit_code() {
+        let codes: Vec<i32> = RejectClass::ALL
+            .into_iter()
+            .map(|class| PtyExitCode::from(class).code())
+            .collect();
+        assert_eq!(codes, [80, 81, 84, 85]);
     }
 
     #[test]

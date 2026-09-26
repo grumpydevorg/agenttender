@@ -19,6 +19,8 @@ use anyhow::Context;
 mod supervised_run;
 use supervised_run::SupervisedRun;
 
+#[cfg(unix)]
+use crate::attach_proto::RejectClass;
 use crate::events::{self, EventDraft, EventWriter};
 use crate::model::dep_fail::DepFailReason;
 use crate::model::event::{Kind, Uuid7};
@@ -2011,13 +2013,13 @@ fn handle_push_connection(
         },
     );
     if !registered {
-        return reject_connection(&mut stream, "session ended");
+        return reject_connection(&mut stream, RejectClass::Control, "session ended");
     }
     let handle = match writer.claim(holder, ControllerKind::Agent) {
         Ok(handle) => handle,
         Err(e) => {
             registry.remove(holder);
-            return reject_connection(&mut stream, &e.to_string());
+            return reject_request(&mut stream, &e);
         }
     };
     // The client vanished or broke the protocol: cancel its input.
@@ -2162,12 +2164,16 @@ fn run_attach_listener(
         // Only the run owner's own processes may attach. The socket directory
         // is already owner-only; this checks the connecting process itself.
         if crate::attach_socket::verify_peer(&stream).is_err() {
-            reject_connection(&mut stream, "peer identity rejected");
+            reject_connection(&mut stream, RejectClass::Identity, "peer identity rejected");
             continue;
         }
         if active.fetch_add(1, Ordering::SeqCst) >= MAX_ATTACH_CONNECTIONS {
             active.fetch_sub(1, Ordering::SeqCst);
-            reject_connection(&mut stream, "too many attach connections");
+            reject_connection(
+                &mut stream,
+                RejectClass::Runtime,
+                "too many attach connections",
+            );
             continue;
         }
         let (writer, registry, sink, active) = (
@@ -2184,11 +2190,40 @@ fn run_attach_listener(
 }
 
 #[cfg(unix)]
-fn reject_connection(stream: &mut std::os::unix::net::UnixStream, reason: &str) {
+fn reject_connection(
+    stream: &mut std::os::unix::net::UnixStream,
+    class: RejectClass,
+    reason: &str,
+) {
     use crate::attach_proto::{Frame, write_frame};
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(200)));
-    let _ = write_frame(stream, &Frame::Rejected(reason.to_owned()));
+    let refusal = Frame::Rejected {
+        class,
+        reason: reason.to_owned(),
+    };
+    let _ = write_frame(stream, &refusal);
     let _ = stream.shutdown(std::net::Shutdown::Both);
+}
+
+/// Refuse a connection whose claim or takeover the input writer turned down.
+#[cfg(unix)]
+fn reject_request(
+    stream: &mut std::os::unix::net::UnixStream,
+    error: &crate::pty_input::RequestError,
+) {
+    reject_connection(stream, request_reject_class(error), &error.to_string());
+}
+
+/// A refused claim or takeover's class: every control refusal (a holder, a
+/// stale handle, an exhausted epoch) is a control conflict; a writer that has
+/// stopped is a runtime failure.
+#[cfg(unix)]
+fn request_reject_class(error: &crate::pty_input::RequestError) -> RejectClass {
+    use crate::pty_input::RequestError;
+    match error {
+        RequestError::Control(_) => RejectClass::Control,
+        RequestError::WriterGone => RejectClass::Runtime,
+    }
 }
 
 /// One attach connection: v1 hello, claim or takeover through the input writer,
@@ -2214,9 +2249,15 @@ fn handle_attach_connection(
     let mode = match hello {
         Ok(Frame::Hello(mode)) => mode,
         Err(FrameError::Malformed(e @ ProtocolError::UnsupportedHello)) => {
-            return reject_connection(&mut stream, &e.to_string());
+            return reject_connection(&mut stream, RejectClass::Protocol, &e.to_string());
         }
-        _ => return reject_connection(&mut stream, "attach requires a protocol hello"),
+        _ => {
+            return reject_connection(
+                &mut stream,
+                RejectClass::Protocol,
+                "attach requires a protocol hello",
+            );
+        }
     };
     let _ = stream.set_read_timeout(None);
     if mode == Mode::Push {
@@ -2240,7 +2281,7 @@ fn handle_attach_connection(
         },
     );
     if !registered {
-        return reject_connection(&mut stream, "session ended");
+        return reject_connection(&mut stream, RejectClass::Control, "session ended");
     }
     let granted = if mode == Mode::Takeover {
         writer.takeover(holder).map(|t| t.handle)
@@ -2251,7 +2292,7 @@ fn handle_attach_connection(
         Ok(handle) => handle,
         Err(e) => {
             registry.remove(holder);
-            return reject_connection(&mut stream, &e.to_string());
+            return reject_request(&mut stream, &e);
         }
     };
 
@@ -2500,6 +2541,36 @@ mod tests {
     use crate::model::spec::LaunchSpec;
     use crate::recorder::RecorderLimits;
     use std::num::NonZeroU32;
+
+    /// A refused claim or takeover goes out with the class the client maps to
+    /// an exit code: any holder or stale handle is a control conflict.
+    #[test]
+    fn a_refused_request_is_classed_by_why() {
+        use crate::model::pty_control::{
+            ControlError, ControllerEpoch, ControllerKind, HolderId, StaleReason,
+        };
+        use crate::pty_input::RequestError;
+
+        let busy = ControlError::Busy {
+            holder: HolderId::new(1),
+            kind: ControllerKind::Agent,
+            epoch: ControllerEpoch::new(3),
+        };
+        let stale = ControlError::Stale {
+            reason: StaleReason::EpochMismatch,
+        };
+        for control in [busy, stale, ControlError::EpochExhausted] {
+            assert_eq!(
+                request_reject_class(&RequestError::Control(control)),
+                RejectClass::Control,
+                "{control:?}"
+            );
+        }
+        assert_eq!(
+            request_reject_class(&RequestError::WriterGone),
+            RejectClass::Runtime
+        );
+    }
 
     #[test]
     fn takeover_retirement_refuses_the_old_viewer_before_the_hook_returns() {

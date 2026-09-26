@@ -45,7 +45,7 @@ Current PTY rules:
   as an agent (refused if anyone holds it, so concurrent pushes never
   interleave), streams frames written one at a time, and ends with
   `MSG_INPUT_DONE {written | revoked | closed, accepted, received}`; the CLI
-  exits non-zero with the byte counts unless every byte was written. Both ends
+  exits 84 with the byte counts unless every byte was written. Both ends
   handle frames as the typed `attach_proto::Frame`: an outcome is `written`
   only with every received byte accepted, never reports more accepted than
   received, and one that breaks either rule, or has an unknown status, is a
@@ -61,6 +61,27 @@ Current PTY rules:
   while a human holds control, and `--takeover` supersedes the holder, which
   is disconnected. `MSG_RETIRED` is sent first on a best-effort basis: a client
   that has stopped reading its output misses it and sees only end of stream
+- a refusal, `MSG_REJECTED`, is `[class u8][reason UTF-8]`. The class
+  (`attach_proto::RejectClass`) is what a client acts on: `1` protocol (no
+  hello, or an unsupported version or mode), `2` control (someone holds the
+  terminal, or the run has ended), `3` runtime (the input writer stopped, or
+  every connection slot is in use), `4` identity (the peer is another user).
+  The reason is only for people. An empty payload or a class this version does
+  not know is a malformed frame, so a client never guesses at a refusal. The
+  set of classes is therefore part of the protocol version: the hello carries
+  the client's version, a sidecar sends only the classes that version knows,
+  and a new class requires bumping `PROTOCOL_VERSION`. A refusal sent before
+  the hello is read (another user's peer, no free slot) may use only classes
+  every supported version knows. The
+  `attach` and PTY `push` clients exit with the class's code (80, 81, 84, 85)
+  and give their own failures codes from the same range
+  ([guide](../guide.md#exit-codes), `tendr::pty_exit`): the CLI's own
+  human-control and not-running checks are 81 (like the sidecar's "session
+  ended" refusal; a push to a pipe session that is not running keeps 1), a
+  socket that is missing or unreachable 84, a
+  listener of another user 85, and a reply to the hello outside the protocol,
+  or none within 10 s, 80. An attach retired by another client's `--takeover`
+  exits 81
 - input queued by a superseded controller is never written and is recorded as
   `pty.input_revoked`; PTY `exec` frames still arrive over the stdin FIFO, whose
   forwarder is arbitrated the same way but cannot report an outcome: it waits
