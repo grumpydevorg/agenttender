@@ -953,6 +953,11 @@ fn forward_pty_stdin(
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
                     lock(errors).push(format!("stdin read failed: {e}"));
+                    // Give the claim up with the frame: nothing more of it
+                    // can arrive, and a held claim would refuse every agent.
+                    if let Some(handle) = handle {
+                        writer.disconnect(handle);
+                    }
                     return;
                 }
             };
@@ -967,6 +972,9 @@ fn forward_pty_stdin(
                 }) => authorized = false,
                 Some(InputOutcome::Incomplete { .. }) | None => {
                     lock(errors).push("stdin forwarding: child stdin closed".to_owned());
+                    if let Some(handle) = handle {
+                        writer.disconnect(handle);
+                    }
                     return;
                 }
             }
