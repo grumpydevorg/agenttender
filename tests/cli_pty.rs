@@ -753,6 +753,10 @@ impl CliAttach {
     }
 
     fn spawn_argv(root: &TempDir, argv: &[String]) -> Self {
+        Self::spawn_argv_env(root, argv, &[])
+    }
+
+    fn spawn_argv_env(root: &TempDir, argv: &[String], extra_env: &[(&str, &str)]) -> Self {
         use std::sync::atomic::{AtomicBool, Ordering};
         use tendr::platform::{Current, Platform};
         let mut env = std::collections::BTreeMap::new();
@@ -760,6 +764,9 @@ impl CliAttach {
             "HOME".to_owned(),
             root.path().to_string_lossy().into_owned(),
         );
+        for (key, value) in extra_env {
+            env.insert((*key).to_owned(), (*value).to_owned());
+        }
         let mut child = Current::spawn_child_pty(argv, None, &env).unwrap();
         // Take the resize handle before stdin takes the master's write half.
         let resize_fd = Current::pty_resize_fd(&child);
@@ -873,12 +880,21 @@ fn tendr_bin() -> String {
 }
 
 /// `tendr attach` run by a shell in the CLI's terminal, recording the terminal
-/// settings (`stty -g`) before and after it and its exit code, so tests can
-/// prove the terminal was restored however the attach ended.
+/// settings (`stty -g`) before and after it, its pid and its exit code, so
+/// tests can signal it and prove the terminal was restored however the attach
+/// ended.
+///
+/// The shell runs it as a background job so that its pid is known, with the
+/// terminal passed explicitly as its stdin (a background job's stdin is
+/// otherwise `/dev/null`). Without job control the job stays in the terminal's
+/// foreground process group, so it still reads the keyboard and receives
+/// SIGWINCH. It starts with SIGINT and SIGQUIT ignored, as every background
+/// job of a non-interactive shell does.
 struct WrappedAttach {
     cli: CliAttach,
     before: std::path::PathBuf,
     after: std::path::PathBuf,
+    pid: std::path::PathBuf,
     code: std::path::PathBuf,
 }
 
@@ -887,17 +903,25 @@ impl WrappedAttach {
         let dir = root.path().join(format!("wrap-{label}"));
         std::fs::create_dir_all(&dir).unwrap();
         let q = |p: &std::path::Path| shell_words::quote(p.to_str().unwrap()).into_owned();
-        let (before, after, code) = (dir.join("before"), dir.join("after"), dir.join("code"));
+        let (before, after, pid, code) = (
+            dir.join("before"),
+            dir.join("after"),
+            dir.join("pid"),
+            dir.join("code"),
+        );
         let attach: Vec<String> = std::iter::once(tendr_bin())
             .chain(std::iter::once("attach".to_owned()))
             .chain(args.iter().map(|a| (*a).to_owned()))
             .map(|a| shell_words::quote(&a).into_owned())
             .collect();
         let script = format!(
-            "stty -g > {b}.tmp && mv {b}.tmp {b}; {cmd}; echo $? > {c}.tmp; \
+            "stty -g > {b}.tmp && mv {b}.tmp {b}; exec 3<&0; \
+             {cmd} <&3 3<&- & echo $! > {p}.tmp; mv {p}.tmp {p}; \
+             wait $!; echo $? > {c}.tmp; \
              stty -g > {a}.tmp; mv {a}.tmp {a}; mv {c}.tmp {c}; sleep 60",
             b = q(&before),
             a = q(&after),
+            p = q(&pid),
             c = q(&code),
             cmd = attach.join(" "),
         );
@@ -911,7 +935,39 @@ impl WrappedAttach {
             cli,
             before,
             after,
+            pid,
             code,
+        }
+    }
+
+    /// Send `signal` to `tendr attach` itself, not to the shell running it.
+    fn signal(&self, signal: libc::c_int) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let pid: libc::pid_t = loop {
+            if let Some(pid) = std::fs::read_to_string(&self.pid)
+                .ok()
+                .and_then(|p| p.trim().parse().ok())
+            {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "attach pid never recorded");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        // SAFETY: kill(2) takes a pid and a signal number.
+        let rc = unsafe { libc::kill(pid, signal) };
+        assert_eq!(rc, 0, "signal tendr attach (pid {pid})");
+    }
+
+    /// Wait until what the CLI wrote to its terminal contains `needle`.
+    fn wait_output_contains(&self, needle: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self.cli.output().contains(needle) {
+            assert!(
+                Instant::now() < deadline,
+                "the terminal never showed {needle:?}; cli output: {}",
+                self.cli.output()
+            );
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 
@@ -1113,6 +1169,124 @@ fn cli_forwards_later_terminal_resizes() {
             .output()
             .unwrap();
         if String::from_utf8_lossy(&log.stdout).contains("33 111") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the session never saw the new size; cli output: {}",
+            cli.output()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+// --- Attach client signals: cancellation, and SIGWINCH as an early size check ---
+
+/// A signal-ended attach: the terminal restored, exit 1 with the signal named,
+/// control back with the agent, and the session still running.
+fn assert_signal_ends_the_attach(signal: libc::c_int, name: &str) {
+    let root = TempDir::new().unwrap();
+    let session = format!("pty-{}", name.to_ascii_lowercase());
+    let _kill = harness::SessionGuard::new(&root, &session);
+    start_cat(&root, &session);
+
+    let mut wrapped = WrappedAttach::spawn(&root, name, &[&session]);
+    wrapped
+        .cli
+        .type_until_logged(&root, &session, "before-signal\n");
+    wait_for_pty_control(&root, &session, "HumanControl");
+    wrapped.signal(signal);
+
+    assert_eq!(
+        wrapped.wait_exit(Duration::from_secs(10)),
+        1,
+        "cli output: {}",
+        wrapped.cli.output()
+    );
+    wrapped.assert_terminal_restored();
+    wrapped.wait_output_contains(&format!("tendr: attach ended by {name}"));
+    wait_for_pty_control(&root, &session, "AgentControl");
+    push(&root, &session, b"session-still-running\n");
+    wait_log_contains(&root, &session, "session-still-running");
+}
+
+#[test]
+fn cli_sigterm_restores_the_terminal_and_releases_control() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    assert_signal_ends_the_attach(libc::SIGTERM, "SIGTERM");
+}
+
+#[test]
+fn cli_sighup_detaches_cleanly() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    assert_signal_ends_the_attach(libc::SIGHUP, "SIGHUP");
+}
+
+/// SIGTERM is how a user gets out of an attach whose terminal has stopped
+/// reading, so leaving must not wait on that terminal to report it.
+#[test]
+fn cli_sigterm_exits_while_terminal_output_is_blocked() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-termblock");
+    tendr(&root)
+        .args(["start", "pty-termblock", "--pty", "--stdin", "--"])
+        .args(["sh", "-c", "stty raw -echo; yes OUTPUT-FLOOD"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-termblock");
+
+    let wrapped = WrappedAttach::spawn(&root, "termblock", &["pty-termblock"]);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !wrapped.cli.output().contains("OUTPUT-FLOOD") {
+        assert!(Instant::now() < deadline, "attach never relayed output");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // As in `cli_detach_is_responsive_while_terminal_output_is_blocked`: the
+    // blocked state cannot be observed directly, so give the flood a moment.
+    wrapped.cli.pause_output();
+    std::thread::sleep(Duration::from_millis(500));
+    wrapped.signal(libc::SIGTERM);
+
+    let code = wrapped.wait_exit(Duration::from_secs(15));
+    wrapped.cli.resume_output();
+    assert_eq!(code, 1);
+    wrapped.assert_terminal_restored();
+    wait_for_pty_control(&root, "pty-termblock", "AgentControl");
+}
+
+/// With the size poll stretched far beyond the test's deadline, only SIGWINCH
+/// can forward the new size in time. Keystrokes do not trigger a size check,
+/// so typing `stty size` cannot deliver it either.
+#[test]
+fn cli_sigwinch_forwards_the_size_before_the_next_poll() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-sigwinch");
+    tendr(&root)
+        .args(["start", "pty-sigwinch", "--pty", "--stdin", "--", "sh"])
+        .output()
+        .unwrap();
+    harness::wait_running(&root, "pty-sigwinch");
+
+    let argv = [tendr_bin(), "attach".to_owned(), "pty-sigwinch".to_owned()];
+    let mut cli = CliAttach::spawn_argv_env(
+        &root,
+        &argv,
+        &[("TENDR_TEST_ATTACH_SIZE_POLL_MS", "600000")],
+    );
+    cli.type_until_logged(&root, "pty-sigwinch", "echo sigwinch-ready\n");
+
+    cli.resize(37, 97);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        cli.type_bytes(b"stty size\n");
+        let log = tendr(&root)
+            .args(["log", "pty-sigwinch", "--raw"])
+            .output()
+            .unwrap();
+        if String::from_utf8_lossy(&log.stdout).contains("37 97") {
             break;
         }
         assert!(

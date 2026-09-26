@@ -482,9 +482,9 @@ Basis: this plan document; branch `feat/pty-runtime-takeover` at `92512a0`; code
 | Slice-1 item | Status on the branch |
 |---|---|
 | Two-key escape (`Ctrl-\ d` detach, `Ctrl-\ Ctrl-\` literal, `Ctrl-\ x` forwards both, `--escape none`, prefix held across reads) | **Done.** Unit tests plus proptest `chunking_never_changes_the_result`; CLI tests `cli_escape_detaches_and_restores_the_terminal`, `cli_doubled_escape_and_other_keys_reach_the_session_unchanged`, `cli_escape_none_forwards_the_detach_sequence`. `--escape none` forwarded over `--host`. |
-| Ongoing resize forwarding | **Done functionally, not via SIGWINCH:** the client polls `TIOCGWINSZ` every 100 ms; `cli_forwards_later_terminal_resizes`. |
+| Ongoing resize forwarding | **Done.** The client polls `TIOCGWINSZ` every 100 ms and SIGWINCH brings the check forward (step 1); `cli_forwards_later_terminal_resizes`, `cli_sigwinch_forwards_the_size_before_the_next_poll`. |
 | EOF handling | **Done** in both relay directions; terminal restored on drop. |
-| Cancellation by signal | **Not done:** no SIGHUP/SIGTERM/SIGINT handling; `kill <pid>` leaves the local terminal raw. |
+| Cancellation by signal | **Done (step 1):** SIGHUP/SIGTERM/SIGINT detach, restore the terminal and exit 1 with `tendr: attach ended by SIG…`; `cli_sigterm_restores_the_terminal_and_releases_control`, `cli_sighup_detaches_cleanly`, `cli_sigterm_exits_while_terminal_output_is_blocked`. |
 | Takeover, retirement, revoked input, single writer, bounded viewers, private peer-verified sockets, exact recording | Done. |
 | Admission limits | **Simplified vs plan:** one pool `MAX_ATTACH_CONNECTIONS = 8` including pending hellos; no separate 4-slot pending pool, no reserved controller slot, no read-only viewer mode. |
 | Repaint nudge after reattach | **Not done** (codec supports `ResizeCause::Repaint`, nothing emits it). |
