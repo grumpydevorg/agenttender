@@ -12,6 +12,14 @@
 
 ### Fixed
 
+- **`wait`, `kill` and `start --replace` report a session done only once its
+  sidecar has released it** ([#91](https://github.com/grumpydevorg/tendr/issues/91)).
+  The sidecar writes its final state just before releasing the session lock, so
+  `prune` or `start --replace` run straight after `wait` or `kill` could find the
+  session still locked (prune skipped it as `locked`). They now wait up to 2 s
+  for the release. If it hasn't happened by then they warn on stderr and report
+  the session anyway; exit codes are unchanged. `start --replace` of a session
+  that had already finished did not wait for the release at all.
 - **`exec` no longer hangs when a command's output doesn't end in a newline**
   ([#95](https://github.com/grumpydevorg/tendr/issues/95)). `exec shell -- printf foo`
   never returned, even with `--timeout`, and held the session's exec lock until
