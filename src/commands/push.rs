@@ -62,14 +62,15 @@ pub fn cmd_push(name: &str, namespace: &Namespace) -> anyhow::Result<()> {
 
 /// Push stdin to a PTY session as an acknowledged agent input stream.
 ///
-/// Succeeds only if the sidecar reports that every byte it received was written
-/// to the terminal. A push refused because another client holds the terminal,
-/// or revoked by a takeover part-way, fails with how many bytes were written.
+/// Succeeds only if every byte of stdin was written to the terminal
+/// ([`push_outcome`]). A push refused because another client holds the
+/// terminal, or revoked by a takeover part-way, fails with how many bytes were
+/// written.
 #[cfg(unix)]
 fn push_over_attach_socket(session_dir: &std::path::Path) -> anyhow::Result<()> {
     use std::io::Read;
     use std::os::unix::net::UnixStream;
-    use tendr::attach_proto::{self, INPUT_CLOSED, INPUT_REVOKED, INPUT_WRITTEN};
+    use tendr::attach_proto;
 
     let sock_path = attach_proto::read_sock_path(session_dir)
         .ok_or_else(|| anyhow::anyhow!("attach socket not found"))?;
@@ -99,9 +100,13 @@ fn push_over_attach_socket(session_dir: &std::path::Path) -> anyhow::Result<()> 
     let mut stdin = std::io::stdin().lock();
     let mut buf = vec![0u8; attach_proto::MAX_FRAME_PAYLOAD];
     let mut sent: u64 = 0;
+    let mut all_sent = false;
     loop {
         let n = match stdin.read(&mut buf) {
-            Ok(0) => break,
+            Ok(0) => {
+                all_sent = true;
+                break;
+            }
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e.into()),
@@ -121,21 +126,60 @@ fn push_over_attach_socket(session_dir: &std::path::Path) -> anyhow::Result<()> 
                 else {
                     anyhow::bail!("malformed push outcome from the session");
                 };
-                return match status {
-                    INPUT_WRITTEN => Ok(()),
-                    INPUT_REVOKED => anyhow::bail!(
-                        "push revoked after {accepted} of {sent} bytes: another client took control of the terminal"
-                    ),
-                    INPUT_CLOSED => anyhow::bail!(
-                        "push stopped after {accepted} of {sent} bytes: the session stopped accepting input"
-                    ),
-                    other => anyhow::bail!("unknown push outcome {other}"),
-                };
+                return push_outcome(status, accepted, sent, all_sent);
             }
             Ok(_) => {}
             Err(e) => anyhow::bail!(
                 "the session closed the push without reporting an outcome after {sent} bytes ({e})"
             ),
         }
+    }
+}
+
+/// The push's result from the session's outcome: `accepted` bytes of the `sent`
+/// were written, and `all_sent` is whether stdin was sent to its end.
+///
+/// Success means every byte was written. A push stopped after its last byte was
+/// written (a takeover while its end marker was still on its way) wrote them
+/// all, so it succeeds whatever the status (PR #68 review, finding 4).
+#[cfg(unix)]
+fn push_outcome(status: u8, accepted: u64, sent: u64, all_sent: bool) -> anyhow::Result<()> {
+    use tendr::attach_proto::{INPUT_CLOSED, INPUT_REVOKED, INPUT_WRITTEN};
+
+    let every_byte_written = all_sent && accepted == sent;
+    match status {
+        INPUT_WRITTEN => Ok(()),
+        INPUT_REVOKED | INPUT_CLOSED if every_byte_written => Ok(()),
+        INPUT_REVOKED => anyhow::bail!(
+            "push revoked after {accepted} of {sent} bytes: another client took control of the terminal"
+        ),
+        INPUT_CLOSED => anyhow::bail!(
+            "push stopped after {accepted} of {sent} bytes: the session stopped accepting input"
+        ),
+        other => anyhow::bail!("unknown push outcome {other}"),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::push_outcome;
+    use tendr::attach_proto::{INPUT_CLOSED, INPUT_REVOKED, INPUT_WRITTEN};
+
+    /// A takeover that lands after the last byte was written, while the end
+    /// marker is still on its way, ends the push `revoked` with nothing left
+    /// unwritten. The push succeeded (PR #68 review, finding 4).
+    #[test]
+    fn a_push_whose_every_byte_was_written_succeeds_whatever_the_status() {
+        assert!(push_outcome(INPUT_WRITTEN, 10, 10, true).is_ok());
+        assert!(push_outcome(INPUT_REVOKED, 10, 10, true).is_ok());
+        assert!(push_outcome(INPUT_CLOSED, 10, 10, true).is_ok());
+    }
+
+    #[test]
+    fn a_push_with_bytes_unwritten_fails() {
+        assert!(push_outcome(INPUT_REVOKED, 4, 10, true).is_err());
+        assert!(push_outcome(INPUT_CLOSED, 4, 10, true).is_err());
+        // Stdin was not sent to its end: bytes the session never saw are unwritten.
+        assert!(push_outcome(INPUT_REVOKED, 10, 10, false).is_err());
     }
 }

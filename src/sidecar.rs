@@ -1867,13 +1867,14 @@ fn handle_push_connection(
                 }
             }
             Ok((attach_proto::MSG_DETACH, _)) => {
-                // Every earlier frame was written before the next was read, so
-                // nothing is queued: the release happens at once.
-                break if writer.end_of_input_and_wait(handle) {
-                    INPUT_WRITTEN
-                } else {
-                    INPUT_REVOKED
-                };
+                // Every frame was written before the next was read, and any
+                // frame that was not stopped the loop: all of this push is
+                // written. A takeover that lands before the end marker is
+                // served supersedes nothing still to write, so the push is
+                // `written` either way; the end marker releases control if
+                // it is still held (PR #68 review, finding 4).
+                let _ = writer.end_of_input_and_wait(handle);
+                break INPUT_WRITTEN;
             }
             Ok(_) => {}
             Err(_) if revoked.load(Ordering::SeqCst) => break INPUT_REVOKED,
@@ -2380,6 +2381,91 @@ mod tests {
         );
         assert!(!installed, "a retired connection installed its viewer");
         assert!(lock(&sink).is_none());
+    }
+
+    /// A PTY that accepts everything and records it.
+    #[derive(Clone, Default)]
+    struct RecordingPty(Arc<Mutex<Vec<u8>>>);
+
+    impl crate::model::pty_control::PtyInputSink for RecordingPty {
+        fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            lock(&self.0).extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+    }
+
+    impl crate::pty_input::WritablePty for RecordingPty {
+        fn wait_writable(&self, _timeout: std::time::Duration) -> io::Result<bool> {
+            Ok(true)
+        }
+
+        fn resize(&self, _rows: u16, _cols: u16) {}
+    }
+
+    /// Hooks with no side effects: a takeover supersedes the push without
+    /// interrupting its connection, as when its end marker is already on the way.
+    struct InertHooks;
+
+    impl crate::pty_input::ControlHooks for InertHooks {
+        fn human_control(&mut self, _trigger: &'static str) {}
+        fn human_released(&mut self) {}
+        fn retire(
+            &mut self,
+            _holder: crate::model::pty_control::HolderId,
+            _kind: crate::model::pty_control::ControllerKind,
+            _epoch: crate::model::pty_control::ControllerEpoch,
+        ) {
+        }
+        fn input_revoked(
+            &mut self,
+            _kind: crate::model::pty_control::ControllerKind,
+            _accepted: usize,
+            _total: usize,
+        ) {
+        }
+    }
+
+    /// A takeover that lands after a push's last frame was written, but before
+    /// its end marker is served, leaves nothing of the push unwritten: the push
+    /// reports `written` (PR #68 review, finding 4).
+    #[test]
+    fn a_push_taken_over_after_its_last_frame_reports_written() {
+        use crate::attach_proto::{self, INPUT_WRITTEN};
+        use std::os::unix::net::UnixStream;
+
+        let pty = RecordingPty::default();
+        let writer = crate::pty_input::InputWriter::spawn(RunId::new(), pty.clone(), InertHooks);
+        let registry = ConnectionRegistry::default();
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let handler = {
+            let (writer, registry) = (writer.clone(), registry.clone());
+            std::thread::spawn(move || handle_push_connection(server, &writer, &registry))
+        };
+        let (reply, _) = attach_proto::read_msg(&mut client).unwrap();
+        assert_eq!(reply, attach_proto::MSG_ACCEPTED);
+
+        attach_proto::write_msg(&mut client, attach_proto::MSG_DATA, b"abc").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while lock(&pty.0).len() < 3 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the frame was never written"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // The frame is written, so its Accepted outcome is already on its way;
+        // the takeover is served before the end marker below.
+        writer.takeover(writer.next_holder()).unwrap();
+        attach_proto::write_msg(&mut client, attach_proto::MSG_DETACH, &[]).unwrap();
+
+        let (kind, payload) = attach_proto::read_msg(&mut client).unwrap();
+        assert_eq!(kind, attach_proto::MSG_INPUT_DONE);
+        assert_eq!(
+            attach_proto::parse_input_done(&payload),
+            Some((INPUT_WRITTEN, 3, 3)),
+            "every byte was written, so the push must not report revoked"
+        );
+        handler.join().unwrap();
     }
 
     /// Write a PTY-enabled meta.json (AgentControl by default) into `dir`.

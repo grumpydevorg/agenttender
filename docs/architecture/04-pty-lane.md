@@ -36,7 +36,11 @@ Current PTY rules:
   as an agent (refused if anyone holds it, so concurrent pushes never
   interleave), streams frames written one at a time, and ends with
   `MSG_INPUT_DONE {written | revoked | closed, accepted, received}`; the CLI
-  exits non-zero with the byte counts unless every byte was written
+  exits non-zero with the byte counts unless every byte was written. A push
+  whose every frame was written is `written` even if a takeover lands before
+  its end marker is served, and the CLI also succeeds when all of stdin was
+  sent and accepted but a takeover cut the connection before the end marker
+  was read
 - `attach` must open with a v1 hello (`MSG_HELLO`); a plain attach is refused
   while a human holds control, and `--takeover` supersedes the holder, which
   receives `MSG_RETIRED` and is disconnected
