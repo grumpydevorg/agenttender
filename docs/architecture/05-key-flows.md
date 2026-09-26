@@ -58,7 +58,7 @@ sequenceDiagram
 
 Notes:
 
-- POSIX shell and DuckDB sessions signal completion with sentinel lines in `output.log` (DuckDB additionally drains trailing stderr)
+- POSIX shell sessions signal completion with two markers in `output.log`: a stderr end marker, then the stdout sentinel. stdout and stderr are logged by separate threads, so exec waits for both. Either marker may end a line rather than start one when the command's last output has no newline. DuckDB uses a stdout sentinel and drains trailing stderr
 - PowerShell and Python REPL sessions write a side-channel result file, `exec-results/<token>.json`
 - timed-out exec holds `exec.lock` until the shell/repl finishes its frame, so a second exec cannot interleave into a busy session
 

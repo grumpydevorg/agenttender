@@ -2010,3 +2010,107 @@ fn windows_ignored_exec_set_is_exactly_tracked() {
          each parity gap"
     );
 }
+
+// ── exec framing markers (#92, #95) ─────────────────────────────────────
+
+#[cfg(unix)]
+use harness::DeadlineAssertExt;
+
+/// Start a POSIX shell session and return a guard that stops it.
+#[cfg(unix)]
+fn posix_shell<'a>(root: &'a tempfile::TempDir, name: &str) -> harness::SessionGuard<'a> {
+    harness::tendr(root)
+        .args(["start", name, "--stdin", "--", "bash"])
+        .assert()
+        .success();
+    let guard = harness::SessionGuard::new(root, name);
+    harness::wait_running(root, name);
+    guard
+}
+
+/// Output without a trailing newline used to glue the sentinel onto the last
+/// line, so exec never saw it and hung past --timeout (#95).
+#[test]
+#[cfg(unix)]
+fn exec_stdout_without_trailing_newline_returns() {
+    let _lock = lock();
+    let root = tempfile::TempDir::new().unwrap();
+    let _session = posix_shell(&root, "shell");
+
+    let output = harness::tendr(&root)
+        .args(["exec", "shell", "--timeout", "5", "--", "printf", "foo"])
+        .assert_within_deadline();
+    let output = output.get_output();
+    assert!(
+        output.status.success(),
+        "exec failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["stdout"], "foo", "{envelope}");
+    assert_eq!(envelope["timed_out"], false, "{envelope}");
+}
+
+/// The stderr end marker lands in the log but never in exec's stderr (#92).
+#[test]
+#[cfg(unix)]
+fn exec_stderr_marker_is_stripped() {
+    let _lock = lock();
+    let root = tempfile::TempDir::new().unwrap();
+    let _session = posix_shell(&root, "shell");
+
+    let output = harness::tendr(&root)
+        .args([
+            "exec",
+            "shell",
+            "--",
+            "sh",
+            "-c",
+            "echo x >&2; printf y >&2",
+        ])
+        .assert_within_deadline();
+    let output = output.get_output();
+    assert!(output.status.success());
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["stderr"], "x\ny", "{envelope}");
+
+    let log = std::fs::read_to_string(root.path().join(".tendr/sessions/default/shell/output.log"))
+        .unwrap();
+    let marker_lines = log
+        .lines()
+        .filter(|l| l.contains(r#""tag":"E""#) && l.contains("__TENDR_EXEC_ERR__"))
+        .count();
+    assert_eq!(
+        marker_lines, 1,
+        "exactly one stderr end marker in the log:\n{log}"
+    );
+}
+
+/// If the session shell's stderr no longer reaches the sidecar, the marker
+/// never arrives; exec still returns, and says stderr may be incomplete.
+#[test]
+#[cfg(unix)]
+fn exec_survives_redirected_shell_stderr() {
+    let _lock = lock();
+    let root = tempfile::TempDir::new().unwrap();
+    let _session = posix_shell(&root, "shell");
+
+    harness::tendr(&root)
+        .args(["push", "shell"])
+        .write_stdin("exec 2>/dev/null\n")
+        .assert()
+        .success();
+
+    let output = harness::tendr(&root)
+        .args(["exec", "shell", "--", "echo", "hi"])
+        .assert_within_deadline();
+    let output = output.get_output();
+    assert!(output.status.success());
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["stdout"], "hi", "{envelope}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("stderr end marker not seen"),
+        "the CLI must warn that stderr may be incomplete: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
