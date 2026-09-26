@@ -1952,6 +1952,123 @@ fn idle_pushes_retired_by_takeover_do_not_exhaust_connection_slots() {
     }
 }
 
+/// Count entries under a `/proc/<pid>` subdirectory, or `0` if it cannot be
+/// read (e.g. the process is gone).
+#[cfg(target_os = "linux")]
+fn proc_count(pid: u64, subdir: &str) -> usize {
+    std::fs::read_dir(format!("/proc/{pid}/{subdir}"))
+        .map(|entries| entries.count())
+        .unwrap_or(0)
+}
+
+#[test]
+fn thirty_two_half_open_takeovers_do_not_grow_connections_or_threads() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = TempDir::new().unwrap();
+    let _kill = harness::SessionGuard::new(&root, "pty-32-takeovers");
+    let sock_path = start_cat(&root, "pty-32-takeovers");
+
+    #[cfg(target_os = "linux")]
+    let sidecar_pid = session_meta(&root, "pty-32-takeovers")["sidecar"]["pid"]
+        .as_u64()
+        .expect("meta.json has sidecar.pid");
+    #[cfg(target_os = "linux")]
+    let baseline = (
+        proc_count(sidecar_pid, "fd"),
+        proc_count(sidecar_pid, "task"),
+    );
+
+    // Establish the first controller: a plain attach that then goes silent.
+    let (mut previous, (msg_type, reason)) = hello(&sock_path, Mode::Attach);
+    assert_eq!(
+        msg_type,
+        MSG_ACCEPTED,
+        "initial attach: {}",
+        String::from_utf8_lossy(&reason)
+    );
+
+    // 32 rounds: a takeover is admitted, evicting the silent holder ahead of
+    // it. Neither side ever detaches, sends data, or closes cooperatively --
+    // the only route from "controlling" to "gone" is the sidecar's own
+    // retirement, triggered purely by the next takeover.
+    let mut retired = Vec::new();
+    for round in 0..32 {
+        let (taker, (msg_type, reason)) = hello(&sock_path, Mode::Takeover);
+        assert_eq!(
+            msg_type,
+            MSG_ACCEPTED,
+            "takeover {round}: {}",
+            String::from_utf8_lossy(&reason)
+        );
+
+        // The evicted holder is told and the sidecar closes its side, without
+        // it ever reading or detaching on its own.
+        let seen = read_until_closed(&mut previous);
+        assert!(
+            seen.iter().any(|(t, _)| *t == MSG_RETIRED),
+            "round {round}: previous holder was not retired: {seen:?}"
+        );
+
+        // Kept, not dropped: an early client-side close must not be what
+        // frees the sidecar's fd or thread for this connection.
+        retired.push(previous);
+        previous = taker;
+    }
+    // The last round's holder was never displaced by anyone. Drop it with
+    // every retired socket only now that the loop is done.
+    retired.push(previous);
+    drop(retired);
+
+    #[cfg(target_os = "linux")]
+    {
+        // No fixed sleep: poll the sidecar's own fd/thread counts down to the
+        // pre-loop baseline, bounded by a deadline.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let fds = proc_count(sidecar_pid, "fd");
+            let threads = proc_count(sidecar_pid, "task");
+            if fds <= baseline.0 && threads <= baseline.1 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "sidecar {sidecar_pid} did not release its resources: \
+                 fds {fds} (baseline {}), threads {threads} (baseline {})",
+                baseline.0,
+                baseline.1
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    // Admission still works: the pool of 8 (hellos included) has room again.
+    // Only one of eight plain attaches can end up holding control -- the PTY
+    // has a single controller -- but the sidecar must let all eight past the
+    // connection-count gate first. A "too many attach connections" rejection
+    // is the one outcome that would show a leaked admission slot; a rejection
+    // for losing the race to hold control is not that, and is expected for
+    // every attach but the winner.
+    let mut fresh = Vec::new();
+    let mut accepted = 0;
+    for i in 0..8 {
+        let (stream, (msg_type, reason)) = hello(&sock_path, Mode::Attach);
+        let reason_text = String::from_utf8_lossy(&reason).into_owned();
+        match msg_type {
+            MSG_ACCEPTED => accepted += 1,
+            MSG_REJECTED => assert!(
+                !reason_text.contains("too many attach connections"),
+                "fresh attach {i} found the admission pool still exhausted: {reason_text}"
+            ),
+            other => panic!("fresh attach {i}: unexpected reply type {other}"),
+        }
+        fresh.push(stream);
+    }
+    assert_eq!(
+        accepted, 1,
+        "expected exactly one of eight fresh attaches to hold control"
+    );
+}
+
 #[test]
 fn an_old_runs_cleanup_cannot_remove_its_replacements_breadcrumb() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
