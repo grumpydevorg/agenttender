@@ -1022,13 +1022,15 @@ fn cli_prefix_held_across_a_read_boundary_then_detaches() {
     wrapped
         .cli
         .type_until_logged(&root, "pty-split-prefix", "split-ready\n");
-    let before = wait_output_contains(&root, "pty-split-prefix", "split-ready");
 
-    // The prefix and the detach key arrive as two separate reads (the CLI's
-    // `stdin.read` in between), not in one buffer the parser could get away
-    // with peeking ahead into.
-    wrapped.cli.type_bytes(b"\x1c");
-    std::thread::sleep(Duration::from_millis(300));
+    // A single write is delivered to one `read` on both Linux and macOS, so
+    // this lands the prefix in the same read as a marker. Waiting for the
+    // marker in the log proves that read has already been processed — and
+    // that the trailing prefix was held, not forwarded, since an unheld
+    // prefix would show up as `^\` right after it. Only then is `d` sent, in
+    // a second, later read the parser must still be holding the prefix for.
+    wrapped.cli.type_bytes(b"split-marker\x1c");
+    wait_output_contains(&root, "pty-split-prefix", "split-marker");
     wrapped.cli.type_bytes(b"d");
 
     assert_eq!(wrapped.wait_exit(Duration::from_secs(10)), 0);
@@ -1038,8 +1040,11 @@ fn cli_prefix_held_across_a_read_boundary_then_detaches() {
     push(&root, "pty-split-prefix", b"after-split\n");
     let after = wait_output_contains(&root, "pty-split-prefix", "after-split");
     assert_eq!(
-        after,
-        format!("{before}after-split"),
+        // `type_until_logged` retypes `split-ready` every 200 ms until it
+        // sees its own marker, so an extra copy can land before this point;
+        // `trim_start_matches` strips every leading copy, not just one.
+        after.trim_start_matches("split-ready"),
+        "split-markerafter-split",
         "the held prefix and the detach key must not reach the child"
     );
 }
@@ -1054,10 +1059,13 @@ fn cli_paste_with_embedded_prefixes_arrives_intact() {
     let mut cli = CliAttach::spawn(&root, &["pty-paste"]);
     cli.type_until_logged(&root, "pty-paste", "paste-ready\n");
 
-    // One write, comfortably over the CLI's 4 KiB read buffer, with a
-    // doubled prefix, a lone Ctrl-], and a prefix followed by an ordinary
-    // key, each sitting inside plain text — a paste from a real terminal,
-    // not a sequence of individual keystrokes.
+    // One write, comfortably over the CLI's 4 KiB read buffer — the OS
+    // splits it into several smaller reads regardless (each capped near
+    // 1 KiB on macOS), so no single embedded sequence is placed to straddle
+    // a particular one. What this proves is that a doubled prefix, a lone
+    // Ctrl-], and a prefix followed by an ordinary key, each sitting inside
+    // plain text as a real paste would deliver them, all survive that whole
+    // read-then-parse pipeline intact regardless of where the splits land.
     let a = "A".repeat(2000);
     let b = "B".repeat(2000);
     let c = "C".repeat(2000);
@@ -1072,7 +1080,7 @@ fn cli_paste_with_embedded_prefixes_arrives_intact() {
     paste.extend_from_slice(b"PASTE-END\n");
     assert!(
         paste.len() > 4096,
-        "paste must exceed one 4 KiB read to exercise the boundary"
+        "paste must exceed the CLI's 4 KiB read buffer"
     );
 
     cli.type_bytes(&paste);
