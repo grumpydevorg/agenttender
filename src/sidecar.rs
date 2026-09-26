@@ -715,6 +715,15 @@ fn test_ready_gate() {
     }
 }
 
+/// Test-only gate between the terminal meta write and the lock release, so a
+/// test can observe a session that is terminal but still locked (#91). Waits
+/// for the file named by `TENDR_TEST_UNLOCK_GATE` (bounded). Debug builds only.
+fn test_unlock_gate() {
+    if cfg!(debug_assertions) {
+        wait_for_gate_file("TENDR_TEST_UNLOCK_GATE");
+    }
+}
+
 /// A Write wrapper around Arc<Mutex<Box<dyn Write + Send>>>.
 /// Allows multiple owners to write to the same underlying sink.
 struct SharedWriter(Arc<Mutex<Box<dyn Write + Send>>>);

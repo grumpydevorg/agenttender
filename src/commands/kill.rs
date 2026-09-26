@@ -22,6 +22,7 @@ fn signal_kill_request(
         std::thread::sleep(std::time::Duration::from_millis(100));
         if let Ok(m) = session::read_meta(session) {
             if m.status().is_terminal() {
+                super::wait::await_release(session, m.session().as_str(), "kill");
                 return Ok(Some(m));
             }
         }
@@ -118,6 +119,7 @@ pub fn cmd_kill(name: &str, force: bool, namespace: &Namespace) -> anyhow::Resul
         std::thread::sleep(std::time::Duration::from_millis(100));
         if let Ok(m) = session::read_meta(&session) {
             if m.status().is_terminal() {
+                super::wait::await_release(&session, name, "kill");
                 let json = serde_json::to_string_pretty(&m)?;
                 println!("{json}");
                 return Ok(());

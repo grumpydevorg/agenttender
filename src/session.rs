@@ -292,6 +292,34 @@ pub fn is_locked(session: &SessionDir) -> Result<bool, SessionError> {
     }
 }
 
+/// How long commands that report a session as finished (`wait`, `kill`,
+/// `start --replace`) wait for its sidecar to release the session lock after
+/// terminal metadata appears (#91). The gap is normally milliseconds; the bound
+/// keeps a stuck sidecar from turning those commands into hangs.
+pub const RELEASE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Poll until nothing holds the session lock, or `bound` elapses. Returns
+/// `Ok(true)` once the lock is free, `Ok(false)` if `bound` passed first.
+///
+/// The sidecar writes terminal metadata just before it releases the lock, so a
+/// session can be terminal and still locked for a moment. Callers that already
+/// know the session is terminal use this before reporting it done.
+pub fn wait_unlocked(
+    session: &SessionDir,
+    bound: std::time::Duration,
+) -> Result<bool, SessionError> {
+    let deadline = std::time::Instant::now() + bound;
+    loop {
+        if !is_locked(session)? {
+            return Ok(true);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// Exclusive file lock on a session. Drop releases the lock.
 /// Uses flock — exclusive across processes, not just threads.
 #[cfg(unix)]
