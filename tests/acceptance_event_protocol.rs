@@ -272,6 +272,7 @@ fn exec_payload_emit_chains_and_env_unsets() {
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     wait_running(&root, "shell");
 
     let bin = assert_cmd::cargo::cargo_bin("tendr");
@@ -331,8 +332,6 @@ fn exec_payload_emit_chains_and_env_unsets() {
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-
-    let _ = tendr(&root).args(["kill", "shell", "--force"]).assert();
 }
 
 /// exec with ≥1 MiB stdout: the full data spills to a content-addressed
@@ -345,6 +344,7 @@ fn exec_one_mib_stdout_spills_with_structured_preview() {
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     wait_running(&root, "shell");
 
     let output = tendr(&root)
@@ -398,8 +398,6 @@ fn exec_one_mib_stdout_spills_with_structured_preview() {
     assert_eq!(preview["truncated"], true);
     assert!(preview["stdout_preview"].as_str().unwrap().starts_with('x'));
     assert!(preview.get("stdout").is_none(), "preview renames the field");
-
-    let _ = tendr(&root).args(["kill", "shell", "--force"]).assert();
 }
 
 /// The plan's validation scenario: a wrapped hook whose script emits — the
@@ -416,6 +414,7 @@ fn wrap_hook_causal_tree_rebuilds_in_duckdb() {
         .args(["start", "agent", "--", "sleep", "60"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "agent");
     wait_running(&root, "agent");
 
     let meta: serde_json::Value = serde_json::from_str(
@@ -478,6 +477,4 @@ fn wrap_hook_causal_tree_rebuilds_in_duckdb() {
         "note shares the hook's block, got: {}",
         rows[0]["same_block"]
     );
-
-    let _ = tendr(&root).args(["kill", "agent", "--force"]).assert();
 }

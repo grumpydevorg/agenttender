@@ -182,6 +182,7 @@ fn exec_basic_command() {
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     // Exec a command
@@ -207,10 +208,6 @@ fn exec_basic_command() {
         std::path::Path::new(cwd).is_absolute() || cwd.starts_with('/'),
         "cwd_after should be absolute, got: {cwd}"
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// exec fails if session lacks --stdin.
@@ -222,15 +219,13 @@ fn exec_session_no_stdin() {
         .args(["start", "job1", "--", "sleep", "30"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "job1");
     harness::wait_running(&root, "job1");
     harness::tendr(&root)
         .args(["exec", "job1", "--", "pwd"])
         .assert()
         .failure()
         .stderr(predicates::str::contains("--stdin"));
-    let _ = harness::tendr(&root)
-        .args(["kill", "job1", "--force"])
-        .assert();
 }
 
 /// exec propagates non-zero exit code; shell stays alive.
@@ -243,6 +238,7 @@ fn exec_nonzero_exit() {
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let output = harness::tendr(&root)
@@ -261,10 +257,6 @@ fn exec_nonzero_exit() {
         .unwrap();
     let status: serde_json::Value = serde_json::from_slice(&status_output.stdout).unwrap();
     assert_eq!(status["status"].as_str(), Some("Running"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// Shell state (cwd) persists across exec calls.
@@ -277,6 +269,7 @@ fn exec_cwd_persists() {
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     // A test-chosen directory (distinct from HOME) so the assertion is exact
@@ -311,10 +304,6 @@ fn exec_cwd_persists() {
         canon_target,
         "persisted cwd_after should be the target dir, got: {cwd2}"
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// Annotation event is written to output.log after exec.
@@ -327,6 +316,7 @@ fn exec_writes_annotation() {
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     harness::tendr(&root)
@@ -346,10 +336,6 @@ fn exec_writes_annotation() {
     assert_eq!(ann["event"].as_str(), Some("exec"));
     assert_eq!(ann["data"]["hook_exit_code"].as_i64(), Some(0));
     assert!(ann["data"]["command"].is_array());
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// Oversized exec output must be quiet — no "annotation too large" warning on
@@ -365,6 +351,7 @@ fn exec_oversized_output_is_quiet_and_leaves_breadcrumb() {
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     // Both streams multi-KB so even the field-truncated annotation overflows
@@ -419,10 +406,6 @@ fn exec_oversized_output_is_quiet_and_leaves_breadcrumb() {
     assert!(data["stdout_sha256"].is_string());
     assert!(data["stderr_sha256"].is_string());
     assert_eq!(data["truncated"], true);
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// exec --timeout: returns timeout error, shell stays alive.
@@ -435,6 +418,7 @@ fn exec_timeout() {
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let mut args = vec![
@@ -458,10 +442,6 @@ fn exec_timeout() {
         .unwrap();
     let status: serde_json::Value = serde_json::from_slice(&status_output.stdout).unwrap();
     assert_eq!(status["status"].as_str(), Some("Running"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// Second concurrent exec fails with busy error.
@@ -474,6 +454,7 @@ fn exec_concurrent_busy() {
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     // Start a long exec in the background (holds the exec lock while it sleeps)
@@ -499,9 +480,6 @@ fn exec_concurrent_busy() {
     // Clean up
     let _ = long_exec.kill();
     let _ = long_exec.wait();
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// exec with explicit --exec-target posix-shell.
@@ -523,6 +501,7 @@ fn exec_explicit_posix_target() {
         ])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let output = harness::tendr(&root)
@@ -537,10 +516,6 @@ fn exec_explicit_posix_target() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert!(result["stdout"].as_str().unwrap().contains("explicit"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// exec on a session with no exec target fails with clear message.
@@ -553,6 +528,7 @@ fn exec_none_target_rejected() {
         .args(["start", "sleeper", "--stdin", "--", "sleep", "60"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "sleeper");
     harness::wait_running(&root, "sleeper");
 
     harness::tendr(&root)
@@ -560,10 +536,6 @@ fn exec_none_target_rejected() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("no exec target"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "sleeper", "--force"])
-        .assert();
 }
 
 /// bash infers PosixShell, exec works without --exec-target.
@@ -577,6 +549,7 @@ fn exec_infers_posix_from_bash() {
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let output = harness::tendr(&root)
@@ -590,10 +563,6 @@ fn exec_infers_posix_from_bash() {
     );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(result["stdout"].as_str().unwrap().contains("inferred"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// Invalid --exec-target value fails at start (clap rejects it).
@@ -643,16 +612,13 @@ fn exec_target_changes_session_identity() {
         other_target,
         "--",
     ];
+    let _session = harness::SessionGuard::new(&root, "shell");
     conflict_args.extend_from_slice(interp);
     harness::tendr(&root)
         .args(conflict_args)
         .assert()
         .failure()
         .stderr(predicates::str::contains("session conflict"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// Python REPL exec: basic print statement.
@@ -665,6 +631,7 @@ fn exec_python_repl_basic() {
         .args(python_start_args("py"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "py");
     harness::wait_running(&root, "py");
 
     let output = harness::tendr(&root)
@@ -697,10 +664,6 @@ fn exec_python_repl_basic() {
         std::path::Path::new(cwd).is_absolute(),
         "cwd_after should be absolute, got: {cwd}"
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "py", "--force"])
-        .assert();
 }
 
 /// Python REPL exec: exception produces non-zero exit and traceback in stderr.
@@ -713,6 +676,7 @@ fn exec_python_repl_exception() {
         .args(python_start_args("py"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "py");
     harness::wait_running(&root, "py");
 
     let output = harness::tendr(&root)
@@ -732,10 +696,6 @@ fn exec_python_repl_exception() {
     assert_eq!(result["exit_code"].as_i64(), Some(1));
     assert!(result["stderr"].as_str().unwrap().contains("ValueError"));
     assert!(result["stderr"].as_str().unwrap().contains("boom"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "py", "--force"])
-        .assert();
 }
 
 /// Python REPL exec: cwd changes are tracked.
@@ -748,6 +708,7 @@ fn exec_python_repl_cwd() {
         .args(python_start_args("py"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "py");
     harness::wait_running(&root, "py");
 
     let tmp = std::env::temp_dir();
@@ -773,10 +734,6 @@ fn exec_python_repl_cwd() {
         std::path::Path::new(cwd).is_absolute(),
         "cwd should be absolute after chdir, got: {cwd}"
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "py", "--force"])
-        .assert();
 }
 
 /// python/python3/ipython (and Windows `py`) infer PythonRepl when started
@@ -790,6 +747,7 @@ fn exec_python_inferred() {
         .args(python_start_args_no_target("py"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "py");
     harness::wait_running(&root, "py");
 
     let output = harness::tendr(&root)
@@ -806,10 +764,6 @@ fn exec_python_inferred() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert_eq!(result["stdout"].as_str().unwrap().trim(), "2");
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "py", "--force"])
-        .assert();
 }
 
 /// DuckDB inferred from argv[0].
@@ -825,6 +779,7 @@ fn exec_infers_duckdb() {
         .args(["start", "db", "--stdin", "--", "duckdb"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "db");
     harness::wait_running(&root, "db");
 
     // Verify the session was created with DuckDb exec target
@@ -837,10 +792,6 @@ fn exec_infers_duckdb() {
         status["launch_spec"]["exec_target"].as_str(),
         Some("DuckDb")
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "db", "--force"])
-        .assert();
 }
 
 /// DuckDB exec: basic SELECT query returns structured JSON in stdout.
@@ -864,6 +815,7 @@ fn exec_duckdb_basic_select() {
         ])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "db");
     harness::wait_running(&root, "db");
 
     let output = harness::tendr(&root)
@@ -901,10 +853,6 @@ fn exec_duckdb_basic_select() {
         !results_dir.exists(),
         "exec-results/ should not exist for DuckDB"
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "db", "--force"])
-        .assert();
 }
 
 /// DuckDB exec: SQL error reports exit_code 1 but keeps the session alive.
@@ -928,6 +876,7 @@ fn exec_duckdb_sql_error() {
         ])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "db");
     harness::wait_running(&root, "db");
 
     // Invalid SQL — error goes to stderr, sentinel still fires, exit_code = 1.
@@ -986,10 +935,6 @@ fn exec_duckdb_sql_error() {
         stdout2.contains("recovered"),
         "second query should succeed after error: {stdout2}"
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "db", "--force"])
-        .assert();
 }
 
 /// DuckDB exec: multiple statements produce concatenated results.
@@ -1013,6 +958,7 @@ fn exec_duckdb_multi_statement() {
         ])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "db");
     harness::wait_running(&root, "db");
 
     let output = harness::tendr(&root)
@@ -1045,10 +991,6 @@ fn exec_duckdb_multi_statement() {
         stdout.contains('2'),
         "stdout should contain second query result"
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "db", "--force"])
-        .assert();
 }
 
 /// DuckDB exec with explicit --exec-target duckdb.
@@ -1072,6 +1014,7 @@ fn exec_duckdb_explicit_target() {
         ])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "db");
     harness::wait_running(&root, "db");
 
     let output = harness::tendr(&root)
@@ -1093,10 +1036,6 @@ fn exec_duckdb_explicit_target() {
     );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["exit_code"].as_i64(), Some(0));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "db", "--force"])
-        .assert();
 }
 
 /// DuckDB exec: mixed success — first statement succeeds, second fails.
@@ -1121,6 +1060,7 @@ fn exec_duckdb_mixed_success_reports_error() {
         ])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "db");
     harness::wait_running(&root, "db");
 
     let output = harness::tendr(&root)
@@ -1160,10 +1100,6 @@ fn exec_duckdb_mixed_success_reports_error() {
         .args(["status", "db"])
         .assert()
         .success();
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "db", "--force"])
-        .assert();
 }
 
 /// DuckDB exec: paths with spaces work correctly (no .output path escaping needed).
@@ -1287,6 +1223,7 @@ fn exec_powershell_clean_stdout() {
         .args(powershell_start_args("ps"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "ps");
     harness::wait_running(&root, "ps");
 
     let output = harness::tendr(&root)
@@ -1315,10 +1252,6 @@ fn exec_powershell_clean_stdout() {
         "stdout must not contain frame source"
     );
     assert_eq!(stdout.trim(), "hello-world");
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "ps", "--force"])
-        .assert();
 }
 
 /// PowerShell exec: arbitrary expression — `$x = 1; $x + 1` → stdout `2`.
@@ -1332,6 +1265,7 @@ fn exec_powershell_arbitrary_expression() {
         .args(powershell_start_args("ps"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "ps");
     harness::wait_running(&root, "ps");
 
     let output = harness::tendr(&root)
@@ -1347,10 +1281,6 @@ fn exec_powershell_arbitrary_expression() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert_eq!(result["stdout"].as_str().unwrap().trim(), "2");
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "ps", "--force"])
-        .assert();
 }
 
 /// PowerShell exec: pipeline emits each item on its own line.
@@ -1364,6 +1294,7 @@ fn exec_powershell_pipeline() {
         .args(powershell_start_args("ps"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "ps");
     harness::wait_running(&root, "ps");
 
     let output = harness::tendr(&root)
@@ -1392,10 +1323,6 @@ fn exec_powershell_pipeline() {
         vec!["10", "20", "30"],
         "pipeline output unexpected: {stdout:?}"
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "ps", "--force"])
-        .assert();
 }
 
 /// PowerShell exec: variables persist across exec calls (same REPL session).
@@ -1409,6 +1336,7 @@ fn exec_powershell_state_persists_across_calls() {
         .args(powershell_start_args("ps"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "ps");
     harness::wait_running(&root, "ps");
 
     // Set a variable
@@ -1445,10 +1373,6 @@ fn exec_powershell_state_persists_across_calls() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["exit_code"].as_i64(), Some(0));
     assert_eq!(result["stdout"].as_str().unwrap().trim(), "42");
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "ps", "--force"])
-        .assert();
 }
 
 /// PowerShell exec: Write-Error goes to stderr field, not stdout.
@@ -1462,6 +1386,7 @@ fn exec_powershell_stderr_separated() {
         .args(powershell_start_args("ps"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "ps");
     harness::wait_running(&root, "ps");
 
     let output = harness::tendr(&root)
@@ -1481,10 +1406,6 @@ fn exec_powershell_stderr_separated() {
         "stderr must not leak into stdout: {:?}",
         result["stdout"]
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "ps", "--force"])
-        .assert();
 }
 
 /// PowerShell exec: Set-Location is reflected in cwd_after on next call.
@@ -1498,6 +1419,7 @@ fn exec_powershell_cwd_after() {
         .args(powershell_start_args("ps"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "ps");
     harness::wait_running(&root, "ps");
 
     // Change directory to C:\
@@ -1517,10 +1439,6 @@ fn exec_powershell_cwd_after() {
         cwd.eq_ignore_ascii_case("C:\\") || cwd.eq_ignore_ascii_case("C:/"),
         "cwd_after should reflect Set-Location, got: {cwd:?}"
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "ps", "--force"])
-        .assert();
 }
 
 /// Side-channel result file is cleaned up after exec.
@@ -1533,6 +1451,7 @@ fn exec_python_result_file_cleaned() {
         .args(python_start_args("py"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "py");
     harness::wait_running(&root, "py");
 
     harness::tendr(&root)
@@ -1556,10 +1475,6 @@ fn exec_python_result_file_cleaned() {
             "result files should be cleaned up, found: {entries:?}"
         );
     }
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "py", "--force"])
-        .assert();
 }
 
 // --- Slice 3: exec.started / exec.result events (plan scope 1) ---
@@ -1575,6 +1490,7 @@ fn exec_emits_started_and_result_events() {
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let echo_cmd = native_echo("event brigade");
@@ -1656,10 +1572,6 @@ fn exec_emits_started_and_result_events() {
         started.get("parent_id").is_none(),
         "no ambient chain → no parent"
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// A tendr exec running inside an outer block chains upward: parent_id
@@ -1673,6 +1585,7 @@ fn exec_events_inherit_parent_from_env_chain() {
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let outer = uuid::Uuid::now_v7().to_string();
@@ -1693,10 +1606,6 @@ fn exec_events_inherit_parent_from_env_chain() {
             "fresh block per exec"
         );
     }
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// The exec A-line carries additive event_id (= exec.result id) and
@@ -1710,6 +1619,7 @@ fn exec_aline_links_event_id_and_block_id() {
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     harness::tendr(&root)
@@ -1733,10 +1643,6 @@ fn exec_aline_links_event_id_and_block_id() {
         "A-line links the exec.result event"
     );
     assert_eq!(ann["block_id"], result["block_id"]);
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// A timed-out exec still records its exec.result (timed_out true) and the
@@ -1750,6 +1656,7 @@ fn exec_timeout_still_emits_result_event() {
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let mut args = vec![
@@ -1769,10 +1676,6 @@ fn exec_timeout_still_emits_result_event() {
     assert_eq!(started["data"]["timeout_ms"], 1000);
     assert_eq!(result["data"]["timed_out"], true);
     assert_eq!(result["data"]["exit_code"], -1);
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// Event emission is best-effort: an unwritable events dir warns but never
@@ -1789,6 +1692,7 @@ fn exec_event_append_is_best_effort() {
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let events_dir = root.path().join(".tendr/sessions/default/shell/events");
@@ -1804,10 +1708,6 @@ fn exec_event_append_is_best_effort() {
     assert!(output.status.success(), "append failure never fails exec");
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(envelope["stdout"].as_str().unwrap().contains("still fine"));
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// The PosixShell frame exports TENDR_BLOCK_ID for the payload's duration:
@@ -1825,6 +1725,7 @@ fn exec_payload_sees_block_id_env() {
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let output = harness::tendr(&root)
@@ -1838,10 +1739,6 @@ fn exec_payload_sees_block_id_env() {
     let events = harness::read_events(&root, "shell");
     let result = events.iter().find(|e| e["kind"] == "exec.result").unwrap();
     assert_eq!(seen, result["block_id"].as_str().unwrap());
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 // --- Slice 2 (2026-07-08-remote-exec-host-parity.md): exec --frame-from-stdin ---
@@ -1857,6 +1754,7 @@ fn exec_frame_from_stdin_runs_payload() {
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let frame = serde_json::json!({
@@ -1884,10 +1782,6 @@ fn exec_frame_from_stdin_runs_payload() {
             .contains("framed hello")
     );
     assert_eq!(envelope["session"], "shell");
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// The frame carries argv as a JSON array, so quoting-hostile payloads
@@ -1905,6 +1799,7 @@ fn exec_frame_payload_survives_quoting_torture() {
         .args(["start", "shell", "--stdin", "--", "bash"])
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     // printf's FORMAT string interprets \n (the payload arg does not),
@@ -1931,10 +1826,6 @@ fn exec_frame_payload_survives_quoting_torture() {
         torture,
         "payload survives byte-exact"
     );
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// Frame timeout behaves like --timeout: exit 124, timed_out true.
@@ -1947,6 +1838,7 @@ fn exec_frame_timeout_exits_124() {
         .args(native_shell_start_args("shell"))
         .assert()
         .success();
+    let _session = harness::SessionGuard::new(&root, "shell");
     harness::wait_running(&root, "shell");
 
     let frame = serde_json::json!({
@@ -1964,10 +1856,6 @@ fn exec_frame_timeout_exits_124() {
     assert_eq!(output.status.code(), Some(124));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(envelope["timed_out"], true);
-
-    let _ = harness::tendr(&root)
-        .args(["kill", "shell", "--force"])
-        .assert();
 }
 
 /// Malformed frames are a usage error before any side effect: exit 2
