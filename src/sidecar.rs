@@ -1965,7 +1965,10 @@ fn retire_connection(
     let mut viewer = lock(sink);
     if viewer.as_ref().is_some_and(|v| v.holder == holder) {
         if let Some(v) = viewer.take() {
-            v.queue.close();
+            // MUTANT (throwaway, for red-first CI proof; never merged): skip
+            // closing the retired viewer's queue, so its sender thread leaks.
+            let _ = &v;
+            // v.queue.close();
         }
     }
 }
@@ -2310,7 +2313,10 @@ fn handle_attach_connection(
         *viewer = None;
     }
     drop(viewer);
-    queue.close();
+    // MUTANT (throwaway, for red-first CI proof; never merged): skip closing
+    // this connection's own queue too, so its sender thread leaks.
+    let _ = &queue;
+    // queue.close();
 }
 
 #[cfg(unix)]
