@@ -35,7 +35,7 @@ use super::{
     PtyTeardown, ReadyWriter, capture_stream, capture_stream_with_tee, collect_warnings,
     deliver_ready, finished_recording, lock, run_on_exit_hooks, setup_kill_watcher,
     setup_pty_stdin_forwarding, setup_stdin_forwarding, setup_timeout, start_pty_recording,
-    stopped_state, test_abort_point, test_fault,
+    stopped_state, test_abort_point, test_fault, test_unlock_gate,
 };
 #[cfg(unix)]
 use super::{ConnectionRegistry, SidecarControlHooks, UnixPtyInput, run_attach_listener};
@@ -545,6 +545,7 @@ impl RunCore {
         }
 
         // Release the lock: the session is available for --replace.
+        test_unlock_gate();
         self.lock.take();
         run_on_exit_hooks(&self.meta, &dir, &mut self.lifecycle);
         recorded.map_err(|e| anyhow::anyhow!("terminal meta not written: {e}"))
@@ -646,6 +647,7 @@ impl RunCore {
             }
         }
 
+        test_unlock_gate();
         self.lock.take();
         run_on_exit_hooks(&self.meta, &dir, &mut self.lifecycle);
     }

@@ -220,7 +220,7 @@ enum Commands {
         #[arg(short, long)]
         raw: bool,
     },
-    /// Block until session(s) reach terminal state
+    /// Block until session(s) exit and their sidecar releases them
     Wait {
         /// Session name(s)
         #[arg(required = true)]

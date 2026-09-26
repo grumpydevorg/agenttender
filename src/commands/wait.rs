@@ -25,6 +25,13 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500)
 ///
 /// Timeout is reported via anyhow::bail (exit code 1), consistent with
 /// other Tendr commands that use anyhow for operational errors.
+///
+/// A session counts as done once its meta is terminal *and* its sidecar has
+/// released the session lock, so `prune` or `start --replace` straight after
+/// `wait` find it free (#91). The release gets [`session::RELEASE_GRACE`]; if it
+/// has not happened by then, `wait` warns on stderr and reports the session
+/// anyway. The exit code always reflects the session's outcome, and the grace
+/// is not charged against `--timeout`.
 pub fn cmd_wait(
     names: &[String],
     timeout: Option<u64>,
@@ -76,6 +83,7 @@ pub fn cmd_wait(
             tendr::reconcile::reconcile_sidecar_gone(session_dir, &mut meta)?;
 
             if meta.status().is_terminal() {
+                await_release(session_dir, name, "wait");
                 terminal_metas.insert(name.clone(), meta);
             }
         }
@@ -189,6 +197,19 @@ fn single_exit_code(status: &RunStatus) -> i32 {
         }
         // Non-terminal states shouldn't reach here, but return 0 if they do.
         _ => 0,
+    }
+}
+
+/// Give a terminal session's sidecar [`session::RELEASE_GRACE`] to release the
+/// session lock before reporting the session done. Warns on stderr if it has
+/// not; the caller reports the session either way (#91).
+pub(crate) fn await_release(session_dir: &session::SessionDir, name: &str, command: &str) {
+    if let Ok(false) = session::wait_unlocked(session_dir, session::RELEASE_GRACE) {
+        eprintln!(
+            "tendr {command}: {name} is terminal but its sidecar still holds the session lock \
+             after {}s; prune and start --replace may still find it locked",
+            session::RELEASE_GRACE.as_secs()
+        );
     }
 }
 

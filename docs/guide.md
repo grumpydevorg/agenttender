@@ -205,7 +205,7 @@ tendr status dev                 # current state
 tendr log    dev --tail 50       # last N lines (on disk, survives crashes)
 tendr log    dev -f              # follow
 tendr log    dev -s 5m           # since a time window
-tendr wait   dev --timeout 600   # block until it exits (propagates its code)
+tendr wait   dev --timeout 600   # block until it exits and is released (propagates its code)
 tendr watch --namespace nightly --events --logs   # follow a whole namespace
 ```
 
@@ -220,6 +220,10 @@ tendr prune dev                  # remove one finished session by name (local-on
 tendr prune --older-than 7d      # or every finished session past an age; --all for all
 tendr run --detach ./job.sh      # one-shot convenience over `start` for scripts
 ```
+
+`wait` and `kill` return once the session's sidecar has released it, so `prune` or
+`start --replace` straight after them find the session free. If the sidecar still
+holds it after 2 s, they return anyway with a warning on stderr.
 
 Useful `start` / `run` flags for batch work:
 

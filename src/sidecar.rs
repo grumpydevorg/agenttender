@@ -872,6 +872,15 @@ fn setup_pty_stdin_forwarding(
     Ok(())
 }
 
+/// Test-only gate between the terminal meta write and the lock release, so a
+/// test can observe a session that is terminal but still locked (#91). Waits
+/// for the file named by `TENDR_TEST_UNLOCK_GATE` (bounded). Debug builds only.
+fn test_unlock_gate() {
+    if cfg!(debug_assertions) {
+        wait_for_gate_file("TENDR_TEST_UNLOCK_GATE");
+    }
+}
+
 #[cfg(not(unix))]
 fn setup_pty_stdin_forwarding(
     _session_dir: &Path,
