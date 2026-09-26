@@ -2711,7 +2711,8 @@ mod tests {
     /// meta.json is stalled, so the report cannot finish. The run then ends:
     /// the recording is finished and the attach side torn down. If that
     /// returns while the report is still pending, the replacement's meta is
-    /// what the report finds when the state root recovers.
+    /// what the report finds when the state root recovers. So the end must not
+    /// return until the report is written.
     #[test]
     fn a_stalled_recording_stop_report_never_lands_after_the_run_ends() {
         let dir = tempfile::tempdir().unwrap();
@@ -2721,7 +2722,7 @@ mod tests {
         stall_meta_json(dir.path());
         let (hooks, _control, teardown) = hooks_for(dir.path());
         let limits = RecorderLimits {
-            close_timeout: std::time::Duration::from_millis(200),
+            close_timeout: std::time::Duration::from_millis(50),
             ..RecorderLimits::default()
         };
         let recording = start_pty_recording(
@@ -2749,52 +2750,44 @@ mod tests {
             state
         });
 
-        let replacement = match ended.recv_timeout(std::time::Duration::from_secs(1)) {
-            Ok(()) => {
-                // Ended with the report still pending: the lock is released,
-                // and a replacement run owns meta.json. Let the state root
-                // recover with the replacement's meta in place.
-                let meta_b = recording_meta(RunId::new());
-                unstall_meta_json(dir.path(), &meta_b);
-                Some(meta_b)
-            }
-            Err(_) => {
-                // The run's end waits for the report: let the state root
-                // recover with this run's own meta, and the end completes.
-                unstall_meta_json(dir.path(), &meta_a);
-                ended
-                    .recv_timeout(std::time::Duration::from_secs(5))
-                    .expect("the run ends once the state root recovers");
-                None
-            }
-        };
+        // The run's end must wait for the report. A 50 ms close timeout
+        // against a 2 s window leaves a 40x margin, so a run end that returns
+        // early fails here rather than slipping past on a slow runner.
+        assert!(
+            ended
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .is_err(),
+            "the run ended while its recording's stop report was still pending"
+        );
+        // Let the state root recover with this run's own meta; the end completes.
+        unstall_meta_json(dir.path(), &meta_a);
+        ended
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the run ends once the state root recovers");
         let final_state = run_end.join().unwrap();
         assert!(matches!(final_state, RecordingState::Stopped { .. }));
 
-        let meta_b = replacement.unwrap_or_else(|| {
-            // Recorded before the end returned, so before the terminal record.
-            let on_disk = read_meta(dir.path());
-            assert_eq!(on_disk.run_id(), run_a);
-            assert!(
-                matches!(
-                    on_disk.pty().unwrap().recording.as_ref().unwrap().state,
-                    RecordingState::Stopped { .. }
-                ),
-                "the stop is in meta.json before the run's end returns"
-            );
-            assert!(
-                event_kinds(dir.path()).contains(&"recording.stopped".to_owned()),
-                "the stop is in the event log before the run's end returns"
-            );
-            // The replacement run takes over the session paths.
-            let meta_b = recording_meta(RunId::new());
-            std::fs::write(
-                dir.path().join("meta.json"),
-                serde_json::to_string_pretty(&meta_b).unwrap(),
-            )
-            .unwrap();
-            meta_b
-        });
+        // Recorded before the end returned, so before the terminal record.
+        let on_disk = read_meta(dir.path());
+        assert_eq!(on_disk.run_id(), run_a);
+        assert!(
+            matches!(
+                on_disk.pty().unwrap().recording.as_ref().unwrap().state,
+                RecordingState::Stopped { .. }
+            ),
+            "the stop is in meta.json before the run's end returns"
+        );
+        assert!(
+            event_kinds(dir.path()).contains(&"recording.stopped".to_owned()),
+            "the stop is in the event log before the run's end returns"
+        );
+        // The replacement run takes over the session paths.
+        let meta_b = recording_meta(RunId::new());
+        std::fs::write(
+            dir.path().join("meta.json"),
+            serde_json::to_string_pretty(&meta_b).unwrap(),
+        )
+        .unwrap();
         let events_at_end = event_kinds(dir.path());
 
         std::thread::sleep(std::time::Duration::from_millis(300));
