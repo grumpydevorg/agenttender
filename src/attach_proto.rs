@@ -65,6 +65,10 @@ impl TryFrom<u8> for Mode {
 /// Why the sidecar refused a connection ([`MSG_REJECTED`]), so a client can act
 /// on a refusal without parsing its reason. The discriminant is the wire byte;
 /// a byte this version does not know does not decode.
+///
+/// Decoding is strict, so the set is part of the protocol version: a sidecar
+/// sends only the classes of the version the client's hello names, and adding
+/// a class means bumping [`PROTOCOL_VERSION`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RejectClass {
